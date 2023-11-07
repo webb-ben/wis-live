@@ -1,0 +1,25 @@
+.dot {
+  height: 30px;
+  width: 30px;
+  border: 2px solid #bbbbbb;
+  background-color: #ffffff;
+  border-radius: 50%;
+  text-align: center;
+  text-justify: center;
+  display: inline-block;
+}
+.center {
+  text-align: center;
+  width: 100%;
+  height: 100vh;
+}
+.body {
+  margin: 0;
+}
+.popup {
+  border-radius: 2px;
+  border: 2px solid #bbbbbb;
+  background-color: #ffffff;
+  margin: 2px;
+  padding: 2px;
+}
