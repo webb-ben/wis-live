@@ -135,6 +135,7 @@ client.on('message', function (topic, message) {
                     <td>${wsi}</td>
                   </tr>`
         if (origin.startsWith('cache')){
+            marker.bindTooltip(wsi).openTooltip();
             popup += `<tbody>`
             for (const link of feature.links){
                 const url = new URL(link.href);
@@ -160,7 +161,6 @@ client.on('message', function (topic, message) {
         }
 
         marker.bindPopup(`<table class="table table-striped"> ${popup} </table>`, { maxWidth: 500 });
-        marker.bindTooltip(wsi).openTooltip();
         setTimeout(closeTooltip, 1500, marker);
 
     } else if (feature.geometry.type === 'Polygon' && props.conformsTo) {
