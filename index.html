@@ -7,17 +7,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
   
     <title>WIS 2.0 Live</title>
-    <link rel="canonical" href="https://www.benwebb.com/wis-live"/>
+    <link rel="canonical" href="https://benwebb.com/wis-live/"/>
     <meta property="og:title" content="WIS 2.0 Live"/>
-    <meta property="og:image" content="https://www.benwebb.com/assets/images/ben.png"/>
-    <meta property="og:url" content="https://www.benwebb.com/wis-live"/>
+    <meta property="og:image" content="https://benwebb.com/assets/images/ben.png"/>
+    <meta property="og:url" content="https://benwebb.com/wis-live/"/>
     <meta property="og:site_name" content="WIS 2.0 Live"/>
     <meta property="og:description" 
         content="WIS 2.0 Live shows real-time weather observations as they are published through the WMO Information System. This page is not affiliated with WMO." />
     <meta property="og:type" content="website"/>
     <meta name="twitter:card" content="summary_large_image"/>
     <meta name="twitter:title" content="WIS 2.0 Live"/>
-    <meta name="twitter:image" content="https://www.benwebb.com/assets/images/wis.png"/>
+    <meta name="twitter:image" content="https://benwebb.com/assets/images/wis.png"/>
   
     <!--
       - favicon
@@ -52,9 +52,10 @@ map.on('zoomend', function() {
     reRender();
 });
 
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', {
     maxZoom: 19,
     minZoom: 3,
+    attribution: 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ, TomTom, Intermap, iPC, USGS, FAO, NPS, NRCAN, GeoBase, Kadaster NL, Ordnance Survey, Esri Japan, METI, Esri China (Hong Kong), and the GIS User Community',
     attributionControl: false
 }).addTo(map);
 

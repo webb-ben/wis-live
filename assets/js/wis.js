@@ -136,6 +136,7 @@ client.on('message', function (topic, message) {
                   </tr>`
         if (origin.startsWith('cache')){
             marker.bindTooltip(wsi).openTooltip();
+            setTimeout(closeTooltip, 1500, marker);
             popup += `<tbody>`
             for (const link of feature.links){
                 const url = new URL(link.href);
@@ -161,7 +162,6 @@ client.on('message', function (topic, message) {
         }
 
         marker.bindPopup(`<table class="table table-striped"> ${popup} </table>`, { maxWidth: 500 });
-        setTimeout(closeTooltip, 1500, marker);
 
     } else if (feature.geometry.type === 'Polygon' && props.conformsTo) {
         var poly = L.geoJSON(feature);
