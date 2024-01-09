@@ -246,7 +246,7 @@ function recolorMarker(m){
     });
     m.redraw();
     if (m.options.opacity >= 0.1){
-        setTimeout(recolorMarker, 60000, m);
+        setTimeout(recolorMarker, 180000, m);
     } else {
         const index = markers.indexOf(m);
         if (index > -1) {
