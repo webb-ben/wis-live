@@ -226,7 +226,7 @@ function reRender() {
 
 function estimateRadius(){
     var z = map.getZoom();
-    return 1.5 * (z - 1.5);
+    return 1.5 * (z - 1);
 }
 
 function removeMarker(feature) {
