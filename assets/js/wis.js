@@ -60,6 +60,7 @@ const options = {
 
 console.log('Connecting mqtt client');
 const client = mqtt.connect(host, options);
+client.setMaxListeners(0);
 
 client.on('connect', function () {
     client.subscribe(['origin/#', 'cache/#'], function (err) {
@@ -82,13 +83,13 @@ const markers = new Array();
 const regex = /(?!WIGOS_)(\d-\d+-\d-[\da-zA-Z]+)/g;
 client.on('message', function (topic, message) {
     // message is Buffer
-    const feature = JSON.parse(message.toString())
+    var feature = JSON.parse(message.toString())
     if (!feature.geometry || !feature.geometry.hasOwnProperty('type')){
         console.debug(`Message from ${topic} missing geometry`);
         return;
     }
     
-    const props = feature.properties;
+    var props = feature.properties;
     var [origin, t] = topic.split('/wis2/')
     var [country] = t.split('/', 1)
     var popup = `<tr>
@@ -105,9 +106,9 @@ client.on('message', function (topic, message) {
     if (t.includes('webcam')){
         var color = topic.startsWith('cache') ? '#F8A700' : '#D5E3F0';
         var marker = renderMarker(feature, color);
-        for (const link of feature.links){
-            const url = new URL(link.href);
-            const filename = url.pathname.rsplit('/', 1).pop();
+        for (var link of feature.links){
+            var url = new URL(link.href);
+            var filename = url.pathname.rsplit('/', 1).pop();
             if (link.rel == 'canonical'){
                 popup += `<tr>
                             <td colspan="2">
@@ -138,9 +139,9 @@ client.on('message', function (topic, message) {
             marker.bindTooltip(wsi).openTooltip();
             setTimeout(closeTooltip, 1500, marker);
             popup += `<tbody>`
-            for (const link of feature.links){
-                const url = new URL(link.href);
-                const filename = url.pathname.rsplit('/', 1).pop();
+            for (var link of feature.links){
+                var url = new URL(link.href);
+                var filename = url.pathname.rsplit('/', 1).pop();
                 if (link.rel == 'canonical'){
                     popup += `<tr>
                                 <th>Data Download</th>
@@ -206,7 +207,7 @@ function renderMarker(feature, color){
                 opacity: 1,
                 fillOpacity: 1,
             });
-            setTimeout(recolorMarker, 10 * 60000, m);
+            setTimeout(recolorMarker, 60 * 60000, m);
             markers.push(m);
             return m;
         }
