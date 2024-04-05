@@ -191,7 +191,7 @@ client.on('message', function (topic, message) {
         }
         poly.bindPopup(`<table class="table table-striped"> ${popup} </table>`,{ maxWidth: 500 });
         poly.bringToBack();
-        setTimeout(removeMarker, 590000, poly);
+        // setTimeout(removeMarker, 590000, poly);
     }
 })
 
@@ -206,7 +206,7 @@ function renderMarker(feature, color){
                 opacity: 1,
                 fillOpacity: 1,
             });
-            setTimeout(recolorMarker, 60000, m);
+            setTimeout(recolorMarker, 10 * 60000, m);
             markers.push(m);
             return m;
         }
@@ -241,19 +241,19 @@ function recolorMarker(m){
     m.setStyle({
         opacity: m.options.opacity - 0.01667,
         fillOpacity: m.options.fillOpacity - 0.01667,
-        color: shadeColor(m.options.color, -2.5),
-        fillColor: shadeColor(m.options.fillColor, -2.5)
+        color: shadeColor(m.options.color, -25),
+        fillColor: shadeColor(m.options.fillColor, -25)
     });
     m.redraw();
-    if (m.options.opacity >= 0.1){
-        setTimeout(recolorMarker, 180000, m);
-    } else {
-        const index = markers.indexOf(m);
-        if (index > -1) {
-            m.removeFrom(map);
-            markers.splice(index, 1);
-        }
-    }
+    // if (m.options.opacity >= 0.1){
+    //     setTimeout(recolorMarker, 180000, m);
+    // } else {
+    //     const index = markers.indexOf(m);
+    //     if (index > -1) {
+    //         m.removeFrom(map);
+    //         markers.splice(index, 1);
+    //     }
+    // }
 }
 
 function shadeColor(color, percent) {
