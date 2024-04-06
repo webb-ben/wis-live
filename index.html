@@ -37,7 +37,7 @@
     -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css"/>
     <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
-    <script src="https://unpkg.com/mqtt@4.0.1/dist/mqtt.min.js"></script>
+    <script src="https://unpkg.com/mqtt@5.0.1/dist/mqtt.min.js"></script>
     <script src="./assets/js/wis.js"></script>
 </head>
 
@@ -52,10 +52,10 @@ map.on('zoomend', function() {
     reRender();
 });
 
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 16,
     minZoom: 2,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    attribution: 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ',
     attributionControl: false
 }).addTo(map);
 

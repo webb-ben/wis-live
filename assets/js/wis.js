@@ -60,7 +60,7 @@ const options = {
 
 console.log('Connecting mqtt client');
 const client = mqtt.connect(host, options);
-client.setMaxListeners(0);
+client.setMaxListeners(10);
 
 client.on('connect', function () {
     client.subscribe(['origin/#', 'cache/#'], function (err) {
@@ -80,9 +80,16 @@ client.on('reconnect', () => {
 });
 
 const markers = new Array();
-const regex = /(?!WIGOS_)(\d-\d+-\d-[\da-zA-Z]+)/g;
+const regex = /(?!WIGOS_)(\d-\d+-\d-[\d0-9a-zA-Z]+)/g;
 client.on('message', function (topic, message) {
     // message is Buffer
+    if (topic.startsWith('cache/a/wis2/de-dwd-gts-to-wis2/') ||
+        topic.startsWith('origin/a/wis2/de-dwd-gts-to-wis2/') ||
+        topic.startsWith('cache/a/wis2/ca-eccc-msc/data/core/weather/prediction') ||
+        topic.startsWith('origin/a/wis2/ca-eccc-msc/data/core/weather/prediction')) {
+        return; // Ignore this topic
+    }
+
     var feature = JSON.parse(message.toString())
     if (!feature.geometry || !feature.geometry.hasOwnProperty('type')){
         console.debug(`Message from ${topic} missing geometry`);
@@ -90,7 +97,7 @@ client.on('message', function (topic, message) {
     }
     
     var props = feature.properties;
-    var [origin, t] = topic.split('/wis2/')
+    var [origin, t] = topic.split('/a/wis2/')
     var [country] = t.split('/', 1)
     var popup = `<tr>
                     <th>Channel</th>
@@ -119,25 +126,32 @@ client.on('message', function (topic, message) {
         }
         marker.bindPopup(`<table class="table table-striped"> ${popup} </table>`, { maxWidth: 500 });
         marker.bindTooltip(props.metadata_id).openTooltip();
-        setTimeout(closeTooltip, 1500, marker);
+        setTimeout(closeTooltip, 100, marker);
 
     } else if (t.includes('synop') || t.includes('weather')) {
         if (!props.wigos_station_identifier && !props.data_id.match(regex)){
             console.log(`Invalid wigos station identifier from ${topic}`);
-            return;
+            props.wigos_station_identifier = 'Unknown';
+            // return;
         }
 
         var wsi = props.wigos_station_identifier || props.data_id.match(regex).pop();
         var color = topic.startsWith('cache') ? "#6cc644" : "#D5E3F0";
         var marker = renderMarker(feature, color);
 
+        if (wsi !== 'Unknown'){
+            popup += `<tr>
+                        <th>Station Identifier</th>
+                        <td>${wsi}</td>
+                      </tr>`
+        }
         popup += `<tr>
-                    <th>Station Identifier</th>
-                    <td>${wsi}</td>
+                    <th>Topic</th>
+                    <td>${topic}</td>
                   </tr>`
         if (origin.startsWith('cache')){
-            marker.bindTooltip(wsi).openTooltip();
-            setTimeout(closeTooltip, 1500, marker);
+            marker.bindTooltip(wsi, { sticky: true, permanent: true, interactive: false, direction: 'center', className: 'WSI'}).openTooltip();
+            setTimeout(closeTooltip, 100, marker);
             popup += `<tbody>`
             for (var link of feature.links){
                 var url = new URL(link.href);
@@ -168,7 +182,7 @@ client.on('message', function (topic, message) {
         var poly = L.geoJSON(feature);
         var bounds = poly.getBounds();
         if (feature.id || (bounds._northEast.lat >= 90 && bounds._southWest.lat <= -90)){
-            console.log(`Invalid bounds from ${topic}`);
+            console.debug(`Invalid bounds from ${topic}`);
             return;
         } else {
             poly.addTo(map);
@@ -182,13 +196,13 @@ client.on('message', function (topic, message) {
                         <th>Description</th><td>${fprops.description}</td>
                      </tr>`
 
-        for (const link of feature.links){
-            if (link.type != 'MQTT' && link.title){
+        for (var link of feature.links){
+            // if (link.type != 'MQTT' && link.title){
                 popup += `<tr>
                     <th>${link.type}</th>
                     <td><a target="_blank" href="${link.href}"" type="${link.type}" rel="${link.rel}">${link.title}</a></td>
                   </tr>`
-            }
+            // }
         }
         poly.bindPopup(`<table class="table table-striped"> ${popup} </table>`,{ maxWidth: 500 });
         poly.bringToBack();
@@ -207,7 +221,7 @@ function renderMarker(feature, color){
                 opacity: 1,
                 fillOpacity: 1,
             });
-            setTimeout(recolorMarker, 60 * 60000, m);
+            if (color == '#F8A700'){ setTimeout(recolorMarker, 60 * 60000, m); }
             markers.push(m);
             return m;
         }
@@ -217,7 +231,7 @@ function renderMarker(feature, color){
 function reRender() {
     var z = map.getZoom();
     if (z <= 17){
-        for (const m of markers){
+        for (var m of markers){
             m.setRadius(estimateRadius());
             m.redraw();
         }
@@ -235,7 +249,7 @@ function removeMarker(feature) {
 }
 
 function closeTooltip(feature){
-    feature.closeTooltip();
+    feature.unbindTooltip();
 }
 
 function recolorMarker(m){
