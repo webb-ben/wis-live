@@ -233,6 +233,7 @@ function reRender() {
     if (z <= 17){
         for (var m of markers){
             m.setRadius(estimateRadius());
+            m.bringToFront();
             m.redraw();
         }
     }
