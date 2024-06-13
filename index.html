@@ -46,7 +46,7 @@
 </body>
 
 <script>
-var map = L.map('map').setView([30, 0], 3);
+var map = L.map('map', {worldCopyJump: true}).setView([30, 0], 3);
 map.attributionControl.setPrefix('');
 map.on('zoomend', function() {
     reRender();
