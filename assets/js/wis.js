@@ -128,7 +128,7 @@ client.on('message', function (topic, message) {
         marker.bindTooltip(props.metadata_id).openTooltip();
         setTimeout(closeTooltip, 100, marker);
 
-    } else if (t.includes('synop') || t.includes('weather')) {
+    } else if (feature.geometry.type === 'Point' && (t.includes('synop') || t.includes('weather'))) {
         if (!props.wigos_station_identifier && !props.data_id.match(regex)){
             console.log(`Invalid wigos station identifier from ${topic}`);
             props.wigos_station_identifier = 'Unknown';
@@ -178,35 +178,6 @@ client.on('message', function (topic, message) {
 
         marker.bindPopup(`<table class="table table-striped"> ${popup} </table>`, { maxWidth: 500 });
 
-    } else if (feature.geometry.type === 'Polygon' && props.conformsTo) {
-        var poly = L.geoJSON(feature);
-        var bounds = poly.getBounds();
-        if (feature.id || (bounds._northEast.lat >= 90 && bounds._southWest.lat <= -90)){
-            console.debug(`Invalid bounds from ${topic}`);
-            return;
-        } else {
-            poly.addTo(map);
-        }
-
-        var popup = `<tr>
-                        <th>Identifier</th><td>${feature.id}</td>
-                     </tr><tr>
-                        <th>Topic</th><td>${props["wmo:topicHierarchy"]}</td>
-                     </tr><tr>
-                        <th>Description</th><td>${fprops.description}</td>
-                     </tr>`
-
-        for (var link of feature.links){
-            // if (link.type != 'MQTT' && link.title){
-                popup += `<tr>
-                    <th>${link.type}</th>
-                    <td><a target="_blank" href="${link.href}"" type="${link.type}" rel="${link.rel}">${link.title}</a></td>
-                  </tr>`
-            // }
-        }
-        poly.bindPopup(`<table class="table table-striped"> ${popup} </table>`,{ maxWidth: 500 });
-        poly.bringToBack();
-        // setTimeout(removeMarker, 590000, poly);
     }
 })
 
