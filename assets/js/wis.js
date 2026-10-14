@@ -63,7 +63,7 @@ const client = mqtt.connect(host, options);
 client.setMaxListeners(10);
 
 client.on('connect', function () {
-    client.subscribe(['origin/#', 'cache/#'], function (err) {
+    client.subscribe(['origin/a/wis2/#', 'cache/a/wis2/#'], function (err) {
         if (!err) {
             console.log('Connected!')
         }
