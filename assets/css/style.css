@@ -23,3 +23,371 @@
   margin: 2px;
   padding: 2px;
 }
+
+.queue {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 340px;
+  max-width: calc(100vw - 52px);
+  z-index: 1001;
+  display: flex;
+  flex-direction: column;
+  background-color: #ffffff;
+  border-right: 2px solid #bbbbbb;
+  font-size: 13px;
+  transform: translateX(-100%);
+  transition: transform 0.2s;
+}
+.queue-open .queue {
+  transform: none;
+}
+.maplibregl-ctrl-top-left,
+.maplibregl-ctrl-bottom-left {
+  transition: left 0.2s;
+}
+.queue-open .maplibregl-ctrl-top-left,
+.queue-open .maplibregl-ctrl-bottom-left {
+  left: min(340px, calc(100vw - 52px));
+}
+@media (max-width: 600px) {
+  .queue-open .maplibregl-ctrl-top-right {
+    display: none;
+  }
+}
+.maplibregl-ctrl-group .queue-toggle {
+  font-size: 16px;
+  line-height: 29px;
+}
+.queue-header {
+  padding: 8px;
+  border-bottom: 1px solid #dddddd;
+}
+.queue-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+.queue-count,
+.queue-meta {
+  color: #777777;
+  font-size: 12px;
+}
+.queue-meta {
+  margin-left: 6px;
+}
+.queue-selects {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.queue-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.queue-chip {
+  padding: 1px 8px;
+  border: 1px solid #ced4da;
+  border-radius: 12px;
+  background-color: #ffffff;
+  color: #495057;
+  font-size: 12px;
+}
+.queue-chip:hover {
+  border-color: #adb5bd;
+}
+.queue-chip[aria-pressed="true"] {
+  border-color: #0d6efd;
+  background-color: #0d6efd;
+  color: #ffffff;
+}
+.queue-reset {
+  padding-left: 0;
+  padding-right: 6px;
+  font-size: 12px;
+}
+.maplibregl-ctrl-group .queue-toggle.filtered {
+  position: relative;
+}
+.maplibregl-ctrl-group .queue-toggle.filtered::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: #0d6efd;
+}
+.queue-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 6px;
+}
+.queue-list {
+  flex: 1;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.queue-list:empty::after {
+  content: 'No matching messages yet';
+  display: block;
+  padding: 16px 8px;
+  color: #777777;
+  text-align: center;
+}
+.queue-row {
+  padding: 4px 8px;
+  border-bottom: 1px solid #eeeeee;
+  cursor: pointer;
+}
+.queue-row:hover {
+  background-color: #f5f5f5;
+}
+.queue-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border: 1px solid #999999;
+  border-radius: 50%;
+}
+.queue-topic {
+  color: #666666;
+  font-family: monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.queue-row pre {
+  max-height: 300px;
+  margin: 4px 0 0;
+  padding: 4px;
+  overflow: auto;
+  background-color: #f8f8f8;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.legend {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background-color: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: left;
+}
+.legend-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border: 1.5px solid #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15);
+  vertical-align: -1px;
+}
+.legend-ring {
+  border-width: 2px;
+  border-style: solid;
+  box-shadow: none;
+}
+.legend-note {
+  color: #6c757d;
+  font-size: 11px;
+}
+@media (max-width: 600px) {
+  .legend-note {
+    display: none;
+  }
+}
+
+.hover-label .maplibregl-popup-content {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  pointer-events: none;
+}
+.hover-label .maplibregl-popup-tip {
+  display: none;
+}
+
+.maplibregl-popup-content {
+  padding: 12px 14px;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+}
+.maplibregl-popup-close-button {
+  padding: 2px 8px;
+  font-size: 18px;
+  color: #777777;
+}
+.pp {
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+}
+.pp-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding-right: 16px;
+}
+.pp-dot {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin-top: 4px;
+  border: 1.5px solid #ffffff;
+  border-radius: 50%;
+  background-color: var(--color);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15);
+}
+.pp-ring {
+  border-color: var(--color);
+  background-color: transparent;
+  box-shadow: none;
+}
+.pp-title {
+  font-size: 15px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.pp-sub {
+  color: #6c757d;
+  font-size: 12px;
+}
+.pp-badge {
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 11px;
+}
+.pp-cache {
+  background-color: #e3f4dc;
+  color: #2f6b1d;
+}
+.pp-origin {
+  background-color: #e3ecf5;
+  color: #34587a;
+}
+.pp-image {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  border-radius: 6px;
+}
+.pp-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  margin: 10px 0 0;
+}
+.pp-meta dt {
+  color: #6c757d;
+  font-weight: normal;
+}
+.pp-meta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.pp-mono {
+  font-family: monospace;
+  font-size: 11px;
+}
+.pp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.pp-actions:empty {
+  display: none;
+}
+.pp-decoded:not(:empty) {
+  margin-top: 10px;
+}
+.pp-status {
+  color: #6c757d;
+  font-size: 12px;
+}
+.pp-error {
+  color: #b02a37;
+}
+.pp-tiles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.pp-tile {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background-color: #f3f5f7;
+}
+.pp-tile div {
+  color: #6c757d;
+  font-size: 11px;
+}
+.pp-tile strong {
+  font-size: 14px;
+}
+.pp-more {
+  margin-top: 8px;
+}
+.pp-more summary {
+  color: #6c757d;
+  font-size: 12px;
+  cursor: pointer;
+}
+.pp-more table,
+.pp-more ul {
+  display: block;
+  max-height: 220px;
+  margin: 4px 0 0;
+  overflow-y: auto;
+  font-size: 12px;
+}
+.pp-more ul {
+  padding-left: 0;
+  list-style: none;
+}
+.pp-more li span {
+  color: #6c757d;
+}
+
+.queue-detail {
+  margin-top: 6px;
+  cursor: default;
+}
+.queue-detail .pp-actions {
+  margin-top: 0;
+}
+.pp-pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.pp-pager .btn {
+  padding: 0 8px;
+}
+.pp-name {
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+.pp-text {
+  max-height: 260px;
+  margin: 0;
+  padding: 6px;
+  overflow: auto;
+  background-color: #f8f8f8;
+  font-size: 11px;
+  white-space: pre-wrap;
+}

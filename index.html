@@ -18,7 +18,7 @@
     <title>WIS 2.0 Live</title>
     <link rel="canonical" href="https://benwebb.com/wis-live/"/>
     <meta property="og:title" content="WIS 2.0 Live"/>
-    <meta property="og:image" content="https://benwebb.com/assets/images/ben.png"/>
+    <meta property="og:image" content="https://benwebb.com/assets/images/wis.png"/>
     <meta property="og:url" content="https://benwebb.com/wis-live/"/>
     <meta property="og:site_name" content="WIS 2.0 Live"/>
     <meta property="og:description" 
@@ -44,10 +44,10 @@
     <!--
         - JavaScript
     -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css"/>
-    <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"/>
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script src="https://unpkg.com/mqtt@5.0.1/dist/mqtt.min.js"></script>
-    <script src="./assets/js/wis.js"></script>
+    <script src="./assets/js/wis.js" defer></script>
 </head>
 
 <body class="body">
@@ -58,22 +58,4 @@
     <noscript><img src="https://queue.simpleanalyticscdn.com/noscript.gif" alt="" referrerpolicy="no-referrer-when-downgrade"/></noscript>
 </body>
 
-<script>
-var map = L.map('map', {worldCopyJump: true}).setView([30, 0], 3);
-map.attributionControl.setPrefix('');
-map.on('zoomend', function() {
-    reRender();
-});
-
-L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: 16,
-    minZoom: 2,
-    attribution: 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ',
-    attributionControl: false
-}).addTo(map);
-
-L.control.info({
-    position: 'topright'
-}).addTo(map);
-</script>
 </html>
