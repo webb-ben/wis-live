@@ -10,7 +10,7 @@ String.prototype.hexDecode = function(){
 }
 
 // Map
-const MAX_POINTS = 50000;        // Oldest points are dropped beyond this...
+const MAX_POINTS = 100000;        // Oldest points are dropped beyond this...
 const MAX_DECODED_POINTS = 30000;  // ...with reports decoded from files capped separately so they can't crowd out the rest
 const FADE_MS = 60 * 60 * 1000;  // Points fade over an hour
 const PULSE_MS = 1600;           // Length of the ripple on new arrivals
@@ -67,8 +67,8 @@ const LAYER_GROUPS = [
             title: 'Download and decode the BUFR that WIS2 centres pass on to the GTS (centres ending -wis2-to-gts), and plot the reports inside' },
     ] },
 ];
-// Off at first: the gateways, decoding, GTS satellites and aircraft tracks
-const hiddenLayers = new Set(['gts', 'wis2gts', 'files', 'gts-satellite', 'gts-tracks']);
+// Off at first: the gateways, GTS satellites and aircraft tracks
+const hiddenLayers = new Set(['gts', 'wis2gts', 'gts-satellite', 'gts-tracks']);
 const LAYER_PARENTS = Object.fromEntries(LAYER_GROUPS.flatMap((g) => g.layers).filter((l) => l.parent).map((l) => [l.key, l.parent]));
 
 function ancestors(key) {
@@ -270,7 +270,8 @@ map.on('load', () => {
         var record = records.get(e.features[0].id);
         map.getCanvas().style.cursor = 'pointer';
         if (!record) return hoverLabel.remove();
-        hoverLabel.setLngLat(record.coords).setText(record.wsi || record.props.metadata_id || record.centre).addTo(map);
+        var route = record.subLayer && record.subLayer.endsWith('-aircraft') ? trackRoute([record]) : null;
+        hoverLabel.setLngLat(record.coords).setText((record.wsi || record.props.metadata_id || record.centre) + (route ? ` · ${route}` : '')).addTo(map);
     });
     map.on('mouseleave', 'points', () => {
         map.getCanvas().style.cursor = '';
@@ -473,7 +474,7 @@ class LegendControl {
             ${l.option ? `
             <label class="legend-toggle legend-option form-switch" data-layer="${l.key}"${l.title ? ` title="${l.title}"` : ''}>
                 <input type="checkbox" class="form-check-input" role="switch"${hiddenLayers.has(l.key) ? '' : ' checked'}>
-                <span>${l.label}<small>${l.hint}</small></span>
+                <span>${l.label}${l.hint ? `<small>${l.hint}</small>` : ''}</span>
             </label>` : `
             <label class="legend-toggle${l.parent ? ` legend-sub legend-depth-${ancestors(l.key).length}` : ''}${isGroupRow(g, l) ? ' legend-parent' : ''}" data-layer="${l.key}"${l.optIn || g.layers.some((c) => c.parent === l.key && c.optIn) ? '' : ' hidden'}${l.title ? ` title="${l.title}"` : ''}>
                 <input type="checkbox" class="form-check-input"${hiddenLayers.has(l.key) ? '' : ' checked'}>
@@ -488,13 +489,7 @@ class LegendControl {
             var key = row.dataset.layer;
             row.querySelector('input').addEventListener('change', (e) => {
                 e.target.checked ? hiddenLayers.delete(key) : hiddenLayers.add(key);
-                // Decoding runs for a layer that is on and whose parent is on too
-                var hidden = effectiveHidden();
-                Object.keys(DECODE_LAYERS).forEach((k) => {
-                    var on = !hidden.includes(k);
-                    if (on !== decodeEnabled.has(k)) setDecodeEnabled(k, on);
-                });
-                status.hidden = !decodeEnabled.size;
+                syncDecoding();
                 syncSublayers();
                 applyMapFilter();
             });
@@ -505,7 +500,18 @@ class LegendControl {
             sub.querySelector('input').disabled = parentOff;
             sub.classList.toggle('legend-disabled', parentOff);
         });
+        // Decoding runs for a layer or option that is on and whose parents are on too
+        var syncDecoding = () => {
+            var hidden = effectiveHidden();
+            Object.keys(DECODE_LAYERS).forEach((k) => {
+                var on = !hidden.includes(k);
+                if (on !== decodeEnabled.has(k)) setDecodeEnabled(k, on);
+            });
+            status.hidden = !decodeEnabled.size;
+        };
         syncSublayers();
+        // The decode layers are defined further down the script, so start once it has run
+        setTimeout(syncDecoding);
         setInterval(() => {
             if (!decodeEnabled.size) return;
             var plotted = [...decodeEnabled].reduce((n, key) => n + decodePlotted[key], 0);
@@ -1155,6 +1161,11 @@ function renderDecoded(out, title, result) {
         if (key.wind && values.has(11001)) text += ` from ${values.get(11001)[0]}°`;
         tiles.push(`<div class="pp-tile"><div>${esc(key.label)}</div><strong>${esc(text)}</strong></div>`);
     }
+    // Aircraft: where the flight is from and going, and what it's doing
+    var route = flightRoute(values.has(1111) && values.get(1111)[0], values.has(1112) && values.get(1112)[0]);
+    if (route) tiles.unshift(`<div class="pp-tile"><div>Route</div><strong>${esc(route)}</strong></div>`);
+    var phase = values.has(8009) ? flightPhase(values.get(8009)[0]) : null;
+    if (phase) tiles.push(`<div class="pp-tile"><div>Flight phase</div><strong>${esc(phase)}</strong></div>`);
 
     out.innerHTML = `
         ${result.subsets > 1 ? `
@@ -3297,6 +3308,8 @@ function buildTracks() {
             topic: last.topic.toLowerCase(),
         };
         if (kind === 'aircraft') {
+            var route = trackRoute(reports);
+            if (route) common.label += ` · ${route}`;
             features.push(...aircraftShapes(runs, { ...common, layer: 'gts-tracks' }));
             continue;
         }
@@ -3379,6 +3392,42 @@ function aircraftShapes(runs, common) {
             lastStep.alt, 'marker', lastStep.id, lastStep.alt * 0.95, lastStep.alt * 1.05);
     }
     return out;
+}
+
+// Airport codes from 001111 (origination) and 001112 (destination); blanks and
+// "???" mean unknown. Returns e.g. "DUB → TFS", "DUB → ?" or null.
+function cleanAirport(code) {
+    var c = typeof code === 'string' ? code.trim().toUpperCase() : '';
+    return /^[A-Z0-9]{3,4}$/.test(c) ? c : null;
+}
+
+function flightRoute(from, to) {
+    from = cleanAirport(from);
+    to = cleanAirport(to);
+    return from || to ? `${from || '?'} → ${to || '?'}` : null;
+}
+
+// Detailed phase of flight, code table 0 08 009
+function flightPhase(code) {
+    if ([0, 1, 3, 4].includes(code)) return 'Level flight';
+    if (code === 2) return 'Unsteady';
+    if (code === 5 || (code >= 7 && code <= 10)) return 'Climbing';
+    if (code === 6 || (code >= 11 && code <= 14)) return 'Descending';
+    return null;
+}
+
+// The route most of a track's reports agree on, since many leave it blank
+function trackRoute(reports) {
+    var vote = (id) => {
+        var counts = new Map();
+        for (var r of reports) {
+            var row = r.decoded && r.decoded.rows.find((x) => x[0] === id);
+            var code = row && cleanAirport(row[2]);
+            if (code) counts.set(code, (counts.get(code) || 0) + 1);
+        }
+        return [...counts].sort((a, b) => b[1] - a[1]).map(([c]) => c)[0];
+    };
+    return flightRoute(vote(1111), vote(1112));
 }
 
 // Which GTS sublayer a report belongs to, from the identifiers it carries.
