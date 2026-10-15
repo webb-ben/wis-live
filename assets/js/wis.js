@@ -23,17 +23,53 @@ const COLORS = {
 // Kinds of observation, shared by the Cache and GTS-to-WIS2 groups so each kind
 // has one colour on the map. Cache points are sorted by topic (see topicClass),
 // decoded reports by the identifiers they carry (see reportClass).
+// Colours follow the domain (land green, sky cyan, sea navy, buoy orange,
+// space near-black, alert red) and are spread across hues to stay distinct
 const OBS_CLASSES = {
-    station: { label: 'Weather stations', color: '#38965A', title: 'Surface observations from fixed stations' },
-    upperair: { label: 'Upper-air soundings', color: '#5f3dc4', title: 'Profiles through the atmosphere (radiosondes, TEMP)' },
-    aircraft: { label: 'Aircraft', color: '#1098ad', title: 'Observations from aircraft (AMDAR, AIREP)' },
-    ship: { label: 'Ships', color: '#364fc7', title: 'Observations from ships and other mobile stations' },
-    buoy: { label: 'Buoys and floats', color: '#e8590c', title: 'Ocean observations from buoys, floats and moorings' },
-    satellite: { label: 'Space-based (satellites)', color: '#868e96', title: 'Observations from satellites (winds, radiances, occultations)' },
-    webcam: { label: 'Webcam images', color: '#F8A700', cacheOnly: true, title: 'Camera images' },
+    station: { label: 'Weather stations', color: '#2f9e44', title: 'Surface observations from fixed stations' },
+    upperair: { label: 'Upper-air soundings', color: '#7048e8', title: 'Profiles through the atmosphere (radiosondes, TEMP)' },
+    aircraft: { label: 'Aircraft', color: '#15aabf', title: 'Observations from aircraft (AMDAR, AIREP)' },
+    ship: { label: 'Ships', color: '#1c3d8f', title: 'Observations from ships and other mobile stations' },
+    buoy: { label: 'Buoys and floats', color: '#f76707', title: 'Ocean observations from buoys, floats and moorings' },
+    satellite: { label: 'Space-based (satellites)', color: '#212529', title: 'Observations from satellites (winds, radiances, occultations)' },
+    webcam: { label: 'Webcam images', color: '#fcc419', cacheOnly: true, title: 'Camera images' },
     warning: { label: 'Warnings and alerts', color: '#e03131', cacheOnly: true, title: 'Weather warnings, alerts and advisories, including CAP messages' },
-    other: { label: 'Other', color: '#c0a8e8', title: 'Anything not in the groups above' },
+    other: { label: 'Other', color: '#868e96', title: 'Anything not in the groups above' },
 };
+// Measures stations, ships and buoys can be coloured by (see setColourBy)
+// `period` (hours): totals over exactly that window, as 013011 after 004024 = -period,
+// or the older fixed-window element given in `ids`
+const PRECIP_STOPS = [[0, '#ffffff'], [0.2, '#c6dbef'], [1, '#6baed6'], [5, '#2171b5'], [15, '#08306b'], [30, '#4a1486']];
+const METRICS = {
+    temp: { group: 'Air', label: 'Temperature', unit: '°C', ids: [12101, 12001], convert: (v) => v - 273.15,
+        stops: [[-30, '#313695'], [-15, '#4575b4'], [0, '#abd9e9'], [10, '#ffffbf'], [20, '#fdae61'], [30, '#d73027'], [40, '#a50026']] },
+    dew: { group: 'Air', label: 'Dew point', unit: '°C', ids: [12103, 12003], convert: (v) => v - 273.15,
+        stops: [[-30, '#543005'], [-10, '#bf812d'], [5, '#f6e8c3'], [15, '#80cdc1'], [25, '#01665e']] },
+    rh: { group: 'Air', label: 'Humidity', unit: '%', ids: [13003],
+        stops: [[0, '#8c510a'], [30, '#d8b365'], [60, '#c7eae5'], [80, '#5ab4ac'], [100, '#01665e']] },
+    mslp: { group: 'Air', label: 'Pressure (MSL)', unit: 'hPa', ids: [10051], convert: (v) => v / 100,
+        stops: [[970, '#762a83'], [995, '#c2a5cf'], [1013, '#f7f7f7'], [1025, '#a6dba0'], [1040, '#1b7837']] },
+    wind: { group: 'Air', label: 'Wind speed', unit: 'm/s', ids: [11002],
+        stops: [[0, '#f7fbff'], [5, '#9ecae1'], [10, '#4292c6'], [18, '#08519c'], [25, '#08306b']] },
+    precip1: { group: 'Precipitation', label: 'Precipitation, last hour', unit: 'mm', period: 1, ids: [13019], stops: PRECIP_STOPS },
+    precip6: { group: 'Precipitation', label: 'Precipitation, last 6 hours', unit: 'mm', period: 6, ids: [13021], stops: PRECIP_STOPS },
+    precip24: { group: 'Precipitation', label: 'Precipitation, last 24 hours', unit: 'mm', period: 24, ids: [13023], stops: PRECIP_STOPS },
+    // Marine: ships and buoys
+    sst: { group: 'Sea surface (ships and buoys)', label: 'Sea temperature', unit: '°C', ids: [22043, 22049, 22042], convert: (v) => v - 273.15,
+        stops: [[-2, '#313695'], [5, '#4575b4'], [12, '#abd9e9'], [18, '#ffffbf'], [24, '#fdae61'], [30, '#d73027']] },
+    waves: { group: 'Sea surface (ships and buoys)', label: 'Wave height', unit: 'm', ids: [22070, 22021, 22022],
+        stops: [[0, '#f7fcf0'], [1, '#ccebc5'], [2.5, '#7bccc4'], [4, '#2b8cbe'], [8, '#084081']] },
+};
+// Surface observations that can be coloured by a measure: stations, ships and buoys, cache and GTS
+const COLOURABLE = ['station', 'ship', 'buoy'].flatMap((k) => [`cache-${k}`, `gts-${k}`]);
+const IS_STATION = ['in', ['get', 'layer'], ['literal', COLOURABLE]];
+const NO_VALUE_COLOR = '#ced4da';
+const METRIC_QUEUE_MAX = 300;  // Station files waiting to be decoded, newest kept
+let colourBy = 'kind';
+let colouredOnly = false;  // Hide every point not coloured by the measure
+let metricQueue = [];
+let metricBusy = false;
+
 // GTS satellite bulletins are numerous and large, so that sublayer is off until
 // asked for (and the bulletins aren't downloaded until then)
 const GTS_OPT_IN = ['satellite'];
@@ -67,8 +103,8 @@ const LAYER_GROUPS = [
             title: 'Download and decode the BUFR that WIS2 centres pass on to the GTS (centres ending -wis2-to-gts), and plot the reports inside' },
     ] },
 ];
-// Off at first: the gateways, GTS satellites and aircraft tracks
-const hiddenLayers = new Set(['gts', 'wis2gts', 'gts-satellite', 'gts-tracks']);
+// Off at first: WIS2-to-GTS, satellites (cache and GTS) and aircraft tracks
+const hiddenLayers = new Set(['wis2gts', 'cache-satellite', 'gts-satellite', 'gts-tracks']);
 const LAYER_PARENTS = Object.fromEntries(LAYER_GROUPS.flatMap((g) => g.layers).filter((l) => l.parent).map((l) => [l.key, l.parent]));
 
 function ancestors(key) {
@@ -81,7 +117,6 @@ function ancestors(key) {
 function effectiveHidden() {
     return [...new Set([...hiddenLayers, ...Object.keys(LAYER_PARENTS).filter((k) => ancestors(k).some((a) => hiddenLayers.has(a)))])];
 }
-let showSpace = true;  // Satellite products, switched as a group across every layer
 const seenLayers = new Set();
 const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -90,6 +125,39 @@ try {
     projection = localStorage.getItem('wis-projection') === 'mercator' ? 'mercator' : 'globe';
 } catch (err) {
     // Storage unavailable; use the default
+}
+
+// Start near the visitor without asking for their location: the time zone's
+// UTC offset gives a longitude and its region a rough latitude. Nothing is sent
+// anywhere. If they have already let this site see their location, use it.
+function guessCentre() {
+    // The standard (winter) offset, so daylight saving doesn't shift the guess an hour east
+    var year = new Date().getFullYear();
+    var offset = Math.max(new Date(year, 0, 1).getTimezoneOffset(), new Date(year, 6, 1).getTimezoneOffset());
+    var lon = Math.max(-170, Math.min(170, -offset / 60 * 15));
+    var zone = '';
+    try {
+        zone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    } catch (err) {
+        // No time zone support; the offset alone will do
+    }
+    var region = zone.split('/')[0];
+    var lat = {
+        America: zone.includes('Argentina') || /Sao_Paulo|Santiago|Lima|Bogota|Montevideo|La_Paz|Asuncion|Caracas/.test(zone) ? -15 : 38,
+        Europe: 50, Africa: 5, Asia: 30, Australia: -27, Pacific: -15, Atlantic: 30, Indian: -10, Antarctica: -75,
+    }[region];
+    return [lon, lat === undefined ? 30 : lat];
+}
+
+function centreOnVisitor() {
+    if (!navigator.permissions || !navigator.geolocation) return;
+    navigator.permissions.query({ name: 'geolocation' }).then((status) => {
+        if (status.state !== 'granted') return;
+        navigator.geolocation.getCurrentPosition(
+            (pos) => map.easeTo({ center: [pos.coords.longitude, pos.coords.latitude], duration: 1500 }),
+            () => {},  // Keep the guess
+            { maximumAge: 60 * 60 * 1000, timeout: 10000 });
+    }).catch(() => {});
 }
 
 const map = new maplibregl.Map({
@@ -116,7 +184,7 @@ const map = new maplibregl.Map({
             'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 5, 1, 7, 0],
         },
     },
-    center: [0, 30],
+    center: guessCentre(),
     zoom: 2,
     minZoom: 0,
     maxZoom: 15,
@@ -136,6 +204,43 @@ let toRemove = [];
 let toUpdate = [];
 let pulses = [];            // Recent arrivals, drawn as expanding rings
 let animating = false;
+
+// A darker shade of a hex colour, for outlines that match their fill
+function darken(hex, amount = 0.45) {
+    var n = parseInt(hex.trim().slice(1), 16);
+    var channel = (shift) => Math.round(((n >> shift) & 255) * (1 - amount));
+    return `#${[16, 8, 0].map((shift) => channel(shift).toString(16).padStart(2, '0')).join('')}`;
+}
+
+function isGateway(record) {
+    return record.decodedLayer === 'gts' || record.decodedLayer === 'wis2gts';
+}
+
+// Layers that draw observation points: WIS2 circles and GTS diamonds
+const POINT_LAYERS = ['points', 'points-gts'];
+
+// Point size by zoom, shared by the WIS2 circles and the GTS diamonds
+const POINT_RADIUS = ['interpolate', ['linear'], ['zoom'], 1, 2, 4, 4.5, 8, 8, 15, 16];
+const DIAMOND_HALF = 14;  // Half-diagonal of the diamond image, in image pixels (pixel ratio 2)
+// icon-size per pixel of circle radius, with diamonds a little larger so their area matches a circle's
+const DIAMOND_SCALE = 1.3 / (DIAMOND_HALF / 2);
+
+// A diamond as a signed distance field, so MapLibre can tint it per point and
+// draw an outline (halo). Encoding as TinySDF: 0.75 at the edge, 8 px radius.
+function diamondSdf() {
+    var size = 2 * (DIAMOND_HALF + 8), c = size / 2, radius = 8, cutoff = 0.25;
+    var data = new Uint8ClampedArray(size * size * 4);
+    for (var y = 0; y < size; y++) {
+        for (var x = 0; x < size; x++) {
+            // Distance outside the diamond |x| + |y| = half (negative inside)
+            var d = (Math.abs(x + 0.5 - c) + Math.abs(y + 0.5 - c) - DIAMOND_HALF) / Math.SQRT2;
+            var i = (y * size + x) * 4;
+            data[i] = data[i + 1] = data[i + 2] = 255;
+            data[i + 3] = 255 - 255 * (d / radius + cutoff);
+        }
+    }
+    return { width: size, height: size, data };
+}
 
 // Altitude in metres to a colour, light near the ground to deep at cruise height
 const ALTITUDE_COLORS = ['interpolate', ['linear'], ['coalesce', ['get', 'alt'], 0],
@@ -221,30 +326,57 @@ map.on('load', () => {
         source: 'points',
         layout: { 'circle-sort-key': ['get', 'order'] },  // Newest on top
         paint: {
-            // Origin-only messages are hollow rings; cache copies are filled
+            // Origin-only messages are hollow rings; cache copies are filled, outlined a shade darker
             'circle-color': ['get', 'color'],
-            // GTS gateway reports get a dark outline, other cache copies a white one
-            'circle-stroke-color': ['case', ['get', 'origin'], ['get', 'color'], ['get', 'gateway'], '#343a40', '#ffffff'],
+            'circle-stroke-color': ['case', ['get', 'origin'], ['get', 'color'], ['get', 'outline']],
             'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 1, 0.75, 6, 1.5],
-            'circle-radius': ['interpolate', ['linear'], ['zoom'], 1, 2, 4, 4.5, 8, 8, 15, 16],
+            'circle-radius': POINT_RADIUS,
             'circle-pitch-alignment': 'map',
+        },
+    });
+    // GTS gateway reports are diamonds with a dark outline, so they stay apart
+    // from WIS2 circles even when zoomed out and the outlines are too thin to see
+    map.addImage('diamond', diamondSdf(), { sdf: true, pixelRatio: 2 });
+    map.addLayer({
+        id: 'points-gts',
+        type: 'symbol',
+        source: 'points',
+        layout: {
+            'icon-image': 'diamond',
+            'icon-size': ['interpolate', ['linear'], ['zoom'], ...POINT_RADIUS.slice(3).map((v, i) => (i % 2 ? v * DIAMOND_SCALE : v))],
+            'icon-allow-overlap': true,
+            'icon-ignore-placement': true,
+            'icon-pitch-alignment': 'map',
+            'symbol-sort-key': ['get', 'order'],
+        },
+        paint: {
+            'icon-color': ['get', 'color'],
+            'icon-halo-color': ['get', 'outline'],
+            'icon-halo-width': ['interpolate', ['linear'], ['zoom'], 1, 0.75, 6, 1.5],
         },
     });
     paintAge();
     setInterval(paintAge, 30 * 1000);
     applyMapFilter();
+    // Open coloured by temperature, near the visitor
+    var legend = document.querySelector('.legend');
+    if (legend) {
+        legend.querySelector('.legend-colour select').value = 'temp';
+        setColourBy('temp', legend);
+    }
+    centreOnVisitor();
     preloadDecoder();
     flushPoints();
     setInterval(flushPoints, 500);
 
-    map.on('click', 'points', (e) => openPopup(records.get(e.features[0].id)));
+    map.on('click', POINT_LAYERS, (e) => openPopup(records.get(e.features[0].id)));
     map.on('click', 'tracks', (e) => {
         // Points take precedence where both are under the pointer
-        if (map.queryRenderedFeatures(e.point, { layers: ['points'] }).length) return;
+        if (map.queryRenderedFeatures(e.point, { layers: POINT_LAYERS }).length) return;
         openPopup(records.get(e.features[0].properties.recordId || e.features[0].properties.lastId));
     });
     map.on('mousemove', 'tracks', (e) => {
-        if (map.queryRenderedFeatures(e.point, { layers: ['points'] }).length) return;
+        if (map.queryRenderedFeatures(e.point, { layers: POINT_LAYERS }).length) return;
         var f = e.features[0].properties;
         map.getCanvas().style.cursor = 'pointer';
         hoverLabel.setLngLat(e.lngLat).setText(f.alt !== undefined
@@ -266,14 +398,18 @@ map.on('load', () => {
     });
     // Band and arrow sizes are in screen pixels, so rebuild them after zooming
     map.on('zoomend', () => { tracksDirty = true; });
-    map.on('mousemove', 'points', (e) => {
+    map.on('mousemove', POINT_LAYERS, (e) => {
         var record = records.get(e.features[0].id);
         map.getCanvas().style.cursor = 'pointer';
         if (!record) return hoverLabel.remove();
         var route = record.subLayer && record.subLayer.endsWith('-aircraft') ? trackRoute([record]) : null;
-        hoverLabel.setLngLat(record.coords).setText((record.wsi || record.props.metadata_id || record.centre) + (route ? ` · ${route}` : '')).addTo(map);
+        // While colouring by a measure, the point's value too
+        var m = METRICS[colourBy], value = m && e.features[0].properties[`m_${colourBy}`];
+        var text = m && typeof value === 'number' ? formatMetric(value, m)
+            : [record.wsi || record.props.metadata_id || record.centre, route].filter(Boolean).join(' · ');
+        hoverLabel.setLngLat(record.coords).setText(text).addTo(map);
     });
-    map.on('mouseleave', 'points', () => {
+    map.on('mouseleave', POINT_LAYERS, () => {
         map.getCanvas().style.cursor = '';
         hoverLabel.remove();
     });
@@ -305,10 +441,11 @@ function addPoint(record) {
             channel: record.channel,
             centre: record.centre,
             discipline: record.discipline,
-            space: isSpaceBased(record.topic) || /-satellite$/.test(layerOf(record)),
             via: record.decodedLayer || '',
-            gateway: record.decodedLayer === 'gts' || record.decodedLayer === 'wis2gts',
+            gateway: isGateway(record),
+            outline: darken(record.color),
             topic: record.topic.toLowerCase(),
+            ...metricValues(record),
         },
     };
     // While tracks are on, an aircraft is drawn only at its latest report and
@@ -424,8 +561,11 @@ function animatePulses() {
 
 function paintAge() {
     var opacity = ['interpolate', ['linear'], ['-', Date.now(), ['get', 'born']], 0, 1, FADE_MS, 0.35];
+    // While stations are coloured by a measure, everything else steps back
+    if (colourBy !== 'kind') opacity = ['case', IS_STATION, opacity, ['*', opacity, 0.25]];
     map.setPaintProperty('points', 'circle-opacity', ['case', ['get', 'origin'], 0, opacity]);
     map.setPaintProperty('points', 'circle-stroke-opacity', opacity);
+    map.setPaintProperty('points-gts', 'icon-opacity', opacity);
     map.setPaintProperty('tracks', 'line-opacity', ['interpolate', ['linear'], ['-', Date.now(), ['get', 'born']], 0, 0.9, FADE_MS, 0.35]);
 }
 
@@ -469,7 +609,7 @@ class LegendControl {
             ${LAYER_GROUPS.map((g) => `
             <section class="legend-section legend-section-${g.key}">
             <div class="legend-group">${g.label}<small>${g.subtitle}</small></div>
-            <div class="legend-style"><span class="legend-dot legend-sample"></span>${g.key === 'gts' ? 'Dark outline on the map' : 'White outline on the map'}</div>
+            <div class="legend-style"><span class="legend-dot legend-sample"></span>${g.key === 'gts' ? 'Diamonds on the map' : 'Circles on the map'}</div>
             ${g.layers.map((l) => `
             ${l.option ? `
             <label class="legend-toggle legend-option form-switch" data-layer="${l.key}"${l.title ? ` title="${l.title}"` : ''}>
@@ -478,13 +618,32 @@ class LegendControl {
             </label>` : `
             <label class="legend-toggle${l.parent ? ` legend-sub legend-depth-${ancestors(l.key).length}` : ''}${isGroupRow(g, l) ? ' legend-parent' : ''}" data-layer="${l.key}"${l.optIn || g.layers.some((c) => c.parent === l.key && c.optIn) ? '' : ' hidden'}${l.title ? ` title="${l.title}"` : ''}>
                 <input type="checkbox" class="form-check-input"${hiddenLayers.has(l.key) ? '' : ' checked'}>
-                ${isGroupRow(g, l) ? '' : `<span class="legend-dot${l.ring ? ' legend-ring' : ''}${l.track ? ' legend-line' : ''}" style="--color: ${l.color}"></span>`}${l.label}
+                ${isGroupRow(g, l) ? '' : `<span class="legend-dot${l.ring ? ' legend-ring' : ''}${l.track ? ' legend-line' : ''}" style="--color: ${l.color}${l.track ? '' : `; --outline: ${darken(l.color)}`}"></span>`}${l.label}
             </label>`}`).join('')}
             </section>`).join('')}
+            <div class="legend-colour">
+                <label>Colour surface observations by
+                    <select class="form-select form-select-sm">
+                        <option value="kind">Kind of observation</option>
+                        ${[...new Set(Object.values(METRICS).map((m) => m.group))].map((group) => `
+                        <optgroup label="${group}">
+                            ${Object.entries(METRICS).filter(([, m]) => m.group === group).map(([key, m]) => `<option value="${key}">${m.label}</option>`).join('')}
+                        </optgroup>`).join('')}
+                    </select>
+                </label>
+                <div class="legend-scale" hidden><span></span><i></i><span></span></div>
+                <label class="legend-coloured-only" hidden><input type="checkbox" class="form-check-input"> Only show points with a value                <div class="legend-note legend-colour-status" hidden></div></label>
+            </div>
             <div class="legend-note legend-decode" hidden></div>
             <div class="legend-note">Pulses mark new arrivals; points fade over an hour</div>`;
 
         var status = container.querySelector('.legend-decode');
+        container.querySelector('.legend-colour select').addEventListener('change', (e) => setColourBy(e.target.value, container));
+        container.querySelector('.legend-coloured-only input').addEventListener('change', (e) => {
+            colouredOnly = e.target.checked;
+            applyMapFilter();
+        });
+        setInterval(() => showColourStatus(container), 1000);
         container.querySelectorAll('.legend-toggle[data-layer]').forEach((row) => {
             var key = row.dataset.layer;
             row.querySelector('input').addEventListener('change', (e) => {
@@ -517,7 +676,6 @@ class LegendControl {
             var plotted = [...decodeEnabled].reduce((n, key) => n + decodePlotted[key], 0);
             status.textContent = decoderReady || plotted
                 ? `${plotted.toLocaleString()} reports plotted · ${decodeQueue.length} files waiting`
-                    + (decodeEnabled.has('gts') || decodeEnabled.has('wis2gts') ? ' · tilt to see aircraft altitude' : '')
                 : 'Loading decoder…';
         }, 1000);
         return container;
@@ -591,7 +749,7 @@ function buildPopup(record) {
     div.className = 'pp';
     div.innerHTML = `
         <header class="pp-head">
-            <span class="pp-dot${record.channel !== 'cache' ? ' pp-ring' : ''}" style="--color: ${record.color}"></span>
+            <span class="pp-dot${record.channel !== 'cache' ? ' pp-ring' : ''}${isGateway(record) ? ' is-gts' : ''}" style="--color: ${record.color}; --outline: ${darken(record.color)}"></span>
             <div>
                 <div class="pp-title"></div>
                 <div class="pp-sub">
@@ -655,6 +813,7 @@ function buildPopup(record) {
 async function decodeRecord(record, out, title) {
     try {
         record.decoded = await decodeSource(record.source, record.wsi, out);
+        setFeatureProperties(record, metricValues(record));
         showDecoded(out, title, record.decoded);
         var forecast = out.parentNode && out.parentNode.querySelector('.pp-forecast');
         if (forecast && forecast.rerender) forecast.rerender();
@@ -2193,12 +2352,11 @@ function matchesFilters(item) {
         && (!filters.centres.size || filters.centres.has(item.centre))
         && (!filters.format || item.format === filters.format)
         && (!filters.disciplines.size || filters.disciplines.has(item.discipline))
-        && (!filters.text || item.topic.toLowerCase().includes(filters.text))
-        && (showSpace || !isSpaceBased(item.topic));
+        && (!filters.text || item.topic.toLowerCase().includes(filters.text));
 }
 
 function filtersActive() {
-    return !!(filters.text || filters.channel || filters.centres.size || filters.format || filters.disciplines.size || !showSpace);
+    return !!(filters.text || filters.channel || filters.centres.size || filters.format || filters.disciplines.size);
 }
 
 function applyMapFilter() {
@@ -2208,7 +2366,6 @@ function applyMapFilter() {
     if (filters.format) expr.push(['==', ['get', 'format'], filters.format]);
     if (filters.disciplines.size) expr.push(['in', ['get', 'discipline'], ['literal', [...filters.disciplines]]]);
     if (filters.text) expr.push(['in', filters.text, ['get', 'topic']]);
-    if (!showSpace) expr.push(['!', ['get', 'space']]);
     if (hiddenLayers.size) {
         var hidden = effectiveHidden();
         expr.push(['!', ['in', ['get', 'layer'], ['literal', hidden]]]);
@@ -2219,7 +2376,11 @@ function applyMapFilter() {
     if (!map.getLayer('points')) return;
     var tracksOn = !effectiveHidden().includes('gts-tracks');
     // With aircraft tracks on, tracked aircraft are drawn in the air instead of on the ground
-    map.setFilter('points', tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr);
+    // Optionally only the points coloured by the selected measure
+    if (colouredOnly && METRICS[colourBy]) expr.push(['all', IS_STATION, ['has', `m_${colourBy}`]]);
+    var shown = tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr;
+    map.setFilter('points', [...shown, ['!=', ['get', 'gateway'], true]]);
+    map.setFilter('points-gts', [...shown, ['==', ['get', 'gateway'], true]]);
     map.setFilter('pulses', tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : (expr.length > 1 ? expr : null));
     map.setFilter('tracks', [...expr, ['==', ['geometry-type'], 'LineString']]);
     map.setFilter('track-ribbons', [...expr, ['==', ['geometry-type'], 'Polygon']]);
@@ -2374,7 +2535,6 @@ class QueueControl {
                     ${Object.entries(DISCIPLINES).map(([key, label]) =>
                         `<button type="button" class="queue-chip" data-discipline="${key}" aria-pressed="false">${label}</button>`).join('')}
                 </div>
-                <label class="form-check-label queue-space-row" title="Satellite products, on the map and in this list"><input type="checkbox" class="form-check-input queue-space" checked> Include space-based observations</label>
                 <div class="queue-controls">
                     <label class="form-check-label"><input type="checkbox" class="form-check-input queue-mapped"> On map only</label>
                     <span>
@@ -2389,12 +2549,6 @@ class QueueControl {
         queueCount = sidebar.querySelector('.queue-count');
         queueFilter = sidebar.querySelector('input[type=search]');
         queueMapped = sidebar.querySelector('.queue-mapped');
-        var queueSpace = sidebar.querySelector('.queue-space');
-        queueSpace.addEventListener('change', function(){
-            showSpace = queueSpace.checked;
-            if (!showSpace) decodeQueue = decodeQueue.filter((job) => !isSpaceBased(job.topic));
-            applyFilters();
-        });
         queuePause = sidebar.querySelector('.queue-pause');
         centreList = sidebar.querySelector('.centre-list');
         centreSearch = sidebar.querySelector('.centre-menu input');
@@ -2449,7 +2603,6 @@ class QueueControl {
             filters.text = filters.channel = filters.format = '';
             filters.disciplines.clear();
             filters.centres.clear();
-            showSpace = queueSpace.checked = true;
             queueFilter.value = queueChannel.value = queueFormat.value = centreSearch.value = '';
             chips.forEach((chip) => chip.setAttribute('aria-pressed', 'false'));
             centreList.querySelectorAll('input').forEach((input) => { input.checked = false; });
@@ -2484,7 +2637,7 @@ function queueMessage(topic, message, record, feature) {
         format: feature ? formatOf(feature) : 'other',
         dataId: feature && feature.properties ? feature.properties.data_id : null,
         // The decode layer this message goes to, when that layer is on
-        decodeKind: feature && !record ? Object.keys(DECODE_LAYERS).find((k) => decodeEnabled.has(k) && DECODE_LAYERS[k](topic, feature)) : null,
+        decodeKind: feature && !record ? Object.keys(DECODE_LAYERS).find((k) => decodeEnabled.has(k) && DECODE_LAYERS[k](topic, feature) && !satelliteSkipped(k, topic)) : null,
         message: message,
         record: record,
         row: null,
@@ -2589,9 +2742,12 @@ function paintQueueDot(dot, entry) {
         dot.classList.add('queue-dot-ring');
         dot.style.borderColor = COLORS.origin;
     } else if (entry.record) {
-        dot.style.background = dot.style.borderColor = entry.record.color;
+        dot.style.background = entry.record.color;
+        dot.style.borderColor = darken(entry.record.color);
+        if (isGateway(entry.record)) dot.classList.add('is-gts');
     } else if (entry.decodeKind) {
         dot.classList.add('queue-dot-pending');
+        if (entry.decodeKind === 'gts' || entry.decodeKind === 'wis2gts') dot.classList.add('is-gts');
         dot.style.borderColor = COLORS[entry.decodeKind];
     } else {
         dot.classList.add('queue-dot-none');  // Not on the map
@@ -2818,7 +2974,9 @@ function onMessage(topic, feature) {
         born: Date.now(),
     };
     if (channel === 'cache') record.color = OBS_CLASSES[topicClass(record)].color;
-    return addPoint(record);
+    var added = addPoint(record);
+    if (added === record) queueStationDecode(record);
+    return added;
 }
 
 // Points as-is; small areas (e.g. station Polygons) at their center.
@@ -3056,14 +3214,19 @@ let decodeQueue = [];
 let decodeBusy = false;
 const decodeSeen = new Set();
 
+// Satellite files are only fetched while their group is on
+function satelliteSkipped(kind, topic) {
+    if (kind === 'gts') return GATEWAY_SATELLITE.test(topic) && effectiveHidden().includes('gts-satellite');
+    if (kind === 'files') return isSpaceBased(topic) && effectiveHidden().includes('cache-satellite');
+    return false;
+}
+
 function queueDecode(kind, topic, feature) {
     var props = feature.properties || {};
     var link = (feature.links || []).find((l) => l.rel == 'canonical' && corsFriendly(l.href));
     // Each cache republishes the file; take the first copy a browser can download
-    if (!link || decodeSeen.has(props.data_id) || (!showSpace && isSpaceBased(topic))) return;
-    // Satellite files only while their group is on
-    if (kind === 'gts' && GATEWAY_SATELLITE.test(topic) && effectiveHidden().includes('gts-satellite')) return;
-    if (kind === 'files' && isSpaceBased(topic) && effectiveHidden().includes('cache-satellite')) return;
+    if (!link || decodeSeen.has(props.data_id)) return;
+    if (satelliteSkipped(kind, topic)) return;
     decodeSeen.add(props.data_id);
     if (decodeSeen.size > DATA_LINKS_MAX) decodeSeen.delete(decodeSeen.values().next().value);
     // XML needs no decoder, so it skips the queue rather than waiting behind BUFR
@@ -3195,6 +3358,133 @@ function plotCitypage(job, xml) {
     linkDecoded(props.data_id, record);
 }
 
+// ---------- Colouring stations, ships and buoys by a measured value. Values come from
+// decoded data: GTS and decoded-file reports have it already; cache stations
+// are downloaded and decoded in the background while a measure is selected.
+// Precipitation totals (013011) by the window before them (004024, hours ago)
+function precipitationTotals(rows) {
+    var totals = new Map(), period = null;
+    for (var [id, , value] of rows) {
+        if (id === 4024 && typeof value === 'number') period = -value;
+        else if (id === 13011 && typeof value === 'number' && period > 0 && !totals.has(period)) totals.set(period, value);
+    }
+    return totals;
+}
+
+function formatMetric(value, m) {
+    var digits = m.unit === '%' ? 0 : 1;
+    return `${value.toFixed(digits)} ${m.unit}`;
+}
+
+// Feature properties ("m_temp", ...) for the measures a record's decoded data holds
+function metricValues(record) {
+    var rows = record.decoded && record.decoded.rows;
+    if (!rows) return {};
+    var out = {};
+    var totals = precipitationTotals(rows);
+    for (var [key, m] of Object.entries(METRICS)) {
+        var row = m.ids.map((id) => rows.find((r) => r[0] === id && typeof r[2] === 'number')).find(Boolean);
+        var value = m.period && totals.has(m.period) ? totals.get(m.period) : row ? row[2] : undefined;
+        // Negative precipitation codes trace amounts
+        if (m.period && value < 0) value = 0;
+        if (value !== undefined) out[`m_${key}`] = m.convert ? m.convert(value) : value;
+    }
+    return out;
+}
+
+function setColourBy(key, legend) {
+    colourBy = key;
+    var m = METRICS[key];
+    var color = ['get', 'color'];
+    if (m) {
+        var value = ['get', `m_${key}`];
+        color = ['case',
+            ['all', IS_STATION, ['has', `m_${key}`]], ['interpolate', ['linear'], value, ...m.stops.flat()],
+            IS_STATION, NO_VALUE_COLOR,
+            ['get', 'color']];
+        // Outlines follow the same scale, darkened
+        var outline = ['case',
+            ['all', IS_STATION, ['has', `m_${key}`]], ['interpolate', ['linear'], value, ...m.stops.flatMap(([v, c]) => [v, darken(c)])],
+            IS_STATION, darken(NO_VALUE_COLOR),
+            ['get', 'outline']];
+    }
+    map.setPaintProperty('points', 'circle-color', color);
+    map.setPaintProperty('points-gts', 'icon-halo-color', m ? outline : ['get', 'outline']);
+    map.setPaintProperty('points', 'circle-stroke-color', ['case', ['get', 'origin'], ['get', 'color'], m ? outline : ['get', 'outline']]);
+    map.setPaintProperty('points-gts', 'icon-color', color);
+    paintAge();
+    var scale = legend.querySelector('.legend-scale');
+    scale.hidden = !m;
+    legend.querySelector('.legend-coloured-only').hidden = !m;
+    applyMapFilter();
+    if (m) {
+        var [lo, bar, hi] = scale.children;
+        lo.textContent = `${m.stops[0][0]}`;
+        hi.textContent = `${m.stops[m.stops.length - 1][0]} ${m.unit}`;
+        bar.style.background = `linear-gradient(90deg, ${m.stops.map(([v, c]) => c).join(', ')})`;
+        queueStationDecodes();
+    } else {
+        metricQueue = [];
+    }
+    showColourStatus(legend);
+}
+
+function showColourStatus(legend) {
+    var el = legend.querySelector('.legend-colour-status');
+    if (colourBy === 'kind') { el.hidden = true; return; }
+    var points = [...records.values()].filter((r) => COLOURABLE.includes(layerOf(r)));
+    var known = points.filter((r) => r.feature && r.feature.properties[`m_${colourBy}`] !== undefined).length;
+    el.hidden = false;
+    el.textContent = `${known.toLocaleString()} of ${points.length.toLocaleString()} have a value` + (metricQueue.length ? ` · decoding ${metricQueue.length}` : '');
+}
+
+// Cache stations, ships and buoys without decoded data, newest first
+function queueStationDecodes() {
+    metricQueue = [...pools.wis2.values()]
+        .filter((r) => !r.decoded && r.source && !r.metricTried && COLOURABLE.includes(layerOf(r)))
+        .slice(-METRIC_QUEUE_MAX);
+    pumpStationDecodes();
+}
+
+function queueStationDecode(record) {
+    if (colourBy === 'kind' || record.decoded || !record.source || !COLOURABLE.includes(layerOf(record))) return;
+    metricQueue.push(record);
+    if (metricQueue.length > METRIC_QUEUE_MAX) metricQueue.shift();
+    pumpStationDecodes();
+}
+
+async function pumpStationDecodes() {
+    if (metricBusy || !metricQueue.length || colourBy === 'kind') return;
+    metricBusy = true;
+    var record = metricQueue.pop();
+    record.metricTried = true;
+    try {
+        if (records.has(record.id) && !record.decoded) {
+            var data = await fetchData(record.source);
+            if (data.bufr) {
+                var key = record.source.dataId || data.url;
+                var result = JSON.parse(await callDecoder('decode_bufr', data.bytes, record.wsi || '', key));
+                result.key = key;
+                record.decoded = result;
+                setFeatureProperties(record, metricValues(record));
+            }
+        }
+    } catch (err) {
+        console.debug(`Could not decode station ${record.wsi}: ${err.message}`);
+    }
+    metricBusy = false;
+    pumpStationDecodes();
+}
+
+// Adds properties to a point already on the map (or still waiting to be drawn)
+function setFeatureProperties(record, props) {
+    if (!record.feature || !Object.keys(props).length) return;
+    Object.assign(record.feature.properties, props);
+    if (!toAdd.includes(record.feature)) {
+        toUpdate.push({ id: record.id, addOrUpdateProperties: Object.entries(props).map(([key, value]) => ({ key, value })) });
+    }
+}
+
 // ---------- Tracks. Aircraft reports are joined by identifier in time order.
 // A satellite scan has many reports at once, so its track follows the centre of
 // each minute's reports; steps that don't move at orbital speed are dropped,
@@ -3300,7 +3590,6 @@ function buildTracks() {
             color: last.color,
             born: last.born,
             layer: last.subLayer,
-            space: kind === 'satellite',
             channel: last.channel,
             centre: last.centre,
             format: last.format,

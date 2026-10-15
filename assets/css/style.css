@@ -178,10 +178,6 @@
   align-items: center;
   margin-top: 6px;
 }
-.queue-space-row {
-  display: block;
-  margin-top: 6px;
-}
 .queue-list {
   flex: 1;
   overflow-y: auto;
@@ -304,8 +300,8 @@
   letter-spacing: 0;
 }
 /* GTS points have a dark outline on the map; so do their legend dots */
-.legend-section-gts .legend-dot:not(.legend-line) {
-  border-color: #343a40;
+.legend-dot:not(.legend-line):not(.legend-ring) {
+  border-color: var(--outline, #ffffff);
 }
 /* The decode switch sits on the section's tint */
 .legend-section .legend-option {
@@ -1141,11 +1137,11 @@
   --color: #adb5bd;
 }
 .legend-section-wis2 .legend-sample {
-  border-color: #ffffff;
-  box-shadow: 0 0 0 1px #ced4da;
+  --outline: #6c757d;
+  box-shadow: none;
 }
 .legend-section-gts .legend-sample {
-  border-color: #343a40;
+  --outline: #6c757d;
   box-shadow: none;
 }
 /* The disclaimer in the attribution reads as a sentence, not a credit */
@@ -1156,4 +1152,64 @@
 /* Rows that only switch the groups under them: no symbol, so set as a heading */
 .legend-toggle.legend-parent {
   font-weight: 600;
+}
+
+/* Colour weather stations by a measured value */
+.legend-colour {
+  margin: 2px 0 4px;
+  font-size: 11px;
+  color: #495057;
+}
+.legend-colour label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.legend-colour .form-select {
+  width: auto;
+  padding-top: 1px;
+  padding-bottom: 1px;
+  font-size: 11px;
+}
+.legend-scale {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: 10px;
+}
+.legend-scale i {
+  flex: 1;
+  height: 8px;
+  border-radius: 4px;
+}
+
+.legend-coloured-only {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.legend-coloured-only[hidden] {
+  display: none;
+}
+.legend-coloured-only .form-check-input {
+  margin: 0;
+}
+
+/* GTS reports are diamonds on the map, so their legend symbols are too */
+.legend-section-gts .legend-dot:not(.legend-line):not(.legend-ring) {
+  border-radius: 2px;
+  transform: rotate(45deg) scale(0.85);
+}
+
+/* GTS reports are diamonds everywhere: info panel, message list and legend */
+.pp-dot.is-gts,
+.queue-dot.is-gts {
+  border-radius: 2px;
+  transform: rotate(45deg) scale(0.85);
+}
+.pp-dot:not(.pp-ring) {
+  border-color: var(--outline);
+  box-shadow: none;
 }
