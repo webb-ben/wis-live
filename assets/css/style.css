@@ -1500,6 +1500,6 @@
 /* Satellite swath symbol in the map key */
 .legend-dot.key-swath {
   border-radius: 2px;
-  background-color: #ffffff;
-  border-color: #8c8c8c;
+  background-color: rgba(156, 54, 181, 0.45);
+  border-color: #561e64;
 }

@@ -24,14 +24,14 @@ const COLORS = {
 // has one colour on the map. Cache points are sorted by topic (see topicClass),
 // decoded reports by the identifiers they carry (see reportClass).
 // Colours follow the domain (land green, sky cyan, sea navy, buoy orange,
-// satellites white like the clouds they see, alert red) and are spread across hues to stay distinct
+// space purple, alert red) and are spread across hues to stay distinct
 const OBS_CLASSES = {
     station: { label: 'Weather stations', color: '#2f9e44', title: 'Surface observations from fixed stations' },
     upperair: { label: 'Upper-air soundings', color: '#7048e8', title: 'Profiles through the atmosphere (radiosondes, TEMP)' },
     aircraft: { label: 'Aircraft', color: '#15aabf', title: 'Observations from aircraft (AMDAR, AIREP)' },
     ship: { label: 'Ships', color: '#1c3d8f', title: 'Observations from ships and other mobile stations' },
     buoy: { label: 'Buoys and floats', color: '#f76707', title: 'Ocean observations from buoys, floats and moorings' },
-    satellite: { label: 'Space-based (satellites)', color: '#ffffff', title: 'Observations from satellites (winds, radiances, occultations)' },
+    satellite: { label: 'Space-based (satellites)', color: '#9c36b5', title: 'Observations from satellites (winds, radiances, occultations)' },
     webcam: { label: 'Webcam images', color: '#fcc419', cacheOnly: true, title: 'Camera images' },
     warning: { label: 'Warnings and alerts', color: '#e03131', cacheOnly: true, title: 'Weather warnings, alerts and advisories, including CAP messages' },
     other: { label: 'Other', color: '#868e96', title: 'Anything not in the groups above' },
@@ -161,8 +161,10 @@ const METRICS = {
         stops: [[100, '#fde725'], [250, '#7ad151'], [400, '#22a884'], [550, '#2a788e'], [700, '#414487'], [1000, '#440154']] },
     brightness: { group: 'Space-based (satellites)', targets: 'satellite', label: 'Brightness temperature', unit: 'K', ids: [12163],
         stops: [[180, '#000004'], [210, '#320a5e'], [235, '#781c6d'], [255, '#bc3754'], [270, '#ed6925'], [290, '#fbb61a'], [320, '#fcffa4']] },
-    cloudAmount: { group: 'Space-based (satellites)', targets: 'satellite', label: 'Cloud amount', unit: '%', ids: [20081],
-        stops: [[0, '#1971c2'], [25, '#74c0fc'], [50, '#d0ebff'], [100, '#f8f9fa']] },
+    // Matched to the model's total cloud cover (GeoMet's greyscale style: dark clear, white overcast)
+    cloudAmount: { group: 'Space-based (satellites)', targets: 'satellite', wms: 'GDPS_15km_TotalCloudCover', label: 'Cloud amount', unit: '%', ids: [20081],
+        stops: [[0, '#202020'], [10, '#292929'], [20, '#454545'], [30, '#575757'], [40, '#737373'], [50, '#868686'],
+            [60, '#a1a1a1'], [70, '#bdbdbd'], [80, '#d0d0d0'], [90, '#ebebeb'], [100, '#fefefe']] },
 };
 // Surface observations that can be coloured by a measure: stations, ships and buoys, cache and GTS
 const COLOURABLE = ['station', 'ship', 'buoy'].flatMap((k) => [`cache-${k}`, `gts-${k}`]);
