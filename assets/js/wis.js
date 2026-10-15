@@ -103,8 +103,8 @@ const LAYER_GROUPS = [
             title: 'Download and decode the BUFR that WIS2 centres pass on to the GTS (centres ending -wis2-to-gts), and plot the reports inside' },
     ] },
 ];
-// Off at first: WIS2-to-GTS, satellites (cache and GTS) and aircraft tracks
-const hiddenLayers = new Set(['wis2gts', 'cache-satellite', 'gts-satellite', 'gts-tracks']);
+// Off at first: WIS2-to-GTS, satellites and aircraft (cache and GTS), and aircraft tracks
+const hiddenLayers = new Set(['wis2gts', 'cache-satellite', 'gts-satellite', 'cache-aircraft', 'gts-aircraft', 'gts-tracks']);
 const LAYER_PARENTS = Object.fromEntries(LAYER_GROUPS.flatMap((g) => g.layers).filter((l) => l.parent).map((l) => [l.key, l.parent]));
 
 function ancestors(key) {
@@ -2329,6 +2329,8 @@ let centreList, centreSearch, centreToggle, centreChips;
 const GATEWAY_CENTRE = /-(gts-to-wis2|wis2-to-gts)$/;
 const GATEWAY_TOPIC = /\/a\/wis2\/[^/]+-(gts-to-wis2|wis2-to-gts)\//;
 const GATEWAY_SATELLITE = /-(gts-to-wis2|wis2-to-gts)\/data\/core\/I\/[NE]\//;
+// Aircraft bulletins (T1T2A1 = IUA: AMDAR and similar)
+const GATEWAY_AIRCRAFT = /-gts-to-wis2\/data\/core\/I\/U\/A\//;
 
 // WIS2 space-based-observations topics, and GTS satellite bulletins (T1T2 = IN, IE)
 function isSpaceBased(topic) {
@@ -3214,8 +3216,9 @@ let decodeQueue = [];
 let decodeBusy = false;
 const decodeSeen = new Set();
 
-// Satellite files are only fetched while their group is on
+// Satellite and GTS aircraft files are only fetched while their group is on
 function satelliteSkipped(kind, topic) {
+    if (kind === 'gts' && GATEWAY_AIRCRAFT.test(topic)) return effectiveHidden().includes('gts-aircraft');
     if (kind === 'gts') return GATEWAY_SATELLITE.test(topic) && effectiveHidden().includes('gts-satellite');
     if (kind === 'files') return isSpaceBased(topic) && effectiveHidden().includes('cache-satellite');
     return false;
