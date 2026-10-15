@@ -407,7 +407,7 @@ function buildPopup(record) {
             ${record.wsi ? `<dt>Station</dt><dd>${oscar
                 ? `<a href="${esc(oscar.href)}" target="_blank" rel="noopener">${esc(record.wsi)}</a>`
                 : esc(record.wsi)}</dd>` : ''}
-            ${props.datetime ? `<dt>Observed</dt><dd>${esc(new Date(props.datetime).toLocaleString())}</dd>` : ''}
+            ${props.datetime ? `<dt>Observed</dt><dd>${esc(new Date(props.datetime).toLocaleString())} (${timeAgo(props.datetime)})</dd>` : ''}
             <dt>Topic</dt><dd class="pp-mono">${esc(record.path)}</dd>
         </dl>
         <div class="pp-actions"></div>
@@ -471,6 +471,7 @@ async function decodeSource(source, wsi, out) {
     if (!data.bufr) {
         var text = new TextDecoder(isUtf8(data.bytes) ? 'utf-8' : 'latin1').decode(data.bytes);
         if (/<alert[\s>]/.test(text) && /emergency:cap/.test(text)) return { cap: text, href: data.url };
+        if (/^\s*(<\?xml[^>]*\?>\s*)?<[A-Za-z]/.test(text)) return { xml: text, href: data.url };
         return { text: text };
     }
 
@@ -484,12 +485,285 @@ async function decodeSource(source, wsi, out) {
 function showDecoded(out, title, decoded) {
     if (decoded.cap !== undefined) {
         renderCap(out, title, decoded);
+    } else if (decoded.xml !== undefined) {
+        renderXml(out, title, decoded);
     } else if (decoded.text !== undefined) {
         out.innerHTML = '<pre class="pp-text"></pre>';
         out.firstChild.textContent = decoded.text.trim();
     } else {
         renderDecoded(out, title, decoded);
     }
+}
+
+// XML: Environment Canada citypage forecasts get their own view; anything else
+// is shown as a collapsible tree, with the raw text a click away
+function renderXml(out, title, decoded) {
+    var doc = new DOMParser().parseFromString(decoded.xml, 'application/xml');
+    if (doc.querySelector('parsererror')) {
+        out.innerHTML = '<pre class="pp-text"></pre>';
+        out.firstChild.textContent = decoded.xml.trim();
+        return;
+    }
+    if (doc.documentElement.nodeName === 'siteData' && doc.querySelector('location > name')) {
+        renderCitypage(out, title, doc);
+    } else {
+        out.innerHTML = '<div class="xml-tree"></div>';
+        out.firstChild.appendChild(xmlTree(doc.documentElement, 0, { count: 0 }));
+    }
+    var raw = document.createElement('details');
+    raw.className = 'pp-more';
+    raw.innerHTML = '<summary>Raw XML</summary><pre class="pp-text"></pre>';
+    raw.querySelector('pre').textContent = decoded.xml.trim();
+    out.appendChild(raw);
+}
+
+// Elements holding only text are shown as "name: value"; the rest open and close
+const XML_TREE_MAX = 3000;  // Nodes drawn before the rest is cut off
+
+function xmlTree(el, depth, drawn) {
+    var attrs = [...el.attributes].filter((a) => !/^xmlns|^xsi:/.test(a.name));
+    var label = document.createElement('span');
+    label.className = 'xml-tag';
+    label.textContent = el.localName;
+    var attrText = attrs.map((a) => `${a.name}="${a.value}"`).join(' ');
+    var children = [...el.children];
+    if (++drawn.count > XML_TREE_MAX) {
+        var more = document.createElement('div');
+        more.className = 'pp-status';
+        more.textContent = '… (truncated, see the raw XML)';
+        return more;
+    }
+    if (!children.length) {
+        var leaf = document.createElement('div');
+        leaf.className = 'xml-leaf';
+        var value = document.createElement('span');
+        value.className = 'xml-value';
+        value.textContent = el.textContent.trim();
+        leaf.append(label, value);
+        if (attrText) leaf.title = attrText;
+        return leaf;
+    }
+    var node = document.createElement('details');
+    node.className = 'xml-node';
+    node.open = depth < 3;
+    var summary = document.createElement('summary');
+    summary.appendChild(label);
+    if (attrText) {
+        var a = document.createElement('span');
+        a.className = 'xml-attrs';
+        a.textContent = attrText;
+        summary.appendChild(a);
+    }
+    node.appendChild(summary);
+    for (var child of children) {
+        if (drawn.count > XML_TREE_MAX) break;
+        node.appendChild(xmlTree(child, depth + 1, drawn));
+    }
+    return node;
+}
+
+// ---------- Environment Canada citypage weather (MSC, siteData schema)
+function renderCitypage(out, title, doc) {
+    var q = (el, sel) => (el ? el.querySelector(sel) : null);
+    var tx = (el, sel) => {
+        var n = sel ? q(el, sel) : el;
+        var t = n && n.textContent.trim();
+        return t || null;
+    };
+    // Local time of a named dateTime, e.g. "11:30 NDT"
+    var local = (parent, name) => {
+        var all = [...(parent ? parent.querySelectorAll(`:scope > dateTime[name="${name}"]`) : [])];
+        var d = all.find((n) => n.getAttribute('zone') !== 'UTC') || all[0];
+        return d ? `${tx(d, 'hour')}:${tx(d, 'minute')} ${d.getAttribute('zone')}` : null;
+    };
+    var unit = (n) => (n && n.getAttribute('units') ? ` ${n.getAttribute('units')}` : '');
+    var withUnit = (el, sel) => {
+        var n = q(el, sel), t = tx(n);
+        return t === null ? null : `${t}${unit(n).replace(' C', ' °C')}`;
+    };
+
+    var place = tx(doc, 'location > name');
+    var region = [tx(doc, 'location > region'), tx(doc, 'location > province')].filter(Boolean).join(', ');
+    if (title && place) title.textContent = place;
+
+    // Warnings and watches in effect
+    var warnings = [...doc.querySelectorAll('warnings > event')].map((e) => ({
+        type: e.getAttribute('type') || '',
+        priority: e.getAttribute('priority') || '',
+        text: e.getAttribute('description') || tx(e, 'textSummary') || '',
+    }));
+    var warningsUrl = q(doc, 'warnings') && q(doc, 'warnings').getAttribute('url');
+
+    // Current conditions
+    var cc = q(doc, 'currentConditions');
+    var temp = tx(cc, ':scope > temperature');
+    var pressure = q(cc, ':scope > pressure');
+    var tendency = pressure && pressure.getAttribute('tendency');
+    var wind = q(cc, ':scope > wind');
+    var windText = wind && tx(wind, 'speed') ? [
+        tx(wind, 'direction'), `${tx(wind, 'speed')} km/h`, tx(wind, 'gust') ? `gusting ${tx(wind, 'gust')}` : null,
+    ].filter(Boolean).join(' ') : null;
+    var station = tx(cc, 'station');
+
+    // Forecast periods
+    var periods = [...doc.querySelectorAll('forecastGroup > forecast')].map((f) => {
+        var period = q(f, ':scope > period');
+        var t = q(f, 'temperatures > temperature');
+        return {
+            name: (period && period.getAttribute('textForecastName')) || tx(period),
+            short: tx(f, 'abbreviatedForecast > textSummary'),
+            summary: tx(f, ':scope > textSummary'),
+            pop: tx(f, 'abbreviatedForecast > pop'),
+            temp: t && tx(t) !== null ? { value: tx(t), cls: t.getAttribute('class') } : null,
+        };
+    });
+
+    // Hourly forecast, with hours shown in local time
+    var issue = [...doc.querySelectorAll('hourlyForecastGroup > dateTime')].find((d) => d.getAttribute('zone') !== 'UTC');
+    var offset = issue ? Number(issue.getAttribute('UTCOffset')) || 0 : 0;
+    var hours = [...doc.querySelectorAll('hourlyForecastGroup > hourlyForecast')].map((h) => {
+        var u = h.getAttribute('dateTimeUTC') || '';
+        var time = new Date(Date.UTC(+u.slice(0, 4), +u.slice(4, 6) - 1, +u.slice(6, 8), +u.slice(8, 10), +u.slice(10, 12)));
+        var t = tx(h, 'temperature');
+        return {
+            hour: new Date(time.getTime() + offset * 3600e3).getUTCHours(),
+            temp: t === null ? null : Number(t),
+            lop: Number(tx(h, 'lop')) || 0,
+            condition: tx(h, 'condition'),
+            wind: [tx(h, 'wind > direction'), tx(h, 'wind > speed') ? `${tx(h, 'wind > speed')} km/h` : null].filter(Boolean).join(' '),
+        };
+    }).filter((h) => h.temp !== null);
+
+    var yesterday = q(doc, 'yesterdayConditions');
+    var high = q(yesterday, 'temperature[class="high"]'), low = q(yesterday, 'temperature[class="low"]');
+    var round = (n) => (tx(n) !== null ? Math.round(Number(tx(n))) : null);
+    var sun = [local(q(doc, 'riseSet'), 'sunrise'), local(q(doc, 'riseSet'), 'sunset')];
+
+    // Day and night periods share a row: "Friday  Mainly cloudy  7° / 2°"
+    var days = [];
+    for (var p of periods) {
+        var last = days[days.length - 1];
+        if (last && !last.night && p.temp && p.temp.cls === 'low' && (!last.temp || last.temp.cls === 'high')) {
+            last.night = p;
+        } else {
+            days.push({ ...p, night: null });
+        }
+    }
+    var degrees = (t) => (t ? `<span class="citypage-${esc(t.cls)}">${esc(t.value)}°</span>` : '');
+    var now = cc && temp !== null ? [
+        withUnit(cc, ':scope > dewpoint') ? `Dew point ${withUnit(cc, ':scope > dewpoint')}` : null,
+        withUnit(cc, ':scope > relativeHumidity') ? `RH ${withUnit(cc, ':scope > relativeHumidity').replace(' %', '%')}` : null,
+        pressure && tx(pressure) ? `${tx(pressure)} kPa${tendency ? ` ${{ rising: '↑', falling: '↓' }[tendency] || '→'}` : ''}` : null,
+        windText,
+        tx(cc, ':scope > windChill') ? `Wind chill ${tx(cc, ':scope > windChill')}` : null,
+        tx(cc, ':scope > humidex') ? `Humidex ${tx(cc, ':scope > humidex')}` : null,
+        withUnit(cc, ':scope > visibility') ? `Visibility ${withUnit(cc, ':scope > visibility')}` : null,
+    ].filter(Boolean) : [];
+    var extras = [
+        ['Sunrise', sun[0]], ['Sunset', sun[1]],
+        ['Yesterday', high || low ? [round(high) !== null ? `high ${round(high)}°` : null, round(low) !== null ? `low ${round(low)}°` : null].filter(Boolean).join(' · ') : null],
+        ['Normals', tx(doc, 'regionalNormals > textSummary')],
+        ['Forecast issued', local(q(doc, 'forecastGroup'), 'forecastIssue')],
+    ].filter(([, v]) => v);
+    var tabs = [
+        hours.length > 1 ? ['hourly', 'Next hours'] : null,
+        days.length ? ['forecast', 'Forecast'] : null,
+        extras.length || periods.length ? ['details', 'Details'] : null,
+    ].filter(Boolean);
+
+    out.innerHTML = `
+        <div class="citypage">
+            ${!title && place ? `<div class="pp-name">${esc(place)}</div>` : ''}
+            ${warnings.map((w) => `
+            <div class="citypage-warning citypage-type-${esc(w.type.toLowerCase())}">
+                <strong>${esc(w.text || w.type)}</strong>
+                ${warningsUrl ? `<a href="${esc(warningsUrl)}" target="_blank" rel="noopener">Details</a>` : ''}
+            </div>`).join('')}
+            ${now.length ? `
+            <div class="citypage-now">
+                <div class="citypage-temp">${esc(Math.round(Number(temp)))}°</div>
+                <div>
+                    <div class="citypage-condition">${esc(tx(cc, ':scope > condition') || 'Now')}</div>
+                    <div class="pp-status">${esc([station, local(cc, 'observation')].filter(Boolean).join(' · '))}</div>
+                </div>
+            </div>
+            <div class="citypage-stats">${now.map(esc).join(' · ')}</div>` : region ? `<div class="pp-status">${esc(region)}</div>` : ''}
+            ${tabs.length ? `
+            <div class="citypage-tabs" role="tablist">${tabs.map(([key, label], i) => `
+                <button type="button" role="tab" data-tab="${key}" aria-selected="${i === 0}">${label}</button>`).join('')}
+            </div>
+            <div class="citypage-panel" data-panel="hourly"><div class="citypage-hourly"></div></div>
+            <div class="citypage-panel" data-panel="forecast">
+                <ol class="citypage-periods">${days.map((d) => `
+                    <li title="${esc([d.summary, d.night && `${d.night.name}: ${d.night.summary}`].filter(Boolean).join('\n\n'))}">
+                        <span class="citypage-period">${esc(d.name || '')}</span>
+                        <span class="citypage-short">${esc(d.short || '')}${d.pop ? ` <em>${esc(d.pop)}%</em>` : ''}</span>
+                        <span class="citypage-hilo">${[degrees(d.temp), d.night ? degrees(d.night.temp) : ''].filter(Boolean).join(' / ')}</span>
+                    </li>`).join('')}
+                </ol>
+            </div>
+            <div class="citypage-panel" data-panel="details">
+                ${extras.length ? `<dl class="citypage-extra">${extras.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>` : ''}
+                ${periods.length ? `
+                <details class="pp-more">
+                    <summary>Full forecast text</summary>
+                    <dl class="citypage-text">${periods.map((p) => `<dt>${esc(p.name || '')}</dt><dd>${esc(p.summary || '')}</dd>`).join('')}</dl>
+                </details>` : ''}
+            </div>` : ''}
+        </div>`;
+    if (hours.length > 1) renderHourly(out.querySelector('.citypage-hourly'), hours.slice(0, 24), { width: 300, height: 100 });
+    var show = (key) => {
+        out.querySelectorAll('.citypage-tabs button').forEach((b) => b.setAttribute('aria-selected', b.dataset.tab === key));
+        out.querySelectorAll('.citypage-panel').forEach((panel) => { panel.hidden = panel.dataset.panel !== key; });
+        keepPopupInView();
+    };
+    out.querySelectorAll('.citypage-tabs button').forEach((b) => b.addEventListener('click', () => show(b.dataset.tab)));
+    if (tabs.length) show(tabs[0][0]);
+}
+
+// Temperature line over bars for the likelihood of precipitation, one per hour
+function renderHourly(container, hours, opts) {
+    var W = opts.width, H = opts.height;
+    var m = { top: 14, right: 8, bottom: 18, left: 8 };
+    var w = W - m.left - m.right, h = H - m.top - m.bottom;
+    var temps = hours.map((p) => p.temp);
+    var tMin = Math.min(...temps), tMax = Math.max(...temps);
+    if (tMax - tMin < 4) { tMin -= 2; tMax += 2; }
+    var step = w / hours.length;
+    var x = (i) => m.left + step * (i + 0.5);
+    var yT = (t) => m.top + h * 0.7 * (tMax - t) / (tMax - tMin);
+    var yL = (l) => m.top + h - h * 0.35 * l / 100;
+
+    var svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: 'hourly', role: 'img',
+        'aria-label': 'Hourly temperature and chance of precipitation' });
+    hours.forEach((p, i) => {
+        if (p.lop) svgEl('rect', { x: x(i) - step / 2 + 1, y: yL(p.lop), width: step - 2, height: m.top + h - yL(p.lop), class: 'hourly-lop' }, svg);
+        if (i % 3 === 0) svgEl('text', { x: x(i), y: H - 4, class: 'skewt-label', 'text-anchor': 'middle' }, svg).textContent = `${p.hour}h`;
+    });
+    svgEl('line', { x1: m.left, x2: m.left + w, y1: m.top + h, y2: m.top + h, class: 'skewt-tick' }, svg);
+    svgEl('polyline', { points: hours.map((p, i) => `${x(i).toFixed(1)},${yT(p.temp).toFixed(1)}`).join(' '), class: 'hourly-temp' }, svg);
+    // Label the warmest and coldest hours
+    [temps.indexOf(Math.max(...temps)), temps.indexOf(Math.min(...temps))].forEach((i, k) => {
+        svgEl('circle', { cx: x(i), cy: yT(hours[i].temp), r: 2.5, class: 'hourly-dot' }, svg);
+        svgEl('text', { x: x(i), y: yT(hours[i].temp) + (k ? 12 : -5), class: 'skewt-label', 'text-anchor': 'middle' }, svg).textContent = `${hours[i].temp}°`;
+    });
+
+    var readout = svgEl('text', { x: W - m.right, y: 10, class: 'skewt-readout', 'text-anchor': 'end' }, svg);
+    var guide = svgEl('line', { y1: m.top, y2: m.top + h, class: 'skewt-guide', visibility: 'hidden' }, svg);
+    svg.addEventListener('mousemove', (e) => {
+        var box = svg.getBoundingClientRect();
+        var i = Math.max(0, Math.min(hours.length - 1, Math.floor(((e.clientX - box.left) * W / box.width - m.left) / step)));
+        var p = hours[i];
+        guide.setAttribute('x1', x(i));
+        guide.setAttribute('x2', x(i));
+        guide.setAttribute('visibility', 'visible');
+        readout.textContent = [`${p.hour}h`, `${p.temp}°`, p.condition, p.lop ? `${p.lop}% precip.` : null, p.wind].filter(Boolean).join(' · ');
+    });
+    svg.addEventListener('mouseleave', () => {
+        guide.setAttribute('visibility', 'hidden');
+        readout.textContent = '';
+    });
+    container.replaceChildren(svg);
 }
 
 const SEVERITY_COLORS = {
@@ -658,11 +932,13 @@ function renderDecoded(out, title, result) {
 
     var profile = result.profile && result.profile.filter((l) => l[0] > 0);
     var sounding = profile && profile.length >= 2;
+    var marine = sounding ? null : marineDetails(result.rows);
     var tiles = sounding ? soundingTiles(profile) : [];
     for (var key of sounding ? [] : KEY_VALUES) {
         var id = key.ids.find((i) => values.has(i));
         if (!id || (key.unless && key.unless.some((i) => values.has(i)))) continue;
         var text = formatValue(...values.get(id)).join(' ');
+        if (key.wind && marine) text += ` (${knots(values.get(id)[0])} kn)`;
         if (key.wind && values.has(11001)) text += ` from ${values.get(11001)[0]}°`;
         tiles.push(`<div class="pp-tile"><div>${esc(key.label)}</div><strong>${esc(text)}</strong></div>`);
     }
@@ -679,6 +955,15 @@ function renderDecoded(out, title, result) {
         <div class="sounding"></div>
         <button type="button" class="btn btn-sm btn-outline-secondary sounding-expand">Expand sounding</button>` : ''}
         ${tiles.length ? `<div class="pp-tiles">${tiles.join('')}</div>` : ''}
+        ${marine ? `
+        <div class="pp-section">${marine.ship ? 'Sea state and ship' : 'Sea state'}</div>
+        <div class="pp-marine">
+            ${marine.compass}
+            <div class="pp-tiles">${marine.tiles.join('')}</div>
+        </div>
+        ${marine.spectrum ? `<div class="pp-section">Wave spectrum</div>
+        ${marine.spectrum.peak ? '<div class="wave-spectrum"></div>'
+            : '<div class="pp-status">Calm: every band is below the 0.1 m²/Hz the buoy reports to</div>'}` : ''}` : ''}
         <details class="pp-more"${tiles.length ? '' : ' open'}>
             <summary>All decoded fields (${result.rows.length})</summary>
             <table class="table table-sm">${result.rows.map(([id, name, value, unit]) => `
@@ -688,11 +973,209 @@ function renderDecoded(out, title, result) {
     out.querySelectorAll('.pp-pager button').forEach((button) => button.addEventListener('click', () => {
         showReport(out, title, result.key, result.index + Number(button.dataset.step));
     }));
+    if (marine && marine.spectrum && marine.spectrum.peak) {
+        renderWaveSpectrum(out.querySelector('.wave-spectrum'), marine.spectrum, { width: 300, height: 190 });
+    }
     if (sounding) {
         var label = name || (title && title.textContent) || 'Sounding';
         renderSkewT(out.querySelector('.sounding'), profile, { width: 300, height: 390, time: soundingTime(values) });
         out.querySelector('.sounding-expand').addEventListener('click', () => openSounding(profile, label, values));
     }
+}
+
+// Ships, buoys and other marine reports: sea temperature, waves, swell, ice and
+// the platform's own motion. Wave and swell groups can repeat (e.g. a first and
+// second swell system), so every occurrence is kept. Returns null when the
+// report has none of these.
+function marineDetails(rows) {
+    var all = new Map();
+    for (var [id, , value] of rows) {
+        if (typeof value !== 'number') continue;
+        all.has(id) ? all.get(id).push(value) : all.set(id, [value]);
+    }
+    var first = (...ids) => ids.map((id) => all.get(id)).find(Boolean)?.[0];
+    var nth = (id, i) => (all.get(id) || [])[i];
+    var tile = (label, text) => `<div class="pp-tile"><div>${esc(label)}</div><strong>${esc(text)}</strong></div>`;
+    var wave = (height, period, from) => [
+        height !== undefined ? `${Number(height.toFixed(1))} m` : null,
+        period !== undefined ? `${period} s` : null,
+        from !== undefined ? `from ${from}°` : null,
+    ].filter(Boolean).join(' · ');
+
+    var tiles = [];
+    var sea = first(22043, 22049, 22042);
+    if (sea !== undefined) tiles.push(tile('Sea temperature', `${(sea - 273.15).toFixed(1)} °C`));
+    var salinity = first(22062);
+    if (salinity !== undefined) tiles.push(tile('Salinity', `${salinity} ‰`));
+    // Wave buoys: significant and maximum height, mean period and the direction
+    // of the dominant waves; the peak period comes from the spectrum when there
+    // is one, since the reported value is often unset
+    var spectrum = waveSpectrum(rows);
+    var peak = spectrum && spectrum.peak ? 1 / spectrum.peak.f : first(22071) > 1 ? first(22071) : undefined;
+    var dominant = first(22076);
+    if (all.has(22070)) {
+        tiles.push(tile('Wave height', [`${first(22070)} m significant`, all.has(22073) ? `max ${first(22073)} m` : null].filter(Boolean).join(' · ')));
+    }
+    if (all.has(22074) || peak !== undefined) {
+        tiles.push(tile('Wave period', [all.has(22074) ? `mean ${first(22074)} s` : null, peak !== undefined ? `peak ${peak.toFixed(1)} s` : null,
+            dominant !== undefined ? `from ${dominant}°` : null].filter(Boolean).join(' · ')));
+    }
+    // Instrumental waves (022021/022011), then estimated wind waves (022022/022012)
+    if (all.has(22021) || all.has(22011)) tiles.push(tile('Waves (measured)', wave(first(22021), first(22011))));
+    if (all.has(22022) || all.has(22012)) tiles.push(tile('Wind waves', wave(first(22022), first(22012))));
+    var swells = Math.max(...[22003, 22013, 22023].map((id) => (all.get(id) || []).length));
+    var swellDirs = [];
+    for (var i = 0; i < swells; i++) {
+        swellDirs.push(nth(22003, i));
+        tiles.push(tile(swells > 1 ? `Swell ${i + 1}` : 'Swell', wave(nth(22023, i), nth(22013, i), nth(22003, i))));
+    }
+    var course = first(1012), speed = first(1013);
+    if (course !== undefined || speed !== undefined) {
+        tiles.push(tile('Ship heading', speed === 0 ? 'Stopped'
+            : [course !== undefined ? `${course}°` : null, speed !== undefined ? `${speed} m/s (${knots(speed)} kn)` : null].filter(Boolean).join(' at ')));
+    }
+    var ice = first(20031);
+    if (ice !== undefined) tiles.push(tile('Ice on deck', `${Math.round(ice * 100)} cm`));
+    if (!tiles.length) return null;
+
+    var waveDirs = [dominant, ...swellDirs].filter((d) => d !== undefined);
+    return { tiles, spectrum, ship: course !== undefined || speed !== undefined, compass: marineCompass(first(11001), waveDirs, speed ? course : undefined) };
+}
+
+function knots(ms) {
+    return Math.round(ms * 1.943844);
+}
+
+// Directional wave spectrum: one entry per frequency band with its energy
+// density (022069) and the direction the waves come from, from the first-order
+// directional Fourier coefficients (042011 a1, 042012 b1). Returns null when the
+// report has no spectrum.
+function waveSpectrum(rows) {
+    var bands = [], band = null;
+    for (var [id, , value] of rows) {
+        if (id === 22080) bands.push(band = { f: value, e: null, a1: null, b1: null });
+        else if (!band) continue;
+        else if (id === 22069) band.e = value;
+        else if (id === 42011) band.a1 = value;
+        else if (id === 42012) band.b1 = value;
+    }
+    bands = bands.filter((b) => b.f > 0 && b.e !== null);
+    if (bands.length < 3) return null;
+    for (var b of bands) {
+        b.dir = b.a1 !== null && b.b1 !== null && (b.a1 || b.b1)
+            ? (Math.atan2(b.b1, b.a1) * 180 / Math.PI + 360) % 360 : null;
+    }
+    var peak = bands.reduce((a, b) => (b.e > a.e ? b : a));
+    return { bands, peak: peak.e > 0 ? peak : null };
+}
+
+// Energy against frequency (labelled as period), with a strip above showing
+// where each band's waves come from
+function renderWaveSpectrum(container, spectrum, opts) {
+    var W = opts.width, H = opts.height;
+    var m = { top: 8, right: 10, bottom: 30, left: 36 };
+    var stripH = 46, gap = 10;
+    var w = W - m.left - m.right;
+    var dirTop = m.top, dirBottom = m.top + stripH;
+    var eTop = dirBottom + gap, eBottom = H - m.bottom;
+    var bands = spectrum.bands;
+    // Log frequency, so long-period swell isn't squeezed against the axis
+    var fMin = Math.min(0.03, bands[0].f * 0.9), fMax = Math.max(0.5, bands[bands.length - 1].f * 1.05);
+    var eMax = Math.max(...bands.map((b) => b.e)) * 1.1 || 1;
+    var x = (f) => m.left + w * Math.log(f / fMin) / Math.log(fMax / fMin);
+    var yE = (e) => eBottom - (eBottom - eTop) * e / eMax;
+    var yD = (d) => dirTop + stripH * d / 360;
+
+    var svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: 'wavespec', role: 'img',
+        'aria-label': 'Wave energy spectrum by period, with wave direction for each band' });
+    svgEl('rect', { x: 0, y: 0, width: W, height: H, class: 'skewt-bg' }, svg);
+
+    // Bars span halfway to each neighbouring band
+    bands.forEach((b, i) => {
+        var lo = i ? (bands[i - 1].f + b.f) / 2 : b.f - (bands[1].f - b.f) / 2;
+        var hi = i < bands.length - 1 ? (b.f + bands[i + 1].f) / 2 : b.f + (b.f - bands[i - 1].f) / 2;
+        b.lo = lo;
+        b.hi = hi;
+        if (b.e > 0) svgEl('rect', { x: x(lo) + 0.5, y: yE(b.e), width: Math.max(1, x(hi) - x(lo) - 1), height: eBottom - yE(b.e),
+            class: b === spectrum.peak ? 'wavespec-bar wavespec-peak' : 'wavespec-bar' }, svg);
+    });
+
+    // Direction strip: a dot per band with energy, sized by its share of the peak
+    for (var d of [0, 90, 180, 270, 360]) {
+        svgEl('line', { x1: m.left, x2: m.left + w, y1: yD(d), y2: yD(d), class: 'skewt-isobar' }, svg);
+        if (d < 360) svgEl('text', { x: m.left - 5, y: yD(d) + 3.5, class: 'skewt-label', 'text-anchor': 'end' }, svg).textContent = 'NESW'[d / 90];
+    }
+    var maxE = spectrum.peak ? spectrum.peak.e : 0;
+    for (var b of bands) {
+        if (b.dir === null || !(b.e > 0)) continue;
+        svgEl('circle', { cx: x(b.f), cy: yD(b.dir), r: 1.5 + 3 * Math.sqrt(b.e / maxE), class: 'wavespec-dir' }, svg);
+    }
+    svgEl('rect', { x: m.left, y: dirTop, width: w, height: stripH, class: 'skewt-frame' }, svg);
+
+    // Energy axis
+    var step = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100].find((s) => eMax / s <= 4) || 200;
+    for (var e = step; e < eMax; e += step) {
+        svgEl('line', { x1: m.left, x2: m.left + w, y1: yE(e), y2: yE(e), class: 'skewt-isobar' }, svg);
+        svgEl('text', { x: m.left - 5, y: yE(e) + 3.5, class: 'skewt-label', 'text-anchor': 'end' }, svg).textContent = Number(e.toFixed(1));
+    }
+    svgEl('text', { x: 0, y: 0, class: 'skewt-label', 'text-anchor': 'middle',
+        transform: `translate(9 ${(eTop + eBottom) / 2}) rotate(-90)` }, svg).textContent = 'm²/Hz';
+    // Period labels along the frequency axis
+    for (var period of [25, 15, 10, 7, 5, 4, 3, 2]) {
+        var f = 1 / period;
+        if (f > fMax) continue;
+        svgEl('line', { x1: x(f), x2: x(f), y1: eBottom, y2: eBottom + 4, class: 'skewt-tick' }, svg);
+        svgEl('text', { x: x(f), y: eBottom + 14, class: 'skewt-label', 'text-anchor': 'middle' }, svg).textContent = period;
+    }
+    svgEl('text', { x: m.left + w / 2, y: H - 3, class: 'skewt-axis', 'text-anchor': 'middle' }, svg).textContent = 'Wave period (s)';
+    svgEl('rect', { x: m.left, y: eTop, width: w, height: eBottom - eTop, class: 'skewt-frame' }, svg);
+
+    // Hover readout for the band under the pointer
+    var readout = svgEl('text', { x: m.left + w - 4, y: eTop + 12, class: 'skewt-readout', 'text-anchor': 'end' }, svg);
+    svg.addEventListener('mousemove', (e) => {
+        var box = svg.getBoundingClientRect();
+        var px = (e.clientX - box.left) * W / box.width;
+        var band = bands.find((b) => px >= x(b.lo) && px < x(b.hi));
+        readout.textContent = band ? [`${(1 / band.f).toFixed(1)} s`, `${band.e} m²/Hz`,
+            band.dir !== null && band.e > 0 ? `from ${Math.round(band.dir)}°` : null].filter(Boolean).join(' · ') : '';
+    });
+    svg.addEventListener('mouseleave', () => { readout.textContent = ''; });
+
+    container.replaceChildren(svg);
+}
+
+// Compass showing where the wind and swell come from (arrows pointing in) and
+// where the ship is heading (arrow pointing out)
+function marineCompass(windFrom, swellFrom, heading) {
+    if (windFrom === undefined && !swellFrom.length && heading === undefined) return '';
+    var c = 50;
+    var at = (deg, r) => [c + r * Math.sin(deg * Math.PI / 180), c - r * Math.cos(deg * Math.PI / 180)];
+    var arrow = (deg, from, to, cls) => {
+        var [x1, y1] = at(deg, from), [x2, y2] = at(deg, to);
+        var a = Math.atan2(y2 - y1, x2 - x1);
+        var head = [a + 2.6, a - 2.6].map((b) => `${(x2 + 7 * Math.cos(b)).toFixed(1)},${(y2 + 7 * Math.sin(b)).toFixed(1)}`);
+        return `<g class="${cls}"><line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"/>`
+            + `<polygon points="${x2.toFixed(1)},${y2.toFixed(1)} ${head.join(' ')}"/></g>`;
+    };
+    var key = [
+        windFrom !== undefined ? '<span><i class="pp-key-wind"></i>Wind</span>' : '',
+        swellFrom.length ? '<span><i class="pp-key-swell"></i>Waves</span>' : '',
+        heading !== undefined ? '<span><i class="pp-key-ship"></i>Ship</span>' : '',
+    ].join('');
+    return `
+        <figure class="pp-compass">
+            <svg viewBox="0 0 100 100" width="100" height="100" role="img" aria-label="Wind, swell and ship heading">
+                <circle cx="${c}" cy="${c}" r="38" class="pp-compass-ring"/>
+                ${['N', 'E', 'S', 'W'].map((d, i) => {
+                    var [x, y] = at(i * 90, 46);
+                    return `<text x="${x}" y="${y + 3.5}" text-anchor="middle">${d}</text>`;
+                }).join('')}
+                ${swellFrom.map((d) => arrow(d, 38, 8, 'pp-compass-swell')).join('')}
+                ${windFrom !== undefined ? arrow(windFrom, 38, 8, 'pp-compass-wind') : ''}
+                ${heading !== undefined ? arrow(heading, 0, 30, 'pp-compass-ship') : ''}
+            </svg>
+            <figcaption>${key}</figcaption>
+        </figure>`;
 }
 
 // ---------- Upper-air sounding (TEMP) viewer: Skew-T log-P diagram
@@ -1521,10 +2004,8 @@ function parseMessage(topic, message) {
 function onMessage(topic, feature) {
     // Kept for every message so the sidebar can find a downloadable copy
     rememberLinks((feature.properties || {}).data_id, feature.links || []);
-    if (topic.startsWith('cache/')) {
-        var kind = Object.keys(DECODE_LAYERS).find((key) => DECODE_LAYERS[key](topic, feature));
-        if (kind && decodeEnabled.has(kind)) queueDecode(kind, topic, feature);
-    }
+    var kind = Object.keys(DECODE_LAYERS).find((key) => DECODE_LAYERS[key](topic, feature));
+    if (kind && decodeEnabled.has(kind)) queueDecode(kind, topic, feature);
 
     if (ignoredTopics.some((t) => topic.includes(t))) {
         return; // Ignore this topic
@@ -1771,15 +2252,23 @@ function callDecoder(fn, ...args) {
 // file and plot each report.
 // GTS: surface (IS), upper-air (IU) and ocean (IO) bulletins; satellite series are skipped.
 const GTS_TOPIC = /\/a\/wis2\/[^/]+-gts-to-wis2\/data\/core\/I\/([SUO])\//;
-// Files: any other small cached file without geometry that may be BUFR
+// Files: any other small cached file without geometry that may be BUFR, plus
+// XML whose location is inside the file (Environment Canada citypage forecasts)
 const DECODE_FILE_MAX_BYTES = 200 * 1024;
 const DECODE_FILE_MAX_REPORTS = 300;  // Per file, so a satellite swath can't flood the map
 const NOT_BUFR = ['grib', 'xml', 'csv', 'json', 'image', 'hdf', 'text'];
 const DECODE_LAYERS = {
-    gts: (topic, feature) => GTS_TOPIC.test(topic),
-    files: (topic, feature) => !feature.geometry && !NOT_BUFR.includes(formatOf(feature))
-        && (feature.links || []).some((l) => l.rel == 'canonical' && l.length > 0 && l.length <= DECODE_FILE_MAX_BYTES),
+    gts: (topic, feature) => topic.startsWith('cache/') && GTS_TOPIC.test(topic),
+    files: (topic, feature) => topic.startsWith('cache/') && decodableFile(topic, feature),
 };
+
+function decodableFile(topic, feature) {
+    return !feature.geometry
+        && (!NOT_BUFR.includes(formatOf(feature)) || (formatOf(feature) === 'xml' && /citypage/i.test(topic + JSON.stringify(feature.links || []))))
+        && (feature.links || []).some((l) => l.rel == 'canonical' && l.length > 0 && l.length <= DECODE_FILE_MAX_BYTES);
+}
+
+const DECODE_FETCH_TIMEOUT_MS = 20000;
 const DECODE_QUEUE_MAX = 100;  // Oldest files are dropped when decoding falls behind
 const decodeEnabled = new Set();
 const decodePlotted = { gts: 0, files: 0 };
@@ -1794,6 +2283,14 @@ function queueDecode(kind, topic, feature) {
     if (!link || decodeSeen.has(props.data_id) || (!showSpace && isSpaceBased(topic))) return;
     decodeSeen.add(props.data_id);
     if (decodeSeen.size > DATA_LINKS_MAX) decodeSeen.delete(decodeSeen.values().next().value);
+    // XML needs no decoder, so it skips the queue rather than waiting behind BUFR
+    if (formatOf(feature) === 'xml') {
+        fetch(link.href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) })
+            .then((response) => (response.ok ? response.text() : null))
+            .then((xml) => xml && decodeEnabled.has(kind) && plotCitypage({ kind, topic, feature, href: link.href }, xml))
+            .catch((err) => console.debug(`Could not fetch ${link.href}: ${err.message}`));
+        return;
+    }
     decodeQueue.push({ kind, topic, feature, href: link.href });
     if (decodeQueue.length > DECODE_QUEUE_MAX) decodeQueue.shift();
     pumpDecode();
@@ -1804,10 +2301,12 @@ async function pumpDecode() {
     decodeBusy = true;
     var job = decodeQueue.pop();  // Newest first, to stay close to real time
     try {
-        var response = await fetch(job.href);
-        var bytes = response.ok ? bufrPart(new Uint8Array(await response.arrayBuffer())) : null;
+        // A stalled server would otherwise hold up the whole queue
+        var response = await fetch(job.href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        var bytes = bufrPart(new Uint8Array(await response.arrayBuffer()));
         if (bytes) {
-            var limit = job.kind === 'files' ? DECODE_FILE_MAX_REPORTS : 0;
+            var limit = job.kind === 'gts' ? 0 : DECODE_FILE_MAX_REPORTS;
             var subsets = JSON.parse(await callDecoder('decode_subsets', bytes, limit));
             subsets.forEach(([rows, profile], i) => plotDecodedReport(job, rows, profile, i));
         }
@@ -1854,6 +2353,51 @@ function plotDecodedReport(job, rows, profile, index) {
         born: Date.now(),
     };
     addPoint(record);
+    decodePlotted[job.kind]++;
+}
+
+// Citypage forecasts come in English and French for each site and are reissued
+// through the day: keep one point per site, the latest, preferring English
+function plotCitypage(job, xml) {
+    var doc = new DOMParser().parseFromString(xml, 'application/xml');
+    var site = doc.querySelector('siteData > location > name');
+    if (!site) return;
+    var coord = (v) => {
+        var m = /^([\d.]+)([NSEW])$/.exec((v || '').trim());
+        return m ? Number(m[1]) * (/[SW]/.test(m[2]) ? -1 : 1) : NaN;
+    };
+    var lat = coord(site.getAttribute('lat')), lon = coord(site.getAttribute('lon'));
+    if (!isFinite(lat) || !isFinite(lon)) return;
+
+    var french = /_fr\.xml$/i.test(job.href);
+    var key = `citypage:${site.getAttribute('code') || site.textContent.trim()}`;
+    var existing = byDataId.get(key);
+    if (existing && records.has(existing.id)) {
+        if (french && !existing.french) return;
+        removePoint(existing);
+    }
+    var props = job.feature.properties || {};
+    var [channel, t] = job.topic.split('/a/wis2/');
+    addPoint({
+        id: nextId++,
+        coords: [lon, lat],
+        topic: job.topic,
+        channel: channel,
+        centre: t.split('/', 1)[0],
+        path: t.slice(t.indexOf('/') + 1),
+        discipline: disciplineOf(t),
+        webcam: false,
+        decodedLayer: job.kind,
+        props: { data_id: key, pubtime: props.pubtime, metadata_id: site.textContent.trim() },
+        links: job.feature.links || [],
+        wsi: null,
+        french: french,
+        format: 'xml',
+        color: COLORS[job.kind],
+        source: null,
+        decoded: { xml: xml },
+        born: Date.now(),
+    });
     decodePlotted[job.kind]++;
 }
 
