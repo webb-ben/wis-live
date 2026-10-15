@@ -1021,3 +1021,48 @@
   opacity: 0.5;
   cursor: default;
 }
+
+/* Details of the selected point, docked on the right */
+.infobar {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 380px;
+  max-width: calc(100vw - 52px);
+  z-index: 1001;
+  overflow-y: auto;
+  padding: 12px 14px 16px;
+  background-color: #ffffff;
+  border-left: 2px solid #bbbbbb;
+  transform: translateX(100%);
+  transition: transform 0.2s;
+}
+.info-open .infobar {
+  transform: none;
+}
+.infobar-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1;
+}
+.infobar .pp-head {
+  padding-right: 28px;
+}
+.maplibregl-ctrl-top-right,
+.maplibregl-ctrl-bottom-right {
+  transition: right 0.2s;
+}
+.info-open .maplibregl-ctrl-top-right,
+.info-open .maplibregl-ctrl-bottom-right {
+  right: min(380px, calc(100vw - 52px));
+}
+.selected-marker {
+  width: 26px;
+  height: 26px;
+  border: 2px solid #212529;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px #ffffff, inset 0 0 0 2px #ffffff;
+  pointer-events: none;
+}

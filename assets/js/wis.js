@@ -22,6 +22,18 @@ const COLORS = {
     wis2gts: '#c2255c',
     files: '#83C95D',
 };
+// GTS-to-WIS2 sublayers. Satellite bulletins are numerous and large, so that
+// one is off until asked for (and their bulletins aren't downloaded until then).
+const GTS_CLASSES = {
+    station: { label: 'Weather stations', color: '#9b6cd1', title: 'Reports with a station name, WMO block and station number, or WIGOS identifier' },
+    upperair: { label: 'Upper-air soundings', color: '#5f3dc4', title: 'Reports with a profile of pressure levels (radiosondes, TEMP)' },
+    aircraft: { label: 'Aircraft', color: '#1098ad', title: 'Reports with an aircraft registration or flight number (AMDAR, AIREP)' },
+    ship: { label: 'Ships', color: '#364fc7', title: 'Reports with a ship or mobile station identifier' },
+    buoy: { label: 'Buoys and floats', color: '#e8590c', title: 'Reports with a marine platform or buoy identifier' },
+    satellite: { label: 'Satellites', color: '#868e96', optIn: true, title: 'Reports with a satellite identifier (winds, radiances, occultations); downloaded only while this is on' },
+    other: { label: 'Other', color: '#c0a8e8', title: 'Reports without any of the identifiers above' },
+};
+
 // Legend rows, grouped by source; each can be switched on and off. Rows other
 // than opt-in ones stay hidden until a point of that kind has arrived. Opt-in
 // rows are decoded in the browser, since their notifications carry no location.
@@ -37,11 +49,14 @@ const LAYER_GROUPS = [
     { label: 'GTS gateways', layers: [
         { key: 'gts', label: 'GTS-to-WIS2 (decode required)', color: COLORS.gts, optIn: true,
             title: 'Download and decode the BUFR bulletins republished from the GTS into WIS2 (centres ending -gts-to-wis2), and plot the reports inside' },
+        // Each decoded report is sorted by the identifiers it carries (see reportClass)
+        ...Object.entries(GTS_CLASSES).map(([key, c]) => ({ key: `gts-${key}`, parent: 'gts', label: c.label, color: c.color,
+            optIn: c.optIn, title: c.title })),
         { key: 'wis2gts', label: 'WIS2-to-GTS (decode required)', color: COLORS.wis2gts, optIn: true,
             title: 'Download and decode the BUFR that WIS2 centres pass on to the GTS (centres ending -wis2-to-gts), and plot the reports inside' },
     ] },
 ];
-const hiddenLayers = new Set(['gts', 'wis2gts', 'files']);
+const hiddenLayers = new Set(['gts', 'wis2gts', 'files', 'gts-satellite']);
 const LAYER_PARENTS = Object.fromEntries(LAYER_GROUPS.flatMap((g) => g.layers).filter((l) => l.parent).map((l) => [l.key, l.parent]));
 
 // Layers switched off directly, plus sublayers whose parent is off
@@ -99,7 +114,10 @@ let toRemove = [];
 let pulses = [];            // Recent arrivals, drawn as expanding rings
 let animating = false;
 
-const popup = new maplibregl.Popup({ maxWidth: '340px', focusAfterOpen: false });
+// The selected point's details open in a panel on the right, and a ring marks
+// the point on the map
+let infobar = null;
+const selectedMarker = new maplibregl.Marker({ element: Object.assign(document.createElement('div'), { className: 'selected-marker' }) });
 const hoverLabel = new maplibregl.Popup({
     closeButton: false,
     closeOnClick: false,
@@ -177,7 +195,7 @@ map.on('load', () => {
     map.on('mousemove', 'points', (e) => {
         var record = records.get(e.features[0].id);
         map.getCanvas().style.cursor = 'pointer';
-        if (!record || popup.isOpen()) return hoverLabel.remove();
+        if (!record) return hoverLabel.remove();
         hoverLabel.setLngLat(record.coords).setText(record.wsi || record.props.metadata_id || record.centre).addTo(map);
     });
     map.on('mouseleave', 'points', () => {
@@ -212,7 +230,7 @@ function addPoint(record) {
             channel: record.channel,
             centre: record.centre,
             discipline: record.discipline,
-            space: isSpaceBased(record.topic),
+            space: isSpaceBased(record.topic) || record.subLayer === 'gts-satellite',
             topic: record.topic.toLowerCase(),
         },
     };
@@ -250,6 +268,7 @@ function altitudeBar(record, properties) {
 }
 
 function layerOf(record) {
+    if (record.subLayer) return record.subLayer;
     if (record.decodedLayer) return record.decodedLayer;
     if (record.channel !== 'cache') return 'origin';
     return record.webcam ? 'webcam' : 'obs';
@@ -362,14 +381,17 @@ class LegendControl {
                     if (on !== decodeEnabled.has(k)) setDecodeEnabled(k, on);
                 });
                 status.hidden = !decodeEnabled.size;
-                container.querySelectorAll('.legend-sub').forEach((sub) => {
-                    var parentOff = hiddenLayers.has(LAYER_PARENTS[sub.dataset.layer]);
-                    sub.querySelector('input').disabled = parentOff;
-                    sub.classList.toggle('legend-disabled', parentOff);
-                });
+                syncSublayers();
                 applyMapFilter();
             });
         });
+        // Sublayers are greyed out while their parent is off
+        var syncSublayers = () => container.querySelectorAll('.legend-sub').forEach((sub) => {
+            var parentOff = hiddenLayers.has(LAYER_PARENTS[sub.dataset.layer]);
+            sub.querySelector('input').disabled = parentOff;
+            sub.classList.toggle('legend-disabled', parentOff);
+        });
+        syncSublayers();
         setInterval(() => {
             if (!decodeEnabled.size) return;
             var plotted = [...decodeEnabled].reduce((n, key) => n + decodePlotted[key], 0);
@@ -392,12 +414,38 @@ function showLegendRow(key) {
     if (row) row.hidden = false;
 }
 
-// Popup
+// Info panel
 function openPopup(record) {
     if (!record) return;
     hoverLabel.remove();
-    popup.setLngLat(record.coords).setDOMContent(buildPopup(record)).addTo(map);
+    if (!infobar) {
+        infobar = document.createElement('aside');
+        infobar.className = 'infobar';
+        infobar.setAttribute('aria-label', 'Selected observation');
+        infobar.innerHTML = '<button type="button" class="btn-close infobar-close" aria-label="Close"></button><div class="infobar-body"></div>';
+        infobar.querySelector('.infobar-close').addEventListener('click', closeInfo);
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.body.classList.contains('info-open')) closeInfo(); });
+        document.body.appendChild(infobar);
+    }
+    // On narrow screens the two panels can't both fit
+    if (window.innerWidth < 760) document.body.classList.remove('queue-open');
+    infobar.querySelector('.infobar-body').replaceChildren(buildPopup(record));
+    infobar.scrollTop = 0;
+    document.body.classList.add('info-open');
+    selectedMarker.setLngLat(record.coords).addTo(map);
     keepPopupInView();
+}
+
+function closeInfo() {
+    document.body.classList.remove('info-open');
+    selectedMarker.remove();
+}
+
+// Horizontal offset that centres a point in the map area left uncovered by the panels
+function panelOffset() {
+    var left = document.body.classList.contains('queue-open') ? document.querySelector('.queue').getBoundingClientRect().width : 0;
+    var right = infobar && document.body.classList.contains('info-open') ? infobar.getBoundingClientRect().width : 0;
+    return [(left - right) / 2, 0];
 }
 
 function buildPopup(record) {
@@ -926,16 +974,17 @@ async function showReport(out, title, key, index) {
     }
 }
 
-// Pan so a popup isn't cut off by the screen edges or the sidebar
+// Pan so the selected point isn't hidden under the sidebar or the info panel
 function keepPopupInView() {
-    var el = popup.getElement();
-    if (!el) return;
-    var box = el.getBoundingClientRect();
+    var lngLat = selectedMarker.getLngLat();
+    if (!lngLat || !document.body.classList.contains('info-open')) return;
+    var point = map.project(lngLat);
     var view = map.getContainer().getBoundingClientRect();
-    var left = view.left + (document.body.classList.contains('queue-open')
-        ? document.querySelector('.queue').getBoundingClientRect().right - view.left : 0);
-    var dx = Math.min(0, box.left - left - 10) || Math.max(0, box.right - view.right + 10);
-    var dy = Math.min(0, box.top - view.top - 10) || Math.max(0, box.bottom - view.bottom + 10);
+    var left = document.body.classList.contains('queue-open') ? document.querySelector('.queue').getBoundingClientRect().right - view.left : 0;
+    var right = infobar.getBoundingClientRect().left - view.left;
+    var margin = 40;
+    var dx = point.x < left + margin ? point.x - (left + margin) : point.x > right - margin ? point.x - (right - margin) : 0;
+    var dy = point.y < margin ? point.y - margin : point.y > view.height - margin ? point.y - (view.height - margin) : 0;
     if (!dx && !dy) return;
     try {
         map.panBy([dx, dy]);
@@ -2465,8 +2514,8 @@ function renderQueueRow(entry) {
     row.addEventListener('click', function(){
         var target = currentRecord(entry);
         if (target) {
-            map.flyTo({ center: target.coords, zoom: Math.max(map.getZoom(), 5) });
             openPopup(target);
+            map.flyTo({ center: target.coords, zoom: Math.max(map.getZoom(), 5), offset: panelOffset() });
             return;
         }
         var detail = row.querySelector('.queue-detail');
@@ -2828,8 +2877,9 @@ function callDecoder(fn, ...args) {
 // Optional layers decoded in the background: some notifications carry no
 // geometry, but the reports inside the BUFR file do, so download and decode the
 // file and plot each report.
-// GTS-to-WIS2: surface (IS), upper-air (IU) and ocean (IO) bulletins; satellite series are skipped.
-const GTS_TOPIC = /\/a\/wis2\/[^/]+-gts-to-wis2\/data\/core\/I\/([SUO])\//;
+// GTS-to-WIS2: every BUFR bulletin series (T1 = I); reports are sorted into
+// sublayers once decoded
+const GTS_TOPIC = /\/a\/wis2\/[^/]+-gts-to-wis2\/data\/core\/I\//;
 // WIS2-to-GTS: whatever BUFR those centres pass on (any size limit the link states applies)
 const WIS2_GTS_TOPIC = /\/a\/wis2\/[^/]+-wis2-to-gts\//;
 // Files: any other small cached file without geometry that may be BUFR, plus
@@ -2864,6 +2914,8 @@ function queueDecode(kind, topic, feature) {
     var link = (feature.links || []).find((l) => l.rel == 'canonical' && corsFriendly(l.href));
     // Each cache republishes the file; take the first copy a browser can download
     if (!link || decodeSeen.has(props.data_id) || (!showSpace && isSpaceBased(topic))) return;
+    // Satellite bulletin series only while their sublayer is on
+    if (kind === 'gts' && GATEWAY_SATELLITE.test(topic) && effectiveHidden().includes('gts-satellite')) return;
     decodeSeen.add(props.data_id);
     if (decodeSeen.size > DATA_LINKS_MAX) decodeSeen.delete(decodeSeen.values().next().value);
     // XML needs no decoder, so it skips the queue rather than waiting behind BUFR
@@ -2889,7 +2941,7 @@ async function pumpDecode() {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         var bytes = bufrPart(new Uint8Array(await response.arrayBuffer()));
         if (bytes) {
-            var limit = job.kind === 'files' ? DECODE_FILE_MAX_REPORTS : 0;
+            var limit = DECODE_FILE_MAX_REPORTS;
             var subsets = JSON.parse(await callDecoder('decode_subsets', bytes, limit));
             subsets.forEach(([rows, profile], i) => plotDecodedReport(job, rows, profile, i));
         }
@@ -2911,6 +2963,8 @@ function plotDecodedReport(job, rows, profile, index) {
 
     var props = job.feature.properties || {};
     var [channel, t] = job.topic.split('/a/wis2/');
+    var subLayer = job.kind === 'gts' ? `gts-${reportClass(values, profile)}` : null;
+    if (subLayer && effectiveHidden().includes(subLayer) && subLayer === 'gts-satellite') return;
     var record = {
         id: nextId++,
         coords: [lon, lat],
@@ -2921,6 +2975,7 @@ function plotDecodedReport(job, rows, profile, index) {
         discipline: disciplineOf(t),
         webcam: false,
         decodedLayer: job.kind,
+        subLayer: subLayer,
         props: {
             data_id: `${props.data_id}#${index}`,
             pubtime: props.pubtime,
@@ -2929,7 +2984,7 @@ function plotDecodedReport(job, rows, profile, index) {
         links: job.feature.links || [],
         wsi: reportId(values),
         format: 'bufr',
-        color: COLORS[job.kind],
+        color: subLayer ? GTS_CLASSES[subLayer.slice(4)].color : COLORS[job.kind],
         source: null,
         decoded: { subsets: 1, index: 0, rows: rows, profile: profile },
         alt: aircraftAltitude(values, t),
@@ -2984,6 +3039,18 @@ function plotCitypage(job, xml) {
     });
     decodePlotted[job.kind]++;
     linkDecoded(props.data_id, record);
+}
+
+// Which GTS sublayer a report belongs to, from the identifiers it carries.
+// Order matters: satellite and aircraft reports can also carry station-like ids.
+function reportClass(values, profile) {
+    if (values.has(1007)) return 'satellite';
+    if (values.has(1008) || values.has(1006)) return 'aircraft';
+    if (profile && profile.length >= 2) return 'upperair';
+    if (values.has(1011)) return 'ship';
+    if (values.has(1087) || values.has(1005) || values.has(2149)) return 'buoy';
+    if (values.has(1015) || values.has(1001) || values.has(1125)) return 'station';
+    return 'other';
 }
 
 // Altitude in metres for aircraft reports (AMDAR and similar), else null:
