@@ -15,43 +15,53 @@ const MAX_DECODED_POINTS = 30000;  // ...with reports decoded from files capped 
 const FADE_MS = 60 * 60 * 1000;  // Points fade over an hour
 const PULSE_MS = 1600;           // Length of the ripple on new arrivals
 const COLORS = {
-    cache: '#38965A',
-    webcam: '#F8A700',
     origin: '#6f9fd8',
     gts: '#9b6cd1',
     wis2gts: '#c2255c',
     files: '#83C95D',
 };
-// GTS-to-WIS2 sublayers. Satellite bulletins are numerous and large, so that
-// one is off until asked for (and their bulletins aren't downloaded until then).
-const GTS_CLASSES = {
-    station: { label: 'Weather stations', color: '#9b6cd1', title: 'Reports with a station name, WMO block and station number, or WIGOS identifier' },
-    upperair: { label: 'Upper-air soundings', color: '#5f3dc4', title: 'Reports with a profile of pressure levels (radiosondes, TEMP)' },
-    aircraft: { label: 'Aircraft', color: '#1098ad', title: 'Reports with an aircraft registration or flight number (AMDAR, AIREP)' },
-    ship: { label: 'Ships', color: '#364fc7', title: 'Reports with a ship or mobile station identifier' },
-    buoy: { label: 'Buoys and floats', color: '#e8590c', title: 'Reports with a marine platform or buoy identifier' },
-    satellite: { label: 'Satellites', color: '#868e96', optIn: true, title: 'Reports with a satellite identifier (winds, radiances, occultations); downloaded only while this is on' },
-    other: { label: 'Other', color: '#c0a8e8', title: 'Reports without any of the identifiers above' },
+// Kinds of observation, shared by the Cache and GTS-to-WIS2 groups so each kind
+// has one colour on the map. Cache points are sorted by topic (see topicClass),
+// decoded reports by the identifiers they carry (see reportClass).
+const OBS_CLASSES = {
+    station: { label: 'Weather stations', color: '#38965A', title: 'Surface observations from fixed stations' },
+    upperair: { label: 'Upper-air soundings', color: '#5f3dc4', title: 'Profiles through the atmosphere (radiosondes, TEMP)' },
+    aircraft: { label: 'Aircraft', color: '#1098ad', title: 'Observations from aircraft (AMDAR, AIREP)' },
+    ship: { label: 'Ships', color: '#364fc7', title: 'Observations from ships and other mobile stations' },
+    buoy: { label: 'Buoys and floats', color: '#e8590c', title: 'Ocean observations from buoys, floats and moorings' },
+    satellite: { label: 'Space-based (satellites)', color: '#868e96', title: 'Observations from satellites (winds, radiances, occultations)' },
+    webcam: { label: 'Webcam images', color: '#F8A700', cacheOnly: true, title: 'Camera images' },
+    other: { label: 'Other', color: '#c0a8e8', title: 'Anything not in the groups above' },
 };
+// GTS satellite bulletins are numerous and large, so that sublayer is off until
+// asked for (and the bulletins aren't downloaded until then)
+const GTS_OPT_IN = ['satellite'];
 
 // Legend rows, grouped by source; each can be switched on and off. Rows other
 // than opt-in ones stay hidden until a point of that kind has arrived. Opt-in
 // rows are decoded in the browser, since their notifications carry no location.
 const LAYER_GROUPS = [
-    { label: 'WIS2 data', layers: [
-        { key: 'obs', label: 'Cache', color: COLORS.cache },
-        // A sublayer: shown under its parent, and off whenever the parent is off
-        { key: 'files', parent: 'obs', label: 'Decode required', color: COLORS.files, optIn: true,
-            title: 'Download and decode small cached files whose notification has no location, and plot the reports inside' },
-        { key: 'webcam', label: 'Webcam images', color: COLORS.webcam },
+    { key: 'wis2', label: 'WIS2', subtitle: 'Published directly through the WMO Information System', layers: [
+        { key: 'obs', label: 'Cache', color: OBS_CLASSES.station.color, optIn: true },  // Always listed
+        // Sublayers sit under their parent and are off whenever it is off
+        ...Object.entries(OBS_CLASSES).map(([key, c]) => ({ key: `cache-${key}`, parent: 'obs', label: c.label, color: c.color, title: c.title })),
+        // An option rather than a layer: decoded reports join the groups above
+        { key: 'files', parent: 'obs', option: true, label: 'Decode files without a location', hint: 'Adds the reports inside to the groups above',
+            title: 'Download and decode small cached files whose notification has no location; the reports inside join the groups above' },
         { key: 'origin', label: 'Origin', color: COLORS.origin, ring: true },
     ] },
-    { label: 'GTS gateways', layers: [
+    { key: 'gts', label: 'GTS gateways', subtitle: 'Bulletins relayed between WIS2 and the older GTS', layers: [
         { key: 'gts', label: 'GTS-to-WIS2 (decode required)', color: COLORS.gts, optIn: true,
             title: 'Download and decode the BUFR bulletins republished from the GTS into WIS2 (centres ending -gts-to-wis2), and plot the reports inside' },
         // Each decoded report is sorted by the identifiers it carries (see reportClass)
-        ...Object.entries(GTS_CLASSES).map(([key, c]) => ({ key: `gts-${key}`, parent: 'gts', label: c.label, color: c.color,
-            optIn: c.optIn, title: c.title })),
+        ...Object.entries(OBS_CLASSES).filter(([key, c]) => !c.cacheOnly).flatMap(([key, c]) => [
+            { key: `gts-${key}`, parent: 'gts', label: c.label, color: c.color, optIn: GTS_OPT_IN.includes(key),
+                title: c.title + (GTS_OPT_IN.includes(key) ? '; downloaded only while this is on' : '') },
+            // Aircraft can be drawn as flight paths; shown once the Aircraft row is
+            ...(key === 'aircraft' ? [{ key: 'gts-tracks', parent: 'gts-aircraft', label: 'Tracks', follow: true, track: true,
+                color: 'linear-gradient(90deg, #99e9f2, #22b8cf, #1971c2, #5f3dc4)',
+                title: 'Each aircraft drawn in the air at its altitude: a path coloured by height (light low, dark high), chevrons pointing the way it is flying, and a red arrowhead at its latest report. Tilt the map to see it in 3D. Off: every report is a point on the ground.' }] : []),
+        ]),
         { key: 'wis2gts', label: 'WIS2-to-GTS (decode required)', color: COLORS.wis2gts, optIn: true,
             title: 'Download and decode the BUFR that WIS2 centres pass on to the GTS (centres ending -wis2-to-gts), and plot the reports inside' },
     ] },
@@ -59,9 +69,15 @@ const LAYER_GROUPS = [
 const hiddenLayers = new Set(['gts', 'wis2gts', 'files', 'gts-satellite']);
 const LAYER_PARENTS = Object.fromEntries(LAYER_GROUPS.flatMap((g) => g.layers).filter((l) => l.parent).map((l) => [l.key, l.parent]));
 
-// Layers switched off directly, plus sublayers whose parent is off
+function ancestors(key) {
+    var out = [];
+    for (var k = LAYER_PARENTS[key]; k; k = LAYER_PARENTS[k]) out.push(k);
+    return out;
+}
+
+// Layers switched off directly, plus sublayers with any ancestor off
 function effectiveHidden() {
-    return [...new Set([...hiddenLayers, ...Object.keys(LAYER_PARENTS).filter((k) => hiddenLayers.has(LAYER_PARENTS[k]))])];
+    return [...new Set([...hiddenLayers, ...Object.keys(LAYER_PARENTS).filter((k) => ancestors(k).some((a) => hiddenLayers.has(a)))])];
 }
 let showSpace = true;  // Satellite products, switched as a group across every layer
 const seenLayers = new Set();
@@ -104,15 +120,26 @@ const map = new maplibregl.Map({
     maxZoom: 15,
 });
 
-const ALTITUDE_ID = 1e9;     // Altitude bars share the points source, offset from their point's id
 const records = new Map();  // id -> record for every point on the map
 const pools = { wis2: new Map(), decoded: new Map() };  // Same records, in arrival order per cap
 const byDataId = new Map(); // data_id -> record, so each observation is drawn once
 let nextId = 1;
 let toAdd = [];
 let toRemove = [];
+let toUpdate = [];
 let pulses = [];            // Recent arrivals, drawn as expanding rings
 let animating = false;
+
+// Altitude in metres to a colour, light near the ground to deep at cruise height
+const ALTITUDE_COLORS = ['interpolate', ['linear'], ['coalesce', ['get', 'alt'], 0],
+    0, '#99e9f2', 3000, '#22b8cf', 7000, '#1971c2', 11000, '#5f3dc4'];
+
+// Extrusion height in metres from a feature property, exaggerated when zoomed
+// out so heights stay visible on the globe
+function altitudeHeight(property) {
+    var alt = ['get', property];
+    return ['interpolate', ['linear'], ['zoom'], 1, ['*', alt, 60], 4, ['*', alt, 20], 8, ['*', alt, 4], 12, alt];
+}
 
 // The selected point's details open in a panel on the right, and a ring marks
 // the point on the map
@@ -153,20 +180,32 @@ map.on('load', () => {
             'circle-pitch-alignment': 'map',
         },
     });
-    // Reports with an altitude (aircraft) rise as bars when the map is tilted.
-    // Heights are exaggerated when zoomed out so they stay visible on the globe.
+    // Aircraft flight paths and satellite ground tracks, under the points
+    map.addSource('tracks', { type: 'geojson', data: empty });
     map.addLayer({
-        id: 'altitude',
-        type: 'fill-extrusion',
-        source: 'points',
+        id: 'tracks',
+        type: 'line',
+        source: 'tracks',
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        filter: ['==', ['geometry-type'], 'LineString'],
         paint: {
-            'fill-extrusion-color': ['get', 'color'],
-            'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'],
-                1, ['*', ['get', 'alt'], 60],
-                4, ['*', ['get', 'alt'], 20],
-                8, ['*', ['get', 'alt'], 4],
-                12, ['get', 'alt']],
-            'fill-extrusion-opacity': 0.75,
+            // Aircraft segments are coloured by altitude; satellites by their sublayer
+            'line-color': ['case', ['has', 'alt'], ALTITUDE_COLORS, ['get', 'color']],
+            'line-width': ['interpolate', ['linear'], ['zoom'], 1, ['case', ['==', ['get', 'kind'], 'satellite'], 1, 2], 6, 3.5],
+        },
+    });
+    // Aircraft paths float at their altitude: a band coloured by height, dark
+    // chevrons pointing the way of travel, and a red arrowhead at the latest report
+    map.addLayer({
+        id: 'track-ribbons',
+        type: 'fill-extrusion',
+        source: 'tracks',
+        filter: ['==', ['geometry-type'], 'Polygon'],
+        paint: {
+            'fill-extrusion-color': ['match', ['get', 'role'], 'marker', '#e03131', 'arrow', '#212529', ALTITUDE_COLORS],
+            'fill-extrusion-height': altitudeHeight('top'),
+            'fill-extrusion-base': altitudeHeight('bottom'),
+            'fill-extrusion-opacity': 0.9,
         },
     });
     map.addLayer({
@@ -177,7 +216,8 @@ map.on('load', () => {
         paint: {
             // Origin-only messages are hollow rings; cache copies are filled
             'circle-color': ['get', 'color'],
-            'circle-stroke-color': ['case', ['get', 'origin'], ['get', 'color'], '#ffffff'],
+            // GTS gateway reports get a dark outline, other cache copies a white one
+            'circle-stroke-color': ['case', ['get', 'origin'], ['get', 'color'], ['get', 'gateway'], '#343a40', '#ffffff'],
             'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 1, 0.75, 6, 1.5],
             'circle-radius': ['interpolate', ['linear'], ['zoom'], 1, 2, 4, 4.5, 8, 8, 15, 16],
             'circle-pitch-alignment': 'map',
@@ -191,7 +231,34 @@ map.on('load', () => {
     setInterval(flushPoints, 500);
 
     map.on('click', 'points', (e) => openPopup(records.get(e.features[0].id)));
-    map.on('click', 'altitude', (e) => openPopup(records.get(e.features[0].id - ALTITUDE_ID)));
+    map.on('click', 'tracks', (e) => {
+        // Points take precedence where both are under the pointer
+        if (map.queryRenderedFeatures(e.point, { layers: ['points'] }).length) return;
+        openPopup(records.get(e.features[0].properties.recordId || e.features[0].properties.lastId));
+    });
+    map.on('mousemove', 'tracks', (e) => {
+        if (map.queryRenderedFeatures(e.point, { layers: ['points'] }).length) return;
+        var f = e.features[0].properties;
+        map.getCanvas().style.cursor = 'pointer';
+        hoverLabel.setLngLat(e.lngLat).setText(f.alt !== undefined
+            ? `${f.label} · ${Math.round(f.alt).toLocaleString()} m` : `${f.label} · ${f.count} reports`).addTo(map);
+    });
+    map.on('mouseleave', 'tracks', () => {
+        map.getCanvas().style.cursor = '';
+        hoverLabel.remove();
+    });
+    map.on('click', 'track-ribbons', (e) => openPopup(records.get(e.features[0].properties.recordId)));
+    map.on('mousemove', 'track-ribbons', (e) => {
+        var f = e.features[0].properties;
+        map.getCanvas().style.cursor = 'pointer';
+        hoverLabel.setLngLat(e.lngLat).setText(`${f.label} · ${Math.round(f.alt).toLocaleString()} m${f.role === 'marker' ? ' · latest' : ''}`).addTo(map);
+    });
+    map.on('mouseleave', 'track-ribbons', () => {
+        map.getCanvas().style.cursor = '';
+        hoverLabel.remove();
+    });
+    // Band and arrow sizes are in screen pixels, so rebuild them after zooming
+    map.on('zoomend', () => { tracksDirty = true; });
     map.on('mousemove', 'points', (e) => {
         var record = records.get(e.features[0].id);
         map.getCanvas().style.cursor = 'pointer';
@@ -230,13 +297,19 @@ function addPoint(record) {
             channel: record.channel,
             centre: record.centre,
             discipline: record.discipline,
-            space: isSpaceBased(record.topic) || record.subLayer === 'gts-satellite',
+            space: isSpaceBased(record.topic) || /-satellite$/.test(layerOf(record)),
+            via: record.decodedLayer || '',
+            gateway: record.decodedLayer === 'gts' || record.decodedLayer === 'wis2gts',
             topic: record.topic.toLowerCase(),
         },
     };
+    // While tracks are on, an aircraft is drawn only at its latest report and
+    // the track line carries the rest
+    if (!isLatestOnTrack(record)) feature.properties.superseded = true;
+    if (record.track && record.track.startsWith('aircraft:')) feature.properties.tracked = true;
+    record.feature = feature;
     toAdd.push(feature);
-    if (record.alt > 0) toAdd.push(altitudeBar(record, feature.properties));
-    if (!reduceMotion) pulses.push(feature);
+    if (!reduceMotion && !feature.properties.superseded) pulses.push(feature);
     if (!seenLayers.has(feature.properties.layer)) showLegendRow(feature.properties.layer);
 
     var pool = record.decodedLayer ? pools.decoded : pools.wis2;
@@ -247,53 +320,78 @@ function addPoint(record) {
     return record;
 }
 
-// A small square column at the report's location, extruded to its altitude
-function altitudeBar(record, properties) {
-    var [lon, lat] = record.coords;
-    var half = 20;  // km
-    var dLat = half / 111.32;
-    var dLon = half / (111.32 * Math.max(Math.cos(lat * Math.PI / 180), 0.05));
-    return {
-        type: 'Feature',
-        id: record.id + ALTITUDE_ID,
-        geometry: {
-            type: 'Polygon',
-            coordinates: [[
-                [lon - dLon, lat - dLat], [lon + dLon, lat - dLat],
-                [lon + dLon, lat + dLat], [lon - dLon, lat + dLat], [lon - dLon, lat - dLat],
-            ]],
-        },
-        properties: { ...properties, alt: record.alt },
-    };
+// The latest report on each aircraft track: a report takes over from the
+// track's previous latest, unless that one was observed later
+const latestOnTrack = new Map();  // aircraft track key -> record
+
+function isLatestOnTrack(record) {
+    if (!record.track || !record.track.startsWith('aircraft:')) return true;
+    var current = latestOnTrack.get(record.track);
+    if (current && records.has(current.id)) {
+        if (current.observed > record.observed) return false;
+        supersede(current);
+    }
+    latestOnTrack.set(record.track, record);
+    return true;
+}
+
+// Flags a point as no longer its aircraft's latest, in place if it hasn't been drawn yet
+function supersede(record) {
+    record.feature.properties.superseded = true;
+    if (!toAdd.includes(record.feature)) {
+        toUpdate.push({ id: record.id, addOrUpdateProperties: [{ key: 'superseded', value: true }] });
+    }
 }
 
 function layerOf(record) {
     if (record.subLayer) return record.subLayer;
     if (record.decodedLayer) return record.decodedLayer;
     if (record.channel !== 'cache') return 'origin';
-    return record.webcam ? 'webcam' : 'obs';
+    return `cache-${topicClass(record)}`;
+}
+
+// The kind of observation a cache notification holds, from its topic
+// (data/core/<discipline>/<kind of observation>/...)
+function topicClass(record) {
+    var t = record.topic.toLowerCase();
+    if (record.webcam) return 'webcam';
+    if (/space-based-observations/.test(t)) return 'satellite';
+    if (/aircraft|amdar|aviation/.test(t)) return 'aircraft';
+    if (/upper-air|radiosonde|\/temp(\/|$)|\/pilot(\/|$)|profil/.test(t)) return 'upperair';
+    if (/\/ship/.test(t)) return 'ship';
+    if (/buoy|float|argo|glider|mooring|tide-gauge|ocean\//.test(t)) return 'buoy';
+    if (/surface-based-observations|synop|\/climate\//.test(t)) return 'station';
+    return 'other';
 }
 
 function removePoint(record) {
+    if (record.track) tracksDirty = true;
     records.delete(record.id);
     pools[record.decodedLayer ? 'decoded' : 'wis2'].delete(record.id);
     if (byDataId.get(record.props.data_id) === record) byDataId.delete(record.props.data_id);
-    var ids = record.alt > 0 ? [record.id, record.id + ALTITUDE_ID] : [record.id];
+    if (record.track && latestOnTrack.get(record.track) === record) latestOnTrack.delete(record.track);
     var queued = toAdd.length;
-    toAdd = toAdd.filter((f) => !ids.includes(f.id));
-    if (toAdd.length === queued) toRemove.push(...ids);
+    toAdd = toAdd.filter((f) => f.id !== record.id);
+    if (toAdd.length === queued) toRemove.push(record.id);
+    toUpdate = toUpdate.filter((u) => u.id !== record.id);
 }
 
 // Batch updates so the map isn't redrawn for every message
 function flushPoints() {
     var source = map.getSource('points');
     if (!source) return;
-    if (toAdd.length || toRemove.length) {
-        source.updateData({ add: toAdd, remove: toRemove });
+    if (toAdd.length || toRemove.length || toUpdate.length) {
+        source.updateData({ add: toAdd, remove: toRemove, update: toUpdate });
         toAdd = [];
         toRemove = [];
+        toUpdate = [];
     }
     var now = Date.now();
+    if (tracksDirty && now - tracksBuilt > TRACK_REBUILD_MS) {
+        tracksDirty = false;
+        tracksBuilt = now;
+        map.getSource('tracks').setData({ type: 'FeatureCollection', features: buildTracks() });
+    }
     pulses = pulses.filter((f) => now - f.properties.born < PULSE_MS);
     map.getSource('pulses').setData({ type: 'FeatureCollection', features: pulses });
     if (pulses.length && !animating) {
@@ -319,6 +417,7 @@ function paintAge() {
     var opacity = ['interpolate', ['linear'], ['-', Date.now(), ['get', 'born']], 0, 1, FADE_MS, 0.35];
     map.setPaintProperty('points', 'circle-opacity', ['case', ['get', 'origin'], 0, opacity]);
     map.setPaintProperty('points', 'circle-stroke-opacity', opacity);
+    map.setPaintProperty('tracks', 'line-opacity', ['interpolate', ['linear'], ['-', Date.now(), ['get', 'born']], 0, 0.9, FADE_MS, 0.35]);
 }
 
 class ProjectionControl {
@@ -359,12 +458,19 @@ class LegendControl {
         container.className = 'maplibregl-ctrl legend';
         container.innerHTML = `
             ${LAYER_GROUPS.map((g) => `
-            <div class="legend-group">${g.label}</div>
+            <section class="legend-section legend-section-${g.key}">
+            <div class="legend-group">${g.label}<small>${g.subtitle}</small></div>
             ${g.layers.map((l) => `
-            <label class="legend-toggle${l.parent ? ' legend-sub' : ''}" data-layer="${l.key}"${l.optIn || g.layers.some((c) => c.parent === l.key && c.optIn) ? '' : ' hidden'}${l.title ? ` title="${l.title}"` : ''}>
+            ${l.option ? `
+            <label class="legend-toggle legend-option form-switch" data-layer="${l.key}"${l.title ? ` title="${l.title}"` : ''}>
+                <input type="checkbox" class="form-check-input" role="switch"${hiddenLayers.has(l.key) ? '' : ' checked'}>
+                <span>${l.label}<small>${l.hint}</small></span>
+            </label>` : `
+            <label class="legend-toggle${l.parent ? ` legend-sub legend-depth-${ancestors(l.key).length}` : ''}" data-layer="${l.key}"${l.optIn || g.layers.some((c) => c.parent === l.key && c.optIn) ? '' : ' hidden'}${l.title ? ` title="${l.title}"` : ''}>
                 <input type="checkbox" class="form-check-input"${hiddenLayers.has(l.key) ? '' : ' checked'}>
-                <span class="legend-dot${l.ring ? ' legend-ring' : ''}" style="--color: ${l.color}"></span>${l.label}
-            </label>`).join('')}`).join('')}
+                <span class="legend-dot${l.ring ? ' legend-ring' : ''}${l.track ? ' legend-line' : ''}" style="--color: ${l.color}"></span>${l.label}
+            </label>`}`).join('')}
+            </section>`).join('')}
             <div class="legend-note legend-decode" hidden></div>
             <div class="legend-note">Pulses mark new arrivals; points fade over an hour</div>
             <div class="legend-about">WIS 2.0 Live shows real-time weather observations as they are published through the WMO Information System. This page is not affiliated with WMO.</div>`;
@@ -386,8 +492,8 @@ class LegendControl {
             });
         });
         // Sublayers are greyed out while their parent is off
-        var syncSublayers = () => container.querySelectorAll('.legend-sub').forEach((sub) => {
-            var parentOff = hiddenLayers.has(LAYER_PARENTS[sub.dataset.layer]);
+        var syncSublayers = () => container.querySelectorAll('.legend-sub, .legend-option').forEach((sub) => {
+            var parentOff = ancestors(sub.dataset.layer).some((a) => hiddenLayers.has(a));
             sub.querySelector('input').disabled = parentOff;
             sub.classList.toggle('legend-disabled', parentOff);
         });
@@ -412,6 +518,11 @@ function showLegendRow(key) {
     seenLayers.add(key);
     var row = document.querySelector(`.legend-toggle[data-layer="${key}"]`);
     if (row) row.hidden = false;
+    // Rows that follow their parent, such as aircraft tracks
+    LAYER_GROUPS.flatMap((g) => g.layers).filter((l) => l.follow && l.parent === key).forEach((l) => {
+        var child = document.querySelector(`.legend-toggle[data-layer="${l.key}"]`);
+        if (child) child.hidden = false;
+    });
 }
 
 // Info panel
@@ -432,7 +543,9 @@ function openPopup(record) {
     infobar.querySelector('.infobar-body').replaceChildren(buildPopup(record));
     infobar.scrollTop = 0;
     document.body.classList.add('info-open');
-    selectedMarker.setLngLat(record.coords).addTo(map);
+    var inAir = record.track && record.track.startsWith('aircraft:') && !effectiveHidden().includes('gts-tracks');
+    selectedMarker.setLngLat(record.coords);
+    if (inAir) selectedMarker.remove(); else selectedMarker.addTo(map);
     keepPopupInView();
 }
 
@@ -2071,12 +2184,20 @@ function applyMapFilter() {
     if (filters.disciplines.size) expr.push(['in', ['get', 'discipline'], ['literal', [...filters.disciplines]]]);
     if (filters.text) expr.push(['in', filters.text, ['get', 'topic']]);
     if (!showSpace) expr.push(['!', ['get', 'space']]);
-    if (hiddenLayers.size) expr.push(['!', ['in', ['get', 'layer'], ['literal', effectiveHidden()]]]);
+    if (hiddenLayers.size) {
+        var hidden = effectiveHidden();
+        expr.push(['!', ['in', ['get', 'layer'], ['literal', hidden]]]);
+        // Reports decoded by a switched-off option or layer go too, whatever group they're in
+        var hiddenVia = Object.keys(DECODE_LAYERS).filter((k) => hidden.includes(k));
+        if (hiddenVia.length) expr.push(['!', ['in', ['coalesce', ['get', 'via'], ''], ['literal', hiddenVia]]]);
+    }
     if (!map.getLayer('points')) return;
-    // The points source also holds altitude bars, so each layer picks its geometry
-    map.setFilter('points', [...expr, ['==', ['geometry-type'], 'Point']]);
-    map.setFilter('altitude', [...expr, ['==', ['geometry-type'], 'Polygon']]);
-    map.setFilter('pulses', expr.length > 1 ? expr : null);
+    var tracksOn = !effectiveHidden().includes('gts-tracks');
+    // With aircraft tracks on, tracked aircraft are drawn in the air instead of on the ground
+    map.setFilter('points', tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr);
+    map.setFilter('pulses', tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : (expr.length > 1 ? expr : null));
+    map.setFilter('tracks', [...expr, ['==', ['geometry-type'], 'LineString']]);
+    map.setFilter('track-ribbons', [...expr, ['==', ['geometry-type'], 'Polygon']]);
 }
 
 function applyFilters() {
@@ -2666,11 +2787,12 @@ function onMessage(topic, feature) {
         links: links,
         wsi: stationId(props),
         format: formatOf(feature),
-        color: channel !== 'cache' ? COLORS.origin : webcam ? COLORS.webcam : COLORS.cache,
+        color: COLORS.origin,
         source: webcam ? null : bufrSource(feature, props),
         decoded: null,
         born: Date.now(),
     };
+    if (channel === 'cache') record.color = OBS_CLASSES[topicClass(record)].color;
     return addPoint(record);
 }
 
@@ -2914,8 +3036,9 @@ function queueDecode(kind, topic, feature) {
     var link = (feature.links || []).find((l) => l.rel == 'canonical' && corsFriendly(l.href));
     // Each cache republishes the file; take the first copy a browser can download
     if (!link || decodeSeen.has(props.data_id) || (!showSpace && isSpaceBased(topic))) return;
-    // Satellite bulletin series only while their sublayer is on
+    // Satellite files only while their group is on
     if (kind === 'gts' && GATEWAY_SATELLITE.test(topic) && effectiveHidden().includes('gts-satellite')) return;
+    if (kind === 'files' && isSpaceBased(topic) && effectiveHidden().includes('cache-satellite')) return;
     decodeSeen.add(props.data_id);
     if (decodeSeen.size > DATA_LINKS_MAX) decodeSeen.delete(decodeSeen.values().next().value);
     // XML needs no decoder, so it skips the queue rather than waiting behind BUFR
@@ -2963,8 +3086,10 @@ function plotDecodedReport(job, rows, profile, index) {
 
     var props = job.feature.properties || {};
     var [channel, t] = job.topic.split('/a/wis2/');
-    var subLayer = job.kind === 'gts' ? `gts-${reportClass(values, profile)}` : null;
-    if (subLayer && effectiveHidden().includes(subLayer) && subLayer === 'gts-satellite') return;
+    // GTS reports join GTS-to-WIS2's groups and decoded cache files join Cache's
+    var cls = reportClass(values, profile);
+    var subLayer = job.kind === 'gts' ? `gts-${cls}` : job.kind === 'files' ? `cache-${cls}` : null;
+    if (subLayer === 'gts-satellite' && effectiveHidden().includes(subLayer)) return;
     var record = {
         id: nextId++,
         coords: [lon, lat],
@@ -2976,6 +3101,8 @@ function plotDecodedReport(job, rows, profile, index) {
         webcam: false,
         decodedLayer: job.kind,
         subLayer: subLayer,
+        track: trackKey(subLayer, values),
+        observed: Date.parse(reportTime(values) || '') || Date.now(),
         props: {
             data_id: `${props.data_id}#${index}`,
             pubtime: props.pubtime,
@@ -2984,13 +3111,14 @@ function plotDecodedReport(job, rows, profile, index) {
         links: job.feature.links || [],
         wsi: reportId(values),
         format: 'bufr',
-        color: subLayer ? GTS_CLASSES[subLayer.slice(4)].color : COLORS[job.kind],
+        color: subLayer ? OBS_CLASSES[cls].color : COLORS[job.kind],
         source: null,
         decoded: { subsets: 1, index: 0, rows: rows, profile: profile },
         alt: aircraftAltitude(values, t),
         born: Date.now(),
     };
     addPoint(record);
+    if (record.track) tracksDirty = true;
     decodePlotted[job.kind]++;
     if (!index) linkDecoded(props.data_id, record);
 }
@@ -3027,18 +3155,216 @@ function plotCitypage(job, xml) {
         discipline: disciplineOf(t),
         webcam: false,
         decodedLayer: job.kind,
+        subLayer: 'cache-other',
         props: { data_id: key, pubtime: props.pubtime, metadata_id: site.textContent.trim() },
         links: job.feature.links || [],
         wsi: null,
         french: french,
         format: 'xml',
-        color: COLORS[job.kind],
+        color: OBS_CLASSES.other.color,
         source: null,
         decoded: { xml: xml },
         born: Date.now(),
     });
     decodePlotted[job.kind]++;
     linkDecoded(props.data_id, record);
+}
+
+// ---------- Tracks. Aircraft reports are joined by identifier in time order.
+// A satellite scan has many reports at once, so its track follows the centre of
+// each minute's reports; steps that don't move at orbital speed are dropped,
+// which leaves polar orbiters' ground tracks and no tracks for geostationary ones.
+const TRACK_REBUILD_MS = 2000;
+const TRACK_MAX_GAP_MS = 90 * 60e3;
+const AIRCRAFT_MAX_KMH = 1300;           // Faster than this means a mixed-up identifier
+const ORBIT_KM_PER_MIN = [250, 550];     // Ground speed of a low orbit is about 400 km a minute
+const SATELLITE_MIN_STEPS = 4;
+let tracksDirty = false;
+let tracksBuilt = 0;
+
+function trackKey(subLayer, values) {
+    var text = (id) => (typeof values.get(id) === 'string' ? values.get(id).trim() : values.has(id) ? String(values.get(id)) : '');
+    if (subLayer === 'gts-aircraft') {
+        var id = text(1008) || text(1006);
+        return id ? `aircraft:${id}` : null;
+    }
+    if (subLayer === 'gts-satellite' && values.has(1007)) return `satellite:${values.get(1007)}`;
+    return null;
+}
+
+function distanceKm([lon1, lat1], [lon2, lat2]) {
+    var r = Math.PI / 180;
+    var a = Math.sin((lat2 - lat1) * r / 2) ** 2 + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin((lon2 - lon1) * r / 2) ** 2;
+    return 12742 * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+// Average position of points on the sphere, so a scan across the antimeridian averages correctly
+function sphericalMean(coords) {
+    var r = Math.PI / 180, x = 0, y = 0, z = 0;
+    for (var [lon, lat] of coords) {
+        x += Math.cos(lat * r) * Math.cos(lon * r);
+        y += Math.cos(lat * r) * Math.sin(lon * r);
+        z += Math.sin(lat * r);
+    }
+    return [Math.atan2(y, x) / r, Math.atan2(z, Math.hypot(x, y)) / r];
+}
+
+// Splits time-ordered positions into runs where every step passes the test
+function segments(points, ok, minPoints) {
+    var out = [], run = [points[0]];
+    for (var i = 1; i < points.length; i++) {
+        if (ok(points[i - 1], points[i])) {
+            run.push(points[i]);
+        } else {
+            if (run.length >= minPoints) out.push(run);
+            run = [points[i]];
+        }
+    }
+    if (run.length >= minPoints) out.push(run);
+    return out;
+}
+
+// Longitudes carried past ±180 so a line crossing the antimeridian doesn't wrap the globe
+function unwrap(coords) {
+    var out = [coords[0].slice()];
+    for (var i = 1; i < coords.length; i++) {
+        var lon = coords[i][0];
+        while (lon - out[i - 1][0] > 180) lon -= 360;
+        while (lon - out[i - 1][0] < -180) lon += 360;
+        out.push([lon, coords[i][1]]);
+    }
+    return out;
+}
+
+function buildTracks() {
+    var groups = new Map();
+    for (var record of pools.decoded.values()) {
+        if (!record.track || !records.has(record.id)) continue;
+        if (!groups.has(record.track)) groups.set(record.track, []);
+        groups.get(record.track).push(record);
+    }
+    var features = [];
+    for (var [key, reports] of groups) {
+        var kind = key.slice(0, key.indexOf(':'));
+        reports.sort((a, b) => a.observed - b.observed);
+        var points, runs;
+        if (kind === 'aircraft') {
+            points = reports.map((r) => ({ t: r.observed, c: r.coords, alt: r.alt, id: r.id }));
+            runs = segments(points, (a, b) => b.t - a.t <= TRACK_MAX_GAP_MS
+                && distanceKm(a.c, b.c) / Math.max((b.t - a.t) / 3600e3, 1 / 60) <= AIRCRAFT_MAX_KMH, 2);
+        } else {
+            var minutes = new Map();
+            for (var r of reports) {
+                var m = Math.floor(r.observed / 60e3);
+                if (!minutes.has(m)) minutes.set(m, []);
+                minutes.get(m).push(r.coords);
+            }
+            points = [...minutes].sort((a, b) => a[0] - b[0]).map(([m, cs]) => ({ t: m * 60e3, c: sphericalMean(cs) }));
+            runs = segments(points, (a, b) => {
+                var mins = (b.t - a.t) / 60e3, speed = distanceKm(a.c, b.c) / mins;
+                return mins <= 3 && speed >= ORBIT_KM_PER_MIN[0] && speed <= ORBIT_KM_PER_MIN[1];
+            }, SATELLITE_MIN_STEPS + 1);
+        }
+        if (!runs.length) continue;
+        var last = reports[reports.length - 1];
+        var common = {
+            kind,
+            label: kind === 'aircraft' ? `Aircraft ${key.slice(9)}` : `Satellite ${key.slice(10)}`,
+            count: reports.length,
+            lastId: last.id,
+            color: last.color,
+            born: last.born,
+            layer: last.subLayer,
+            space: kind === 'satellite',
+            channel: last.channel,
+            centre: last.centre,
+            format: last.format,
+            discipline: last.discipline,
+            topic: last.topic.toLowerCase(),
+        };
+        if (kind === 'aircraft') {
+            features.push(...aircraftShapes(runs, { ...common, layer: 'gts-tracks' }));
+            continue;
+        }
+        features.push({
+            type: 'Feature',
+            geometry: { type: 'MultiLineString', coordinates: runs.map((run) => unwrap(run.map((p) => p.c))) },
+            properties: common,
+        });
+    }
+    return features;
+}
+
+// Sizes of the floating aircraft shapes, in screen pixels at the current zoom
+const BAND_PX = 3;
+const CHEVRON_PX = 9;
+const CHEVRON_SPACING_PX = 60;
+const MARKER_PX = 16;
+
+// Kilometres per screen pixel at a latitude, for the current zoom
+function kmPerPixel(lat) {
+    return 40075.016 * Math.max(Math.cos(lat * Math.PI / 180), 0.05) / (512 * 2 ** map.getZoom());
+}
+
+// Local flat frame around a point: km east/north to lon/lat offsets
+function frame(lat) {
+    var kx = 111.32 * Math.max(Math.cos(lat * Math.PI / 180), 0.05);
+    return { toLonLat: ([x, y], [lon0, lat0]) => [lon0 + x / kx, lat0 + y / 111.32], kx };
+}
+
+// Bands for each step at its altitude, chevrons every so often pointing along
+// the path, and an arrowhead at the latest report, all floating in the air
+function aircraftShapes(runs, common) {
+    var out = [];
+    // bottom and top are metres; the band spans its step's climb or descent so steps join up
+    var shape = (ring, alt, role, recordId, bottom, top) => out.push({
+        type: 'Feature',
+        geometry: { type: 'Polygon', coordinates: [ring.concat([ring[0]])] },
+        properties: { ...common, role, alt, recordId, bottom, top },
+    });
+    // Polygon from km offsets (x along travel, y to the left) around a point heading at angle
+    var oriented = (centre, angle, pts) => {
+        var f = frame(centre[1]);
+        return pts.map(([along, left]) => f.toLonLat([along * Math.cos(angle) - left * Math.sin(angle), along * Math.sin(angle) + left * Math.cos(angle)], centre));
+    };
+    var lastStep = null;
+    for (var run of runs) {
+        var coords = unwrap(run.map((p) => p.c));
+        var sinceChevron = 0;
+        for (var i = 1; i < run.length; i++) {
+            var a = run[i - 1], b = run[i];
+            var alt = a.alt > 0 && b.alt > 0 ? (a.alt + b.alt) / 2 : a.alt > 0 ? a.alt : b.alt;
+            if (!(alt > 0)) continue;
+            var p1 = coords[i - 1], p2 = coords[i];
+            var f = frame((p1[1] + p2[1]) / 2), px = kmPerPixel((p1[1] + p2[1]) / 2);
+            var dx = (p2[0] - p1[0]) * f.kx, dy = (p2[1] - p1[1]) * 111.32, len = Math.hypot(dx, dy);
+            if (!len) continue;
+            var angle = Math.atan2(dy, dx), half = BAND_PX * px / 2;
+            // Fill-extrusions have flat tops, so a climb or descent is split into
+            // pieces small enough to read as a slope
+            var altA = a.alt > 0 ? a.alt : alt, altB = b.alt > 0 ? b.alt : alt;
+            var pieces = Math.min(24, Math.max(1, Math.ceil(Math.abs(altB - altA) / (Math.max(altA, altB) * 0.02))));
+            for (var k = 0; k < pieces; k++) {
+                var lo = altA + (altB - altA) * k / pieces, hi = altA + (altB - altA) * (k + 1) / pieces;
+                shape(oriented(p1, angle, [[len * k / pieces, half], [len * (k + 1) / pieces, half], [len * (k + 1) / pieces, -half], [len * k / pieces, -half]]),
+                    (lo + hi) / 2, 'band', b.id, Math.min(lo, hi) * 0.985, Math.max(lo, hi) * 1.015);
+            }
+            // A chevron whenever enough path has passed on screen
+            sinceChevron += len / px;
+            if (sinceChevron >= CHEVRON_SPACING_PX) {
+                sinceChevron = 0;
+                var mid = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2], c = CHEVRON_PX * px;
+                shape(oriented(mid, angle, [[c / 2, 0], [-c / 2, c / 2], [-c / 4, 0], [-c / 2, -c / 2]]), alt, 'arrow', b.id, alt * 0.97, alt * 1.03);
+            }
+            lastStep = { point: p2, angle, alt: b.alt > 0 ? b.alt : alt, id: b.id };
+        }
+    }
+    if (lastStep) {
+        var m = MARKER_PX * kmPerPixel(lastStep.point[1]);
+        shape(oriented(lastStep.point, lastStep.angle, [[m * 0.6, 0], [-m * 0.4, m * 0.45], [-m * 0.2, 0], [-m * 0.4, -m * 0.45]]),
+            lastStep.alt, 'marker', lastStep.id, lastStep.alt * 0.95, lastStep.alt * 1.05);
+    }
+    return out;
 }
 
 // Which GTS sublayer a report belongs to, from the identifiers it carries.

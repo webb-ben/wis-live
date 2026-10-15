@@ -271,16 +271,45 @@
   background-color: transparent;
   box-shadow: none;
 }
+/* Each source is its own tinted section, so WIS2 and GTS read as separate */
+.legend-section {
+  margin: 0 0 6px;
+  padding: 4px 8px 6px;
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  background-color: var(--tint);
+}
+.legend-section-wis2 {
+  --accent: #1c7ed6;
+  --tint: #f1f7fd;
+}
+.legend-section-gts {
+  --accent: #7048e8;
+  --tint: #f5f2fe;
+}
 .legend-group {
-  margin-top: 4px;
-  color: #6c757d;
+  margin-bottom: 2px;
+  color: var(--accent);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
-.legend-group:first-child {
-  margin-top: 0;
+.legend-group small {
+  display: block;
+  color: #6c757d;
+  font-size: 10px;
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: 0;
+}
+/* GTS points have a dark outline on the map; so do their legend dots */
+.legend-section-gts .legend-dot:not(.legend-line) {
+  border-color: #343a40;
+}
+/* The decode switch sits on the section's tint */
+.legend-section .legend-option {
+  background-color: rgba(255, 255, 255, 0.7);
 }
 .legend-toggle[hidden] {
   display: none;
@@ -1065,4 +1094,43 @@
   border-radius: 50%;
   box-shadow: 0 0 0 2px #ffffff, inset 0 0 0 2px #ffffff;
   pointer-events: none;
+}
+
+/* A legend row for lines rather than points */
+.legend-dot.legend-line {
+  background: var(--color);
+  width: 14px;
+  height: 3px;
+  border: none;
+  border-radius: 2px;
+  box-shadow: none;
+}
+
+/* Second-level sublayers, e.g. aircraft tracks under Aircraft */
+.legend-toggle.legend-sub.legend-depth-2 {
+  margin-left: 52px;
+}
+
+/* An option within a group (no map symbol of its own) */
+/* A setting within a group, set apart from the layers: a switch with a note */
+.legend-toggle.legend-option {
+  align-items: flex-start;
+  margin: 4px 0 2px 26px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background-color: #f1f3f5;
+  font-size: 11px;
+  line-height: 1.3;
+}
+.legend-toggle.legend-option .form-check-input {
+  flex: none;
+  width: 2em;
+  height: 1em;
+  margin: 1px 6px 0 0;
+  float: none;
+}
+.legend-option small {
+  display: block;
+  color: #6c757d;
+  font-size: 10px;
 }
