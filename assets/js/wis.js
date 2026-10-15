@@ -15,11 +15,12 @@ const MAX_DECODED_POINTS = 30000;  // ...with reports decoded from files capped 
 const FADE_MS = 60 * 60 * 1000;  // Points fade over an hour
 const PULSE_MS = 1600;           // Length of the ripple on new arrivals
 const COLORS = {
-    cache: '#5cb83c',
+    cache: '#38965A',
     webcam: '#F8A700',
     origin: '#6f9fd8',
     gts: '#9b6cd1',
-    files: '#d16c9b',
+    wis2gts: '#c2255c',
+    files: '#83C95D',
 };
 // Legend rows, grouped by source; each can be switched on and off. Rows other
 // than opt-in ones stay hidden until a point of that kind has arrived. Opt-in
@@ -27,17 +28,26 @@ const COLORS = {
 const LAYER_GROUPS = [
     { label: 'WIS2 data', layers: [
         { key: 'obs', label: 'Cache', color: COLORS.cache },
+        // A sublayer: shown under its parent, and off whenever the parent is off
+        { key: 'files', parent: 'obs', label: 'Decode required', color: COLORS.files, optIn: true,
+            title: 'Download and decode small cached files whose notification has no location, and plot the reports inside' },
         { key: 'webcam', label: 'Webcam images', color: COLORS.webcam },
         { key: 'origin', label: 'Origin', color: COLORS.origin, ring: true },
-        { key: 'files', label: 'Cache (decode required)', color: COLORS.files, optIn: true,
-            title: 'Download and decode small BUFR files whose notification has no location, and plot the reports inside' },
     ] },
-    { label: 'GTS-to-WIS2 gateway', layers: [
-        { key: 'gts', label: 'GTS bulletins (decode required)', color: COLORS.gts, optIn: true,
-            title: 'Download and decode the BUFR bulletins republished from the GTS, and plot the reports inside' },
+    { label: 'GTS gateways', layers: [
+        { key: 'gts', label: 'GTS-to-WIS2 (decode required)', color: COLORS.gts, optIn: true,
+            title: 'Download and decode the BUFR bulletins republished from the GTS into WIS2 (centres ending -gts-to-wis2), and plot the reports inside' },
+        { key: 'wis2gts', label: 'WIS2-to-GTS (decode required)', color: COLORS.wis2gts, optIn: true,
+            title: 'Download and decode the BUFR that WIS2 centres pass on to the GTS (centres ending -wis2-to-gts), and plot the reports inside' },
     ] },
 ];
-const hiddenLayers = new Set(['gts', 'files']);
+const hiddenLayers = new Set(['gts', 'wis2gts', 'files']);
+const LAYER_PARENTS = Object.fromEntries(LAYER_GROUPS.flatMap((g) => g.layers).filter((l) => l.parent).map((l) => [l.key, l.parent]));
+
+// Layers switched off directly, plus sublayers whose parent is off
+function effectiveHidden() {
+    return [...new Set([...hiddenLayers, ...Object.keys(LAYER_PARENTS).filter((k) => hiddenLayers.has(LAYER_PARENTS[k]))])];
+}
 let showSpace = true;  // Satellite products, switched as a group across every layer
 const seenLayers = new Set();
 const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -332,7 +342,7 @@ class LegendControl {
             ${LAYER_GROUPS.map((g) => `
             <div class="legend-group">${g.label}</div>
             ${g.layers.map((l) => `
-            <label class="legend-toggle" data-layer="${l.key}"${l.optIn ? '' : ' hidden'}${l.title ? ` title="${l.title}"` : ''}>
+            <label class="legend-toggle${l.parent ? ' legend-sub' : ''}" data-layer="${l.key}"${l.optIn || g.layers.some((c) => c.parent === l.key && c.optIn) ? '' : ' hidden'}${l.title ? ` title="${l.title}"` : ''}>
                 <input type="checkbox" class="form-check-input"${hiddenLayers.has(l.key) ? '' : ' checked'}>
                 <span class="legend-dot${l.ring ? ' legend-ring' : ''}" style="--color: ${l.color}"></span>${l.label}
             </label>`).join('')}`).join('')}
@@ -345,10 +355,18 @@ class LegendControl {
             var key = row.dataset.layer;
             row.querySelector('input').addEventListener('change', (e) => {
                 e.target.checked ? hiddenLayers.delete(key) : hiddenLayers.add(key);
-                if (DECODE_LAYERS[key]) {
-                    setDecodeEnabled(key, e.target.checked);
-                    status.hidden = !decodeEnabled.size;
-                }
+                // Decoding runs for a layer that is on and whose parent is on too
+                var hidden = effectiveHidden();
+                Object.keys(DECODE_LAYERS).forEach((k) => {
+                    var on = !hidden.includes(k);
+                    if (on !== decodeEnabled.has(k)) setDecodeEnabled(k, on);
+                });
+                status.hidden = !decodeEnabled.size;
+                container.querySelectorAll('.legend-sub').forEach((sub) => {
+                    var parentOff = hiddenLayers.has(LAYER_PARENTS[sub.dataset.layer]);
+                    sub.querySelector('input').disabled = parentOff;
+                    sub.classList.toggle('legend-disabled', parentOff);
+                });
                 applyMapFilter();
             });
         });
@@ -357,7 +375,7 @@ class LegendControl {
             var plotted = [...decodeEnabled].reduce((n, key) => n + decodePlotted[key], 0);
             status.textContent = decoderReady || plotted
                 ? `${plotted.toLocaleString()} reports plotted · ${decodeQueue.length} files waiting`
-                    + (decodeEnabled.has('gts') ? ' · tilt to see aircraft altitude' : '')
+                    + (decodeEnabled.has('gts') || decodeEnabled.has('wis2gts') ? ' · tilt to see aircraft altitude' : '')
                 : 'Loading decoder…';
         }, 1000);
         return container;
@@ -457,6 +475,8 @@ async function decodeRecord(record, out, title) {
     try {
         record.decoded = await decodeSource(record.source, record.wsi, out);
         showDecoded(out, title, record.decoded);
+        var forecast = out.parentNode && out.parentNode.querySelector('.pp-forecast');
+        if (forecast && forecast.rerender) forecast.rerender();
     } catch (err) {
         showDecodeError(out, err, () => decodeRecord(record, out, title));
     }
@@ -1201,11 +1221,17 @@ function marineCompass(windFrom, swellFrom, heading) {
 // Fetched only when asked for, one batch for all models.
 const FORECAST_API = 'https://api.dynamical.org/v1/forecasts';
 const FORECAST_HOURS = 168;
-const FORECAST_VARIABLES = ['temperature_2m', 'wind_u_10m', 'wind_v_10m', 'precipitation_surface'];
+// Each model is asked only for variables it has (the API rejects the rest);
+// together they cover every observed quantity the popup compares against
+const FORECAST_COMMON = ['temperature_2m', 'wind_u_10m', 'wind_v_10m', 'precipitation_surface', 'pressure_reduced_to_mean_sea_level',
+    'pressure_surface', 'total_cloud_cover_atmosphere', 'downward_short_wave_radiation_flux_surface'];
 const FORECAST_MODELS = [
-    // GFS precipitation is averaged since the last 6-hourly reset rather than over each step
-    { id: 'noaa-gfs-forecast', label: 'GFS', cls: 'gfs', source: 'NOAA GFS', precipReset: 6 },
-    { id: 'ecmwf-aifs-single-forecast', label: 'ECMWF AIFS', cls: 'ecmwf', source: 'ECMWF AIFS Single' },
+    // GFS precipitation and radiation are averaged since the last 6-hourly reset rather than over each step
+    { id: 'noaa-gfs-forecast', label: 'GFS', cls: 'gfs', source: 'NOAA GFS', precipReset: 6,
+        variables: [...FORECAST_COMMON, 'relative_humidity_2m', 'maximum_temperature_2m', 'minimum_temperature_2m'] },
+    { id: 'ecmwf-aifs-single-forecast', label: 'ECMWF AIFS', cls: 'ecmwf', source: 'ECMWF AIFS Single',
+        variables: [...FORECAST_COMMON, 'dew_point_temperature_2m', 'temperature_850hpa', 'temperature_925hpa',
+            'geopotential_height_500hpa', 'geopotential_height_850hpa', 'geopotential_height_925hpa'] },
 ];
 const FORECAST_CACHE_MS = 15 * 60 * 1000;
 const forecastCache = new Map();  // rounded "lat,lon" -> { time, promise }
@@ -1216,6 +1242,8 @@ async function showForecast(out, record) {
     try {
         var models = await fetchForecast(record.coords);
         renderForecast(out, models, observedNow(record));
+        // Redrawn when the observation finishes decoding, to add the comparison
+        out.rerender = () => renderForecast(out, models, observedNow(record));
     } catch (err) {
         out.innerHTML = `<div class="pp-status pp-error">${esc(err.message)}</div>`;
         var retry = document.createElement('button');
@@ -1240,7 +1268,7 @@ function fetchForecast([lon, lat]) {
             body: JSON.stringify({ queries: FORECAST_MODELS.map((m) => ({
                 dataProductId: m.id,
                 location: { latitude: lat, longitude: lon },
-                variables: FORECAST_VARIABLES,
+                variables: m.variables,
                 maxLeadTimeHours: FORECAST_HOURS,
             })) }),
         });
@@ -1255,31 +1283,239 @@ function fetchForecast([lon, lat]) {
     return promise;
 }
 
-// One series per variable: { t (ms), temp, wind, precip (mm/h) }, plus ensemble
-// percentiles when the model has members
+// Chart steps ({ t (ms), temp, dew, wind, precip (mm/h) }, with ensemble
+// percentiles when the model has members) and every variable as its own series
+// (the ensemble median) for comparing with observations
 function parseForecast(model, result) {
     var run = result && result.forecasts && result.forecasts[0];
     if (!run) return null;
     var times = run.validTimes.map((t) => Date.parse(t));
     var members = run.ensembleMembers ? run.ensembleMembers.map((m) => m.data) : [run.data];
-    var series = (data) => times.map((t, i) => {
-        var u = data.wind_u_10m[i], v = data.wind_v_10m[i], p = data.precipitation_surface[i];
+    var median = (name) => times.map((t, i) => quantile(members.map((d) => (d[name] || [])[i]).filter((v) => v !== null && v !== undefined && isFinite(v)), 0.5));
+    var series = {};
+    for (var name of model.variables) series[name] = median(name);
+    var perMember = (data) => times.map((t, i) => {
+        var u = (data.wind_u_10m || [])[i], v = (data.wind_v_10m || [])[i], p = (data.precipitation_surface || [])[i];
         return {
-            temp: data.temperature_2m[i],
-            wind: u === null || v === null ? null : Math.hypot(u, v),
-            precip: p === null ? null : p * 3600,  // kg m-2 s-1 to mm/h
+            temp: (data.temperature_2m || [])[i] ?? null,
+            wind: u === null || v === null || u === undefined ? null : Math.hypot(u, v),
+            precip: p === null || p === undefined ? null : p * 3600,  // kg m-2 s-1 to mm/h
         };
     });
-    var all = members.map(series);
+    var all = members.map(perMember);
     var pick = (key, q) => times.map((t, i) => quantile(all.map((m) => m[i][key]).filter((v) => v !== null && isFinite(v)), q));
-    var steps = times.map((t, i) => ({
+    var forecast = { ...model, init: run.initTime, ensemble: members.length > 1, members: members.length, times, series,
+        point: result.point && result.point.selected };
+    forecast.steps = times.map((t, i) => ({
         t,
         temp: pick('temp', 0.5)[i], tempLo: pick('temp', 0.1)[i], tempHi: pick('temp', 0.9)[i],
+        dew: forecastAt(forecast, 'dew', t),
         wind: pick('wind', 0.5)[i], windLo: pick('wind', 0.1)[i], windHi: pick('wind', 0.9)[i],
         precip: mean(all.map((m) => m[i].precip).filter((v) => v !== null && isFinite(v))),
     }));
-    return { ...model, init: run.initTime, ensemble: members.length > 1, members: members.length, steps,
-        point: result.point && result.point.selected };
+    return forecast;
+}
+
+// ---------- Observation vs forecast. Each quantity says which BUFR elements hold
+// the observation and how a model gives the same thing, so a report is compared
+// on everything it has that a model also forecasts.
+const MAGNUS_A = 17.625, MAGNUS_B = 243.04;
+
+function dewPoint(t, rh) {
+    if (t === null || rh === null || !(rh > 0)) return null;
+    var g = Math.log(rh / 100) + MAGNUS_A * t / (MAGNUS_B + t);
+    return MAGNUS_B * g / (MAGNUS_A - g);
+}
+
+function relHumidity(t, td) {
+    if (t === null || td === null) return null;
+    return Math.min(100, 100 * Math.exp(MAGNUS_A * td / (MAGNUS_B + td) - MAGNUS_A * t / (MAGNUS_B + t)));
+}
+
+// Linear interpolation of a series at time t; null outside the run
+function seriesAt(forecast, name, t) {
+    var values = forecast.series[name], times = forecast.times;
+    if (!values || t < times[0] || t > times[times.length - 1]) return null;
+    var i = times.findIndex((x) => x >= t);
+    if (times[i] === t || i === 0) return values[i];
+    var a = values[i - 1], b = values[i];
+    if (a === null || b === null) return a === null ? b : a;
+    return a + (b - a) * (t - times[i - 1]) / (times[i] - times[i - 1]);
+}
+
+// Instantaneous quantities, derived where a model lacks the variable itself
+function forecastAt(forecast, key, t) {
+    var get = (name) => seriesAt(forecast, name, t);
+    var has = (name) => !!forecast.series[name];
+    switch (key) {
+        case 'temp': return get('temperature_2m');
+        case 'dew': return has('dew_point_temperature_2m') ? get('dew_point_temperature_2m') : dewPoint(get('temperature_2m'), get('relative_humidity_2m'));
+        case 'rh': return has('relative_humidity_2m') ? get('relative_humidity_2m') : relHumidity(get('temperature_2m'), get('dew_point_temperature_2m'));
+        case 'mslp': return get('pressure_reduced_to_mean_sea_level') === null ? null : get('pressure_reduced_to_mean_sea_level') / 100;
+        case 'pres': return get('pressure_surface') === null ? null : get('pressure_surface') / 100;
+        case 'wind':
+        case 'dir': {
+            var u = get('wind_u_10m'), v = get('wind_v_10m');
+            if (u === null || v === null) return null;
+            return key === 'wind' ? Math.hypot(u, v) : (Math.atan2(-u, -v) * 180 / Math.PI + 360) % 360;
+        }
+        case 'cloud': return get('total_cloud_cover_atmosphere');
+        case 't850': return get('temperature_850hpa');
+        case 't925': return get('temperature_925hpa');
+        case 'z500': return get('geopotential_height_500hpa');
+        case 'z850': return get('geopotential_height_850hpa');
+        case 'z925': return get('geopotential_height_925hpa');
+    }
+    return null;
+}
+
+// Running total of a rate variable (kg m-2 s-1 or W m-2) at each step, so any
+// window's total is a difference. GFS averages since its last 6-hourly reset;
+// otherwise each step's rate covers the time since the step before.
+function cumulative(forecast, name) {
+    var values = forecast.series[name], times = forecast.times;
+    if (!values) return null;
+    var init = Date.parse(forecast.init), out = [0], base = 0, prevBlock = 0, prevAccum = 0;
+    for (var i = 1; i < times.length; i++) {
+        var rate = values[i] || 0;
+        if (forecast.precipReset) {
+            var lead = (times[i] - init) / 3600e3, block = Math.floor((lead - 1e-6) / forecast.precipReset);
+            if (block !== prevBlock) { base += prevAccum; prevBlock = block; }
+            prevAccum = rate * (lead - block * forecast.precipReset) * 3600;
+            out.push(base + prevAccum);
+        } else {
+            out.push(out[i - 1] + rate * (times[i] - times[i - 1]) / 1000);
+        }
+    }
+    return out;
+}
+
+function windowTotal(forecast, name, start, end) {
+    var c = cumulative(forecast, name), times = forecast.times;
+    if (!c || start < times[0] || end > times[times.length - 1]) return null;
+    var at = (t) => {
+        var i = times.findIndex((x) => x >= t);
+        if (i <= 0) return c[0];
+        return c[i - 1] + (c[i] - c[i - 1]) * (t - times[i - 1]) / (times[i] - times[i - 1]);
+    };
+    return at(end) - at(start);
+}
+
+// Highest or lowest 2 m temperature in a window, from hourly or 6-hourly
+// samples plus GFS's own max/min fields
+function windowExtreme(forecast, start, end, max) {
+    var times = forecast.times;
+    if (start < times[0] || end > times[times.length - 1]) return null;
+    var values = [forecastAt(forecast, 'temp', start), forecastAt(forecast, 'temp', end)];
+    var extra = forecast.series[max ? 'maximum_temperature_2m' : 'minimum_temperature_2m'];
+    times.forEach((t, i) => {
+        if (t > start && t <= end) {
+            values.push(forecast.series.temperature_2m[i]);
+            if (extra) values.push(extra[i]);
+        }
+    });
+    values = values.filter((v) => v !== null && v !== undefined && isFinite(v));
+    return values.length ? (max ? Math.max(...values) : Math.min(...values)) : null;
+}
+
+// Every comparable quantity in a decoded report: instantaneous elements by
+// descriptor, period elements (precipitation, max/min temperature, solar
+// radiation) with the period given by the 004024/004025 before them, and
+// sounding levels from the profile
+function observedNow(record) {
+    var decoded = record.decoded, rows = decoded && decoded.rows;
+    if (!rows) return null;
+    var first = new Map();
+    for (var [id, , value] of rows) {
+        if (!first.has(id) && typeof value === 'number') first.set(id, value);
+    }
+    var t = Date.parse(record.props.datetime || reportTime(first) || '');
+    if (!isFinite(t)) return null;
+
+    var items = [];
+    var add = (key, label, unit, value, digits, extra) => {
+        if (value !== null && value !== undefined && isFinite(value)) items.push({ key, label, unit, value, digits, ...extra });
+    };
+    var pick = (...ids) => ids.map((id) => first.get(id)).find((v) => v !== undefined);
+    var kelvin = (v) => (v === undefined ? null : v - 273.15);
+    add('temp', 'Temperature', '°C', kelvin(pick(12101, 12001)), 1);
+    add('dew', 'Dew point', '°C', kelvin(pick(12103, 12003)), 1);
+    add('rh', 'Humidity', '%', pick(13003), 0);
+    add('mslp', 'Pressure (MSL)', 'hPa', pick(10051) / 100, 1);
+    add('pres', 'Station pressure', 'hPa', pick(10004) / 100, 1);
+    add('wind', 'Wind speed', 'm/s', pick(11002), 1);
+    add('dir', 'Wind direction', '°', pick(11001), 0);
+    add('cloud', 'Cloud cover', '%', pick(20010), 0);
+
+    // Period elements: 004024 (hours) or 004025 (minutes) give the window, as a
+    // start offset, optionally followed by an end offset
+    var start = null, end = 0, prevId = null, seen = new Set();
+    for (var [id, , value] of rows) {
+        if ((id === 4024 || id === 4025) && typeof value === 'number') {
+            var offset = value * (id === 4024 ? 3600e3 : 60e3);
+            if (prevId === id) { end = offset; } else { start = offset; end = 0; }
+        } else if (start !== null && start < end && typeof value === 'number') {
+            var from = t + start, to = t + end, hours = (to - from) / 3600e3;
+            var span = hours >= 1 ? `${Number(hours.toFixed(1))} h` : `${Math.round(hours * 60)} min`;
+            var key = `${id}:${from}:${to}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                if (id === 13011) add('precip', `Precipitation (${span})`, 'mm', value, 1, { from, to });
+                if (id === 12111) add('tmax', `Max temperature (${span})`, '°C', value - 273.15, 1, { from, to });
+                if (id === 12112) add('tmin', `Min temperature (${span})`, '°C', value - 273.15, 1, { from, to });
+                if (id === 14021 || id === 14028) add('solar', `Mean solar radiation (${span})`, 'W/m²', value / ((to - from) / 1000), 0, { from, to });
+            }
+        }
+        prevId = id;
+    }
+
+    // Soundings: standard levels the AI model also forecasts
+    var profile = decoded.profile || [];
+    var level = (p) => profile.find((l) => Math.abs(l[0] - p) < 0.5);
+    [[925, 't925', 'z925'], [850, 't850', 'z850'], [500, null, 'z500']].forEach(([p, tk, zk]) => {
+        var l = level(p);
+        if (!l) return;
+        if (tk) add(tk, `Temperature at ${p} hPa`, '°C', l[2], 1);
+        add(zk, `Height of ${p} hPa`, 'm', l[1], 0);
+    });
+
+    var value = (key) => (items.find((i) => i.key === key) || {}).value ?? null;
+    return { t, items, temp: value('temp'), dew: value('dew'), wind: value('wind') };
+}
+
+// A model's value for an observed item, or null when it doesn't forecast it
+function forecastFor(forecast, item, t) {
+    if (item.key === 'precip') return windowTotal(forecast, 'precipitation_surface', item.from, item.to);
+    if (item.key === 'solar') {
+        var joules = windowTotal(forecast, 'downward_short_wave_radiation_flux_surface', item.from, item.to);
+        return joules === null ? null : joules / ((item.to - item.from) / 1000);
+    }
+    if (item.key === 'tmax' || item.key === 'tmin') return windowExtreme(forecast, item.from, item.to, item.key === 'tmax');
+    return forecastAt(forecast, item.key, t);
+}
+
+function compareTable(models, observed) {
+    var rows = observed.items.map((item) => ({ item, values: models.map((m) => forecastFor(m, item, observed.t)) }))
+        .filter((r) => r.values.some((v) => v !== null && isFinite(v)));
+    if (!rows.length) return '';
+    var fmt = (v, d) => Number(v).toFixed(d);
+    var diff = (item, v) => {
+        var d = item.key === 'dir' ? ((v - item.value + 540) % 360) - 180 : v - item.value;
+        var text = `${d >= 0 ? '+' : '−'}${fmt(Math.abs(d), item.digits)}`;
+        return `<small class="forecast-diff">${text}</small>`;
+    };
+    var when = new Date(observed.t).toISOString().slice(11, 16);
+    return `
+        <table class="table table-sm forecast-compare">
+            <thead><tr><th>Observed ${esc(when)} UTC</th><th></th>${models.map((m) => `<th class="forecast-${m.cls}">${esc(m.label)}</th>`).join('')}</tr></thead>
+            <tbody>${rows.map(({ item, values }) => `
+                <tr>
+                    <td>${esc(item.label)}</td>
+                    <td><strong>${esc(fmt(item.value, item.digits))}</strong> ${esc(item.unit)}</td>
+                    ${values.map((v) => (v === null || !isFinite(v) ? '<td>–</td>' : `<td>${esc(fmt(v, item.digits))} ${diff(item, v)}</td>`)).join('')}
+                </tr>`).join('')}
+            </tbody>
+        </table>`;
 }
 
 function quantile(values, q) {
@@ -1291,20 +1527,6 @@ function quantile(values, q) {
 
 function mean(values) {
     return values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
-}
-
-// The station's own latest temperature and wind, once its data is decoded
-function observedNow(record) {
-    var rows = record.decoded && record.decoded.rows;
-    if (!rows) return null;
-    var values = new Map();
-    for (var [id, , value] of rows) {
-        if (!values.has(id) && typeof value === 'number') values.set(id, value);
-    }
-    var t = values.get(12101) !== undefined ? values.get(12101) : values.get(12001);
-    var time = Date.parse(record.props.datetime || reportTime(values) || '');
-    if (!isFinite(time)) return null;
-    return { t: time, temp: t !== undefined ? t - 273.15 : null, wind: values.has(11002) ? values.get(11002) : null };
 }
 
 // Precipitation as 6-hour totals, so hourly and 3-hourly steps compare. Each
@@ -1336,10 +1558,12 @@ function renderForecast(out, models, observed) {
     }
     var runs = models.map((m) => `${m.label} ${m.init.slice(11, 13)}Z ${m.init.slice(5, 10)}`).join(' · ');
     out.innerHTML = `
+        ${observed ? compareTable(models, observed) : '<div class="pp-status">Decoded observations will be compared here once the Data tab has loaded.</div>'}
         <div class="pp-status">Next 7 days at this location</div>
         <div class="forecast-chart"></div>
         <div class="forecast-key">
             ${models.map((m) => `<span><i class="forecast-key-${m.cls}"></i>${esc(m.label)}${m.ensemble ? ` median, 10–90% of ${m.members} members` : ''}</span>`).join('')}
+            <span><i class="forecast-key-dew"></i>Dew point</span>
             ${observed ? '<span><i class="forecast-key-obs"></i>Observed</span>' : ''}
         </div>
         <div class="pp-status forecast-credit">Runs: ${esc(runs)} UTC. Data: ${esc(models.map((m) => m.source).join(' and '))} via
@@ -1380,8 +1604,10 @@ function renderForecastChart(container, models, observed, opts) {
     var panel = (i, key, unit, floor) => {
         var { top, bottom } = panels[i];
         var vals = [];
-        models.forEach((mo) => mo.steps.filter(inRange).forEach((s) => vals.push(s[key], s[key + 'Lo'], s[key + 'Hi'])));
-        if (observed && observed[key] !== null && observed[key] !== undefined) vals.push(observed[key]);
+        // The temperature panel also carries dew point
+        var keys = key === 'temp' ? [key, 'dew'] : [key];
+        models.forEach((mo) => mo.steps.filter(inRange).forEach((s) => keys.forEach((k) => vals.push(s[k], s[k + 'Lo'], s[k + 'Hi']))));
+        keys.forEach((k) => observed && observed[k] !== null && observed[k] !== undefined && vals.push(observed[k]));
         vals = vals.filter((v) => v !== null && v !== undefined && isFinite(v));
         if (!vals.length) return null;
         var lo = floor !== undefined ? floor : Math.floor(Math.min(...vals)), hi = Math.ceil(Math.max(...vals));
@@ -1411,8 +1637,12 @@ function renderForecastChart(container, models, observed, opts) {
         if (!y) return;
         models.filter((mo) => mo.ensemble).forEach((mo) => band(mo.steps, key, y, `forecast-band forecast-${mo.cls}`));
         models.forEach((mo) => line(mo.steps, key, y, `forecast-line forecast-${mo.cls}`));
+        if (key === 'temp') models.forEach((mo) => line(mo.steps, 'dew', y, `forecast-line forecast-dew forecast-${mo.cls}`));
         if (observed && observed[key] !== null && observed[key] !== undefined && observed.t >= t0) {
             svgEl('circle', { cx: x(observed.t), cy: y(observed[key]), r: 3, class: 'forecast-obs' }, svg);
+        }
+        if (key === 'temp' && observed && observed.dew !== null && observed.t >= t0) {
+            svgEl('circle', { cx: x(observed.t), cy: y(observed.dew), r: 2.5, class: 'forecast-obs forecast-obs-dew' }, svg);
         }
     });
 
@@ -1749,17 +1979,22 @@ function formatOf(feature) {
 const centres = new Map();  // centre-id -> its item in the picker
 let centreList, centreSearch, centreToggle, centreChips;
 
-// centre/data/core/<discipline>/...; GTS bulletin topics have none
+// GTS gateway centres, in either direction (e.g. de-dwd-gts-to-wis2, uk-metoffice-wis2-to-gts)
+const GATEWAY_CENTRE = /-(gts-to-wis2|wis2-to-gts)$/;
+const GATEWAY_TOPIC = /\/a\/wis2\/[^/]+-(gts-to-wis2|wis2-to-gts)\//;
+const GATEWAY_SATELLITE = /-(gts-to-wis2|wis2-to-gts)\/data\/core\/I\/[NE]\//;
+
 // WIS2 space-based-observations topics, and GTS satellite bulletins (T1T2 = IN, IE)
 function isSpaceBased(topic) {
-    return /\/space-based-observations\//.test(topic) || /-gts-to-wis2\/data\/core\/I\/[NE]\//.test(topic);
+    return /\/space-based-observations\//.test(topic) || GATEWAY_SATELLITE.test(topic);
 }
 
+// centre/data/core/<discipline>/...; GTS bulletin topics have none
 function disciplineOf(t) {
     var parts = t.split('/');
     if (DISCIPLINES.hasOwnProperty(parts[3])) return parts[3];
     // GTS bulletins: T1 = I (BUFR observations), T2 = S/U (weather) or O (ocean)
-    if (parts[0].endsWith('-gts-to-wis2') && parts[3] === 'I') {
+    if (GATEWAY_CENTRE.test(parts[0]) && parts[3] === 'I') {
         if (parts[4] === 'S' || parts[4] === 'U') return 'weather';
         if (parts[4] === 'O') return 'ocean';
     }
@@ -1787,7 +2022,7 @@ function applyMapFilter() {
     if (filters.disciplines.size) expr.push(['in', ['get', 'discipline'], ['literal', [...filters.disciplines]]]);
     if (filters.text) expr.push(['in', filters.text, ['get', 'topic']]);
     if (!showSpace) expr.push(['!', ['get', 'space']]);
-    if (hiddenLayers.size) expr.push(['!', ['in', ['get', 'layer'], ['literal', [...hiddenLayers]]]]);
+    if (hiddenLayers.size) expr.push(['!', ['in', ['get', 'layer'], ['literal', effectiveHidden()]]]);
     if (!map.getLayer('points')) return;
     // The points source also holds altitude bars, so each layer picks its geometry
     map.setFilter('points', [...expr, ['==', ['geometry-type'], 'Point']]);
@@ -2052,10 +2287,15 @@ function queueMessage(topic, message, record, feature) {
         path: t.slice(t.indexOf('/') + 1),
         discipline: disciplineOf(t),
         format: feature ? formatOf(feature) : 'other',
+        dataId: feature && feature.properties ? feature.properties.data_id : null,
+        // The decode layer this message goes to, when that layer is on
+        decodeKind: feature && !record ? Object.keys(DECODE_LAYERS).find((k) => decodeEnabled.has(k) && DECODE_LAYERS[k](topic, feature)) : null,
         message: message,
         record: record,
+        row: null,
     };
     queueTotal++;
+    if (entry.decodeKind && entry.dataId) awaitDecode(entry);
     if (centreList && !centres.has(entry.centre)) addCentreOption(entry.centre);
     recent.push(entry);
     if (recent.length > RECENT_MAX) recent.shift();
@@ -2142,6 +2382,65 @@ function renderQueueDetail(entry) {
     return detail;
 }
 
+// The row's dot describes the message itself, matching the map: origin
+// messages are rings in the origin colour (even when a cache copy is what's
+// drawn), cache messages are filled with their point's colour, and messages
+// waiting to be decoded have a dashed ring in their layer's colour; anything
+// not on the map gets a small grey dot, so it can't be mistaken for a ring
+function paintQueueDot(dot, entry) {
+    dot.className = 'queue-dot';
+    dot.style.background = dot.style.borderColor = '';
+    if (entry.channel !== 'cache' && entry.record) {
+        dot.classList.add('queue-dot-ring');
+        dot.style.borderColor = COLORS.origin;
+    } else if (entry.record) {
+        dot.style.background = dot.style.borderColor = entry.record.color;
+    } else if (entry.decodeKind) {
+        dot.classList.add('queue-dot-pending');
+        dot.style.borderColor = COLORS[entry.decodeKind];
+    } else {
+        dot.classList.add('queue-dot-none');  // Not on the map
+    }
+}
+
+// The point a message is drawn as now: a cache copy may have replaced the
+// origin point it was first linked to
+function currentRecord(entry) {
+    if (!entry.record) return null;
+    if (records.has(entry.record.id)) return entry.record;
+    var latest = byDataId.get(entry.record.props.data_id);
+    return latest && records.has(latest.id) ? latest : null;
+}
+
+// Entries waiting for their file to be decoded, by data_id. Kept apart from
+// the recent list, which busy brokers cycle through in seconds, so a row still
+// on screen can be linked however long decoding takes.
+const DECODE_WAITING_MAX = 5000;
+const decodeWaiting = new Map();
+
+function awaitDecode(entry) {
+    var list = decodeWaiting.get(entry.dataId) || [];
+    list.push(entry);
+    decodeWaiting.set(entry.dataId, list);
+    if (decodeWaiting.size > DECODE_WAITING_MAX) decodeWaiting.delete(decodeWaiting.keys().next().value);
+}
+
+// Once reports decoded from a message are plotted, link its sidebar entries
+// to the first of them and repaint their rows
+function linkDecoded(dataId, record) {
+    var waiting = dataId && decodeWaiting.get(dataId);
+    if (!waiting) return;
+    decodeWaiting.delete(dataId);
+    for (var entry of waiting) {
+        if (entry.record) continue;
+        entry.record = record;
+        if (entry.row) {
+            paintQueueDot(entry.row.querySelector('.queue-dot'), entry);
+            entry.row.title = 'Show on map';
+        }
+    }
+}
+
 function renderQueueRow(entry) {
     var row = document.createElement('li');
     row.className = 'queue-row';
@@ -2149,10 +2448,7 @@ function renderQueueRow(entry) {
 
     var head = document.createElement('div');
     var dot = document.createElement('span');
-    dot.className = 'queue-dot';
-    if (entry.record) {
-        dot.style.background = entry.record.color;
-    }
+    paintQueueDot(dot, entry);
     var centre = document.createElement('strong');
     centre.textContent = entry.centre;
     var meta = document.createElement('span');
@@ -2165,10 +2461,12 @@ function renderQueueRow(entry) {
     path.textContent = entry.path;
     row.append(head, path);
 
+    entry.row = row;
     row.addEventListener('click', function(){
-        if (entry.record) {
-            map.flyTo({ center: entry.record.coords, zoom: Math.max(map.getZoom(), 5) });
-            openPopup(entry.record);
+        var target = currentRecord(entry);
+        if (target) {
+            map.flyTo({ center: target.coords, zoom: Math.max(map.getZoom(), 5) });
+            openPopup(target);
             return;
         }
         var detail = row.querySelector('.queue-detail');
@@ -2530,8 +2828,10 @@ function callDecoder(fn, ...args) {
 // Optional layers decoded in the background: some notifications carry no
 // geometry, but the reports inside the BUFR file do, so download and decode the
 // file and plot each report.
-// GTS: surface (IS), upper-air (IU) and ocean (IO) bulletins; satellite series are skipped.
+// GTS-to-WIS2: surface (IS), upper-air (IU) and ocean (IO) bulletins; satellite series are skipped.
 const GTS_TOPIC = /\/a\/wis2\/[^/]+-gts-to-wis2\/data\/core\/I\/([SUO])\//;
+// WIS2-to-GTS: whatever BUFR those centres pass on (any size limit the link states applies)
+const WIS2_GTS_TOPIC = /\/a\/wis2\/[^/]+-wis2-to-gts\//;
 // Files: any other small cached file without geometry that may be BUFR, plus
 // XML whose location is inside the file (Environment Canada citypage forecasts)
 const DECODE_FILE_MAX_BYTES = 200 * 1024;
@@ -2539,7 +2839,10 @@ const DECODE_FILE_MAX_REPORTS = 300;  // Per file, so a satellite swath can't fl
 const NOT_BUFR = ['grib', 'xml', 'csv', 'json', 'image', 'hdf', 'text'];
 const DECODE_LAYERS = {
     gts: (topic, feature) => topic.startsWith('cache/') && GTS_TOPIC.test(topic),
-    files: (topic, feature) => topic.startsWith('cache/') && decodableFile(topic, feature),
+    wis2gts: (topic, feature) => topic.startsWith('cache/') && WIS2_GTS_TOPIC.test(topic) && !NOT_BUFR.includes(formatOf(feature))
+        && !(feature.links || []).some((l) => l.rel == 'canonical' && l.length > DECODE_FILE_MAX_BYTES),
+    // Gateway centres belong to their own layers above
+    files: (topic, feature) => topic.startsWith('cache/') && !GATEWAY_TOPIC.test(topic) && decodableFile(topic, feature),
 };
 
 function decodableFile(topic, feature) {
@@ -2551,7 +2854,7 @@ function decodableFile(topic, feature) {
 const DECODE_FETCH_TIMEOUT_MS = 20000;
 const DECODE_QUEUE_MAX = 100;  // Oldest files are dropped when decoding falls behind
 const decodeEnabled = new Set();
-const decodePlotted = { gts: 0, files: 0 };
+const decodePlotted = { gts: 0, wis2gts: 0, files: 0 };
 let decodeQueue = [];
 let decodeBusy = false;
 const decodeSeen = new Set();
@@ -2586,7 +2889,7 @@ async function pumpDecode() {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         var bytes = bufrPart(new Uint8Array(await response.arrayBuffer()));
         if (bytes) {
-            var limit = job.kind === 'gts' ? 0 : DECODE_FILE_MAX_REPORTS;
+            var limit = job.kind === 'files' ? DECODE_FILE_MAX_REPORTS : 0;
             var subsets = JSON.parse(await callDecoder('decode_subsets', bytes, limit));
             subsets.forEach(([rows, profile], i) => plotDecodedReport(job, rows, profile, i));
         }
@@ -2634,6 +2937,7 @@ function plotDecodedReport(job, rows, profile, index) {
     };
     addPoint(record);
     decodePlotted[job.kind]++;
+    if (!index) linkDecoded(props.data_id, record);
 }
 
 // Citypage forecasts come in English and French for each site and are reissued
@@ -2658,7 +2962,7 @@ function plotCitypage(job, xml) {
     }
     var props = job.feature.properties || {};
     var [channel, t] = job.topic.split('/a/wis2/');
-    addPoint({
+    var record = addPoint({
         id: nextId++,
         coords: [lon, lat],
         topic: job.topic,
@@ -2679,6 +2983,7 @@ function plotCitypage(job, xml) {
         born: Date.now(),
     });
     decodePlotted[job.kind]++;
+    linkDecoded(props.data_id, record);
 }
 
 // Altitude in metres for aircraft reports (AMDAR and similar), else null:

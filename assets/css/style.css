@@ -212,6 +212,23 @@
   border: 1px solid #999999;
   border-radius: 50%;
 }
+.queue-dot-ring {
+  border-width: 2px;
+}
+.queue-dot-pending {
+  border-width: 2px;
+  border-style: dashed;
+}
+.queue-dot.queue-dot-none {
+  width: 6px;
+  height: 6px;
+  margin: 0 8px 1px 2px;
+  border: none;
+  background-color: #ced4da;
+}
+.queue-controls .form-check-label {
+  white-space: nowrap;
+}
 .queue-topic {
   color: #666666;
   font-family: monospace;
@@ -942,4 +959,65 @@
 }
 .pp-tabs button {
   font-size: 13px;
+}
+
+.forecast-dew {
+  stroke-dasharray: 3 2;
+  stroke-width: 1.2;
+}
+.forecast-obs-dew {
+  fill: #ffffff;
+  stroke: #212529;
+  stroke-width: 1.2;
+}
+.forecast-key-dew {
+  background: repeating-linear-gradient(90deg, #495057 0 3px, transparent 3px 5px);
+}
+.forecast-compare {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+.forecast-compare th {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6c757d;
+  white-space: nowrap;
+}
+.forecast-compare th.forecast-gfs { color: #e8590c; }
+.forecast-compare th.forecast-ecmwf { color: #1864ab; }
+.forecast-compare td {
+  white-space: nowrap;
+}
+.forecast-compare td:first-child {
+  white-space: normal;
+}
+.forecast-diff {
+  color: #868e96;
+}
+
+/* Sublayers sit under their parent with an elbow joining them to its dot */
+.legend-toggle.legend-sub {
+  position: relative;
+  margin: 0 0 0 26px;
+  padding-left: 12px;
+  font-size: 11px;
+}
+.legend-toggle.legend-sub::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: -6px;
+  width: 9px;
+  height: calc(50% + 6px);
+  border-left: 1px solid #adb5bd;
+  border-bottom: 1px solid #adb5bd;
+  border-bottom-left-radius: 3px;
+}
+.legend-toggle.legend-sub .form-check-input {
+  width: 0.85em;
+  height: 0.85em;
+}
+.legend-toggle.legend-disabled {
+  opacity: 0.5;
+  cursor: default;
 }
