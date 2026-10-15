@@ -958,13 +958,6 @@ function closeInfo() {
     selectedMarker.remove();
 }
 
-// Horizontal offset that centres a point in the map area left uncovered by the panels
-function panelOffset() {
-    var left = document.body.classList.contains('queue-open') ? document.querySelector('.queue').getBoundingClientRect().width : 0;
-    var right = infobar && document.body.classList.contains('info-open') ? infobar.getBoundingClientRect().width : 0;
-    return [(left - right) / 2, 0];
-}
-
 function buildPopup(record) {
     var props = record.props;
     var canonical = record.links.find((l) => l.rel == 'canonical');
@@ -3274,7 +3267,7 @@ function renderQueueRow(entry) {
         var target = currentRecord(entry);
         if (target) {
             openPopup(target);
-            map.flyTo({ center: target.coords, zoom: Math.max(map.getZoom(), 5), offset: panelOffset() });
+            map.flyTo({ center: target.coords, zoom: Math.max(map.getZoom(), 5) });
             return;
         }
         var detail = row.querySelector('.queue-detail');
@@ -3364,7 +3357,22 @@ map.addControl(new ProjectionControl(), 'top-left');
 // Layer switches and styling live in the sidebar's Layers tab; the map shows a
 // read-only key of what is currently drawn
 document.querySelector('.queue-pane-layers').appendChild(new LegendControl().onAdd(map));
-map.addControl(new MapKey(), 'bottom-left');
+map.addControl(new MapKey(), 'bottom-right');
+
+// Keep the globe (the map's centre) in the middle of the area the panels leave
+// uncovered: the sidebar and info panel become map padding as they open and close
+let panelPadding = '';
+function updateMapPadding() {
+    var queue = document.querySelector('.queue');
+    var left = document.body.classList.contains('queue-open') && queue ? queue.getBoundingClientRect().width : 0;
+    var right = document.body.classList.contains('info-open') && infobar ? infobar.getBoundingClientRect().width : 0;
+    var key = `${left}|${right}`;
+    if (key === panelPadding) return;
+    panelPadding = key;
+    map.easeTo({ padding: { left, right, top: 0, bottom: 0 }, duration: 200 });
+}
+new MutationObserver(updateMapPadding).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+window.addEventListener('resize', () => { panelPadding = ''; updateMapPadding(); });
 
 connectFastest();
 
