@@ -329,15 +329,6 @@
 .legend-toggle .form-check-input {
   margin: 0 6px 0 0;
 }
-.legend-about {
-  max-width: 240px;
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid #e5e5e5;
-  color: #6c757d;
-  font-size: 11px;
-  line-height: 1.4;
-}
 .legend-note {
   color: #6c757d;
   font-size: 11px;
@@ -1133,4 +1124,36 @@
   display: block;
   color: #6c757d;
   font-size: 10px;
+}
+
+/* How a section's points look on the map: white outline for WIS2, dark for GTS */
+.legend-style {
+  display: flex;
+  align-items: center;
+  margin: 0 0 3px;
+  color: #495057;
+  font-size: 10px;
+}
+.legend-dot.legend-sample {
+  width: 12px;
+  height: 12px;
+  border-width: 2.5px;
+  --color: #adb5bd;
+}
+.legend-section-wis2 .legend-sample {
+  border-color: #ffffff;
+  box-shadow: 0 0 0 1px #ced4da;
+}
+.legend-section-gts .legend-sample {
+  border-color: #343a40;
+  box-shadow: none;
+}
+/* The disclaimer in the attribution reads as a sentence, not a credit */
+.maplibregl-ctrl-attrib-inner {
+  max-width: 320px;
+}
+
+/* Rows that only switch the groups under them: no symbol, so set as a heading */
+.legend-toggle.legend-parent {
+  font-weight: 600;
 }

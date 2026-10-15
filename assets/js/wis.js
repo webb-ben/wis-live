@@ -31,6 +31,7 @@ const OBS_CLASSES = {
     buoy: { label: 'Buoys and floats', color: '#e8590c', title: 'Ocean observations from buoys, floats and moorings' },
     satellite: { label: 'Space-based (satellites)', color: '#868e96', title: 'Observations from satellites (winds, radiances, occultations)' },
     webcam: { label: 'Webcam images', color: '#F8A700', cacheOnly: true, title: 'Camera images' },
+    warning: { label: 'Warnings and alerts', color: '#e03131', cacheOnly: true, title: 'Weather warnings, alerts and advisories, including CAP messages' },
     other: { label: 'Other', color: '#c0a8e8', title: 'Anything not in the groups above' },
 };
 // GTS satellite bulletins are numerous and large, so that sublayer is off until
@@ -46,11 +47,11 @@ const LAYER_GROUPS = [
         // Sublayers sit under their parent and are off whenever it is off
         ...Object.entries(OBS_CLASSES).map(([key, c]) => ({ key: `cache-${key}`, parent: 'obs', label: c.label, color: c.color, title: c.title })),
         // An option rather than a layer: decoded reports join the groups above
-        { key: 'files', parent: 'obs', option: true, label: 'Decode files without a location', hint: 'Adds the reports inside to the groups above',
+        { key: 'files', parent: 'obs', option: true, label: 'Decode files without a location',
             title: 'Download and decode small cached files whose notification has no location; the reports inside join the groups above' },
         { key: 'origin', label: 'Origin', color: COLORS.origin, ring: true },
     ] },
-    { key: 'gts', label: 'GTS gateways', subtitle: 'Bulletins relayed between WIS2 and the older GTS', layers: [
+    { key: 'gts', label: 'GTS gateways', subtitle: 'Bulletins relayed with the GTS', layers: [
         { key: 'gts', label: 'GTS-to-WIS2 (decode required)', color: COLORS.gts, optIn: true,
             title: 'Download and decode the BUFR bulletins republished from the GTS into WIS2 (centres ending -gts-to-wis2), and plot the reports inside' },
         // Each decoded report is sorted by the identifiers it carries (see reportClass)
@@ -66,7 +67,8 @@ const LAYER_GROUPS = [
             title: 'Download and decode the BUFR that WIS2 centres pass on to the GTS (centres ending -wis2-to-gts), and plot the reports inside' },
     ] },
 ];
-const hiddenLayers = new Set(['gts', 'wis2gts', 'files', 'gts-satellite']);
+// Off at first: the gateways, decoding, GTS satellites and aircraft tracks
+const hiddenLayers = new Set(['gts', 'wis2gts', 'files', 'gts-satellite', 'gts-tracks']);
 const LAYER_PARENTS = Object.fromEntries(LAYER_GROUPS.flatMap((g) => g.layers).filter((l) => l.parent).map((l) => [l.key, l.parent]));
 
 function ancestors(key) {
@@ -118,6 +120,11 @@ const map = new maplibregl.Map({
     zoom: 2,
     minZoom: 0,
     maxZoom: 15,
+    // The ⓘ button: tile credits plus what this page is (collapsed until opened)
+    attributionControl: {
+        compact: true,
+        customAttribution: '<br>WIS 2.0 Live shows real-time weather observations as they are published through the WMO Information System. This page is not affiliated with WMO.',
+    },
 });
 
 const records = new Map();  // id -> record for every point on the map
@@ -355,6 +362,7 @@ function layerOf(record) {
 function topicClass(record) {
     var t = record.topic.toLowerCase();
     if (record.webcam) return 'webcam';
+    if (record.props.cap_info || /warning|alert|advisor|\/cap(\/|$)/.test(t)) return 'warning';
     if (/space-based-observations/.test(t)) return 'satellite';
     if (/aircraft|amdar|aviation/.test(t)) return 'aircraft';
     if (/upper-air|radiosonde|\/temp(\/|$)|\/pilot(\/|$)|profil/.test(t)) return 'upperair';
@@ -460,20 +468,20 @@ class LegendControl {
             ${LAYER_GROUPS.map((g) => `
             <section class="legend-section legend-section-${g.key}">
             <div class="legend-group">${g.label}<small>${g.subtitle}</small></div>
+            <div class="legend-style"><span class="legend-dot legend-sample"></span>${g.key === 'gts' ? 'Dark outline on the map' : 'White outline on the map'}</div>
             ${g.layers.map((l) => `
             ${l.option ? `
             <label class="legend-toggle legend-option form-switch" data-layer="${l.key}"${l.title ? ` title="${l.title}"` : ''}>
                 <input type="checkbox" class="form-check-input" role="switch"${hiddenLayers.has(l.key) ? '' : ' checked'}>
                 <span>${l.label}<small>${l.hint}</small></span>
             </label>` : `
-            <label class="legend-toggle${l.parent ? ` legend-sub legend-depth-${ancestors(l.key).length}` : ''}" data-layer="${l.key}"${l.optIn || g.layers.some((c) => c.parent === l.key && c.optIn) ? '' : ' hidden'}${l.title ? ` title="${l.title}"` : ''}>
+            <label class="legend-toggle${l.parent ? ` legend-sub legend-depth-${ancestors(l.key).length}` : ''}${isGroupRow(g, l) ? ' legend-parent' : ''}" data-layer="${l.key}"${l.optIn || g.layers.some((c) => c.parent === l.key && c.optIn) ? '' : ' hidden'}${l.title ? ` title="${l.title}"` : ''}>
                 <input type="checkbox" class="form-check-input"${hiddenLayers.has(l.key) ? '' : ' checked'}>
-                <span class="legend-dot${l.ring ? ' legend-ring' : ''}${l.track ? ' legend-line' : ''}" style="--color: ${l.color}"></span>${l.label}
+                ${isGroupRow(g, l) ? '' : `<span class="legend-dot${l.ring ? ' legend-ring' : ''}${l.track ? ' legend-line' : ''}" style="--color: ${l.color}"></span>`}${l.label}
             </label>`}`).join('')}
             </section>`).join('')}
             <div class="legend-note legend-decode" hidden></div>
-            <div class="legend-note">Pulses mark new arrivals; points fade over an hour</div>
-            <div class="legend-about">WIS 2.0 Live shows real-time weather observations as they are published through the WMO Information System. This page is not affiliated with WMO.</div>`;
+            <div class="legend-note">Pulses mark new arrivals; points fade over an hour</div>`;
 
         var status = container.querySelector('.legend-decode');
         container.querySelectorAll('.legend-toggle[data-layer]').forEach((row) => {
@@ -512,6 +520,12 @@ class LegendControl {
     onRemove() {
         // Nothing to do here
     }
+}
+
+// A row whose points are all drawn by the groups under it (Cache, GTS-to-WIS2),
+// so it has no symbol of its own
+function isGroupRow(group, layer) {
+    return group.layers.some((c) => c.parent === layer.key && !c.option && !c.follow);
 }
 
 function showLegendRow(key) {
