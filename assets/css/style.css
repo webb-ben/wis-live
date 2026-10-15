@@ -1046,8 +1046,8 @@
   width: 380px;
   max-width: calc(100vw - 52px);
   z-index: 1001;
-  overflow-y: auto;
-  padding: 12px 14px 16px;
+  display: flex;
+  flex-direction: column;
   background-color: #ffffff;
   border-left: 2px solid #bbbbbb;
   transform: translateX(100%);
@@ -1502,4 +1502,30 @@
   border-radius: 2px;
   background-color: rgba(156, 54, 181, 0.45);
   border-color: #561e64;
+}
+
+/* Closing the side panels: a Close button in the sidebar's Filters header, and a
+   larger × with a hover highlight on the info panel */
+.queue-filters .queue-title {
+  align-items: center;
+  gap: 8px;
+}
+.queue-filters .queue-reset {
+  margin-left: auto;
+}
+.queue-close {
+  padding: 1px 10px;
+  font-size: 12px;
+}
+.infobar-close {
+  width: 22px;
+  height: 22px;
+  padding: 6px;
+  border-radius: 50%;
+  background-size: 12px;
+  opacity: 0.7;
+}
+.infobar-close:hover {
+  background-color: #e9ecef;
+  opacity: 1;
 }

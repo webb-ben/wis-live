@@ -306,11 +306,13 @@ const map = new maplibregl.Map({
     zoom: 2,
     minZoom: 0,
     maxZoom: 15,
-    // The ⓘ button: tile credits plus what this page is (collapsed until opened)
-    attributionControl: {
-        compact: true,
-        customAttribution: '<br>WIS 2.0 Live shows real-time weather observations as they are published through the WMO Information System. This page is not affiliated with WMO.',
-    },
+    // Added below as its own control, so it can be kept closed
+    attributionControl: false,
+});
+// The ⓘ button: tile credits plus what this page is
+const attribution = new maplibregl.AttributionControl({
+    compact: true,
+    customAttribution: '<br>WIS 2.0 Live shows real-time weather observations as they are published through the WMO Information System. This page is not affiliated with WMO.',
 });
 
 const records = new Map();  // id -> record for every point on the map
@@ -518,6 +520,11 @@ map.on('load', () => {
     setInterval(flushPoints, 500);
 
     map.on('click', POINT_LAYERS, (e) => openPopup(records.get(e.features[0].id)));
+    // A click on empty map closes the info panel
+    map.on('click', (e) => {
+        var hit = map.queryRenderedFeatures(e.point, { layers: [...POINT_LAYERS, 'tracks', 'track-ribbons', 'swaths-fill'].filter((id) => map.getLayer(id)) });
+        if (!hit.length && document.body.classList.contains('info-open')) closeInfo();
+    });
     map.on('click', 'tracks', (e) => {
         // Points take precedence where both are under the pointer
         if (map.queryRenderedFeatures(e.point, { layers: POINT_LAYERS }).length) return;
@@ -790,7 +797,7 @@ class LegendControl {
             <div class="legend-colour">
                 <label>Color by
                     <select class="form-select form-select-sm">
-                        <option value="kind">Kind of observation</option>
+                        <option value="kind">Observation Type</option>
                         ${[...new Set(Object.values(METRICS).map((m) => m.group))].map((group) => `
                         <optgroup label="${group}">
                             ${Object.entries(METRICS).filter(([, m]) => m.group === group).map(([key, m]) => `<option value="${key}">${m.label}</option>`).join('')}
@@ -937,21 +944,26 @@ function openPopup(record) {
         infobar = document.createElement('aside');
         infobar.className = 'infobar';
         infobar.setAttribute('aria-label', 'Selected observation');
-        infobar.innerHTML = '<button type="button" class="btn-close infobar-close" aria-label="Close"></button><div class="infobar-body"></div>';
+        infobar.innerHTML = '<button type="button" class="btn-close infobar-close" aria-label="Close" title="Close (Esc)"></button><div class="infobar-body"></div>';
         infobar.querySelector('.infobar-close').addEventListener('click', closeInfo);
-        document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.body.classList.contains('info-open')) closeInfo(); });
         document.body.appendChild(infobar);
     }
     // On narrow screens the two panels can't both fit
     if (window.innerWidth < 760) document.body.classList.remove('queue-open');
     infobar.querySelector('.infobar-body').replaceChildren(buildPopup(record));
-    infobar.scrollTop = 0;
+    infobar.querySelector('.infobar-body').scrollTop = 0;
     document.body.classList.add('info-open');
     var inAir = record.track && record.track.startsWith('aircraft:') && !effectiveHidden().includes('gts-tracks');
     selectedMarker.setLngLat(record.coords);
     if (inAir) selectedMarker.remove(); else selectedMarker.addTo(map);
     keepPopupInView();
 }
+
+document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || e.target.closest('input, select, textarea, dialog')) return;
+    if (document.body.classList.contains('info-open')) closeInfo();
+    else document.body.classList.remove('queue-open');
+});
 
 function closeInfo() {
     document.body.classList.remove('info-open');
@@ -2921,6 +2933,9 @@ class QueueControl {
                 </div>
                 <ol class="queue-list"></ol>
             </div>`;
+        sidebar.querySelector('.queue-filters .queue-title').insertAdjacentHTML('beforeend',
+            '<button type="button" class="btn btn-sm btn-outline-secondary queue-close" title="Close (Esc)">Close</button>');
+        sidebar.querySelector('.queue-close').addEventListener('click', () => document.body.classList.remove('queue-open'));
         document.body.appendChild(sidebar);
         sidebar.querySelectorAll('.queue-tabs button').forEach((button) => button.addEventListener('click', () => selectQueueTab(button.dataset.tab)));
         queueList = sidebar.querySelector('.queue-list');
@@ -3357,7 +3372,25 @@ map.addControl(new ProjectionControl(), 'top-left');
 // Layer switches and styling live in the sidebar's Layers tab; the map shows a
 // read-only key of what is currently drawn
 document.querySelector('.queue-pane-layers').appendChild(new LegendControl().onAdd(map));
-map.addControl(new MapKey(), 'bottom-right');
+map.addControl(new MapKey(), 'top-right');
+map.addControl(attribution, 'bottom-right');
+
+// The ⓘ attribution starts closed and stays closed unless the visitor opens it:
+// MapLibre opens the compact attribution again whenever its text changes
+(function keepAttributionClosed() {
+    var el = document.querySelector('.maplibregl-ctrl-attrib');
+    if (!el) return;
+    var openedByVisitor = false;
+    // Captured before MapLibre's own handler toggles it, so this is the state the visitor is choosing
+    el.addEventListener('click', (e) => {
+        if (e.target.closest('.maplibregl-ctrl-attrib-button')) openedByVisitor = !el.classList.contains('maplibregl-compact-show');
+    }, true);
+    var close = () => {
+        if (!openedByVisitor && el.classList.contains('maplibregl-compact-show')) el.classList.remove('maplibregl-compact-show');
+    };
+    new MutationObserver(close).observe(el, { attributes: true, attributeFilter: ['class'] });
+    close();
+})();
 
 // Keep the globe (the map's centre) in the middle of the area the panels leave
 // uncovered: the sidebar and info panel become map padding as they open and close
