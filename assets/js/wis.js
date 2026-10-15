@@ -12,7 +12,7 @@ String.prototype.hexDecode = function(){
 // Map
 const MAX_POINTS = 100000;        // Oldest points are dropped beyond this...
 const MAX_DECODED_POINTS = 30000;  // ...with reports decoded from files capped separately so they can't crowd out the rest
-const FADE_MS = 60 * 60 * 1000;  // Points fade over an hour
+const FADE_MS = 4 * 60 * 60 * 1000;  // Points fade over four hours
 const PULSE_MS = 1600;           // Length of the ripple on new arrivals
 const COLORS = {
     origin: '#6f9fd8',
@@ -24,45 +24,159 @@ const COLORS = {
 // has one colour on the map. Cache points are sorted by topic (see topicClass),
 // decoded reports by the identifiers they carry (see reportClass).
 // Colours follow the domain (land green, sky cyan, sea navy, buoy orange,
-// space near-black, alert red) and are spread across hues to stay distinct
+// satellites white like the clouds they see, alert red) and are spread across hues to stay distinct
 const OBS_CLASSES = {
     station: { label: 'Weather stations', color: '#2f9e44', title: 'Surface observations from fixed stations' },
     upperair: { label: 'Upper-air soundings', color: '#7048e8', title: 'Profiles through the atmosphere (radiosondes, TEMP)' },
     aircraft: { label: 'Aircraft', color: '#15aabf', title: 'Observations from aircraft (AMDAR, AIREP)' },
     ship: { label: 'Ships', color: '#1c3d8f', title: 'Observations from ships and other mobile stations' },
     buoy: { label: 'Buoys and floats', color: '#f76707', title: 'Ocean observations from buoys, floats and moorings' },
-    satellite: { label: 'Space-based (satellites)', color: '#212529', title: 'Observations from satellites (winds, radiances, occultations)' },
+    satellite: { label: 'Space-based (satellites)', color: '#ffffff', title: 'Observations from satellites (winds, radiances, occultations)' },
     webcam: { label: 'Webcam images', color: '#fcc419', cacheOnly: true, title: 'Camera images' },
     warning: { label: 'Warnings and alerts', color: '#e03131', cacheOnly: true, title: 'Weather warnings, alerts and advisories, including CAP messages' },
     other: { label: 'Other', color: '#868e96', title: 'Anything not in the groups above' },
 };
+// ---------- Model fields from ECCC GeoMet (WMS). GeoMet serves its default time,
+// the current hour; the hour in the URL only makes browsers fetch fresh tiles.
+const GEOMET = 'https://geo.weather.gc.ca/geomet';
+let modelFieldOn = false;
+
+function modelFieldUrl(key) {
+    var hour = new Date().toISOString().slice(0, 13);
+    return `${GEOMET}?service=WMS&version=1.3.0&request=GetMap&layers=${METRICS[key].wms}&styles=&crs=EPSG:3857`
+        + `&bbox={bbox-epsg-3857}&width=256&height=256&format=image/png&transparent=true&_h=${hour}`;
+}
+
+// Shows the model field for the selected measure, if asked for, with its legend
+function updateModelField(legend) {
+    var m = METRICS[colourBy], on = modelFieldOn && !!m && !!m.wms;
+    var toggle = legend.querySelector('.legend-model input');
+    toggle.disabled = !m || !m.wms;
+    legend.querySelector('.legend-model').classList.toggle('legend-disabled', !m || !m.wms);
+    var info = legend.querySelector('.legend-model-info');
+    info.hidden = !on;
+    if (map.getLayer('model-field')) {
+        if (on) map.getSource('model-field').setTiles([modelFieldUrl(colourBy)]);
+        map.setLayoutProperty('model-field', 'visibility', on ? 'visible' : 'none');
+    }
+    if (on) {
+        info.querySelector('span').textContent = `ECCC ${m.wms.split('_')[0]} model, ${new Date().toISOString().slice(11, 13)}:00 UTC`;
+        info.querySelector('img').src = `${GEOMET}?version=1.3.0&service=WMS&request=GetLegendGraphic&sld_version=1.1.0&layer=${m.wms}&format=image/png`;
+    }
+    updateMapKey();
+}
+
+// Keeps the model field on the current hour
+setInterval(() => {
+    var legend = document.querySelector('.legend');
+    if (legend && modelFieldOn) updateModelField(legend);
+}, 10 * 60 * 1000);
+
 // Measures stations, ships and buoys can be coloured by (see setColourBy)
-// `period` (hours): totals over exactly that window, as 013011 after 004024 = -period,
+// `wms`: the matching ECCC GeoMet model layer (GDPS, or GDWPS for waves), shown
+// behind the points on request. `period` (hours): totals over exactly that window, as 013011 after 004024 = -period,
 // or the older fixed-window element given in `ids`
-const PRECIP_STOPS = [[0, '#ffffff'], [0.2, '#c6dbef'], [1, '#6baed6'], [5, '#2171b5'], [15, '#08306b'], [30, '#4a1486']];
+// Colour scales sampled from ECCC GeoMet's default legend for each model layer
+// (GetLegendGraphic), so a station's colour matches the model field behind it.
+// Units converted to the stations' own: sea temperature K to °C, wind knots to m/s.
+const GEOMET_STOPS = {
+    temp: [
+        [-40, '#00007f'], [-37.5, '#000096'], [-35, '#0000b4'], [-32.5, '#0000ce'], [-30, '#0000ec'],
+        [-27.5, '#001af4'], [-25, '#003cfc'], [-22.5, '#0065fd'], [-20, '#008ffd'], [-17.5, '#00b9fd'],
+        [-15, '#00e3fd'], [-12.5, '#17f0c7'], [-10, '#33fc86'], [-7.5, '#52fc86'], [-5, '#77fc86'],
+        [-2.5, '#93fc6a'], [0, '#b7fd46'], [2.5, '#d6fd27'], [5, '#fbfe03'], [7.5, '#fedf00'],
+        [10, '#fdbd00'], [12.5, '#fd9b00'], [15, '#fd7900'], [17.5, '#fd5700'], [20, '#fd3200'],
+        [22.5, '#f61b00'], [25, '#ee0000'], [27.5, '#d50000'], [30, '#b60000'], [32.5, '#9a0000'],
+        [35, '#7f0000'], [37.5, '#6a0000'], [40, '#560000'],
+    ],
+    rh: [
+        [0, '#ffffff'], [2.5, '#8a8ac4'], [5, '#00007f'], [7.5, '#000095'], [10, '#0000ac'],
+        [12.5, '#0000c4'], [15, '#0000db'], [17.5, '#0000f6'], [20, '#0012fd'], [22.5, '#0037fd'],
+        [25, '#0059fd'], [27.5, '#007bfd'], [30, '#009dfd'], [32.5, '#00bffd'], [35, '#00e7fe'],
+        [37.5, '#0bfcf3'], [40, '#24fcd9'], [42.5, '#40fcbe'], [45, '#5ffc9e'], [47.5, '#77fc86'],
+        [50, '#94fd69'], [52.5, '#b2fd4b'], [55, '#cdfd30'], [57.5, '#ebfe13'], [60, '#fef800'],
+        [62.5, '#fdd900'], [65, '#fdbe00'], [67.5, '#fda500'], [70, '#fd8700'], [72.5, '#fd6900'],
+        [75, '#fd4d00'], [77.5, '#fd3200'], [80, '#fd1700'], [82.5, '#f90000'], [85, '#e00000'],
+        [87.5, '#cb0000'], [90, '#b30000'], [92.5, '#9c0000'], [95, '#840000'], [97.5, '#640000'],
+        [100, '#420000'],
+    ],
+    mslp: [
+        [940, '#00007f'], [950, '#0000a8'], [960, '#0000d4'], [970, '#0031e9'], [980, '#0067fb'],
+        [990, '#10aeed'], [1000, '#22f6db'], [1010, '#77fc86'], [1020, '#d9fd24'], [1030, '#eabb13'],
+        [1040, '#fd6d00'], [1050, '#ec3b00'], [1060, '#d80000'], [1070, '#af0000'], [1080, '#7f0000'],
+    ],
+    wind: [
+        [0, '#00007f'], [1.29, '#0000a4'], [2.57, '#0002cc'], [3.86, '#0019ea'], [5.14, '#0036fd'],
+        [6.43, '#0074fd'], [7.72, '#03affa'], [9, '#0ae8f3'], [10.29, '#2cfcd1'], [11.57, '#62fc9b'],
+        [12.86, '#90fc6d'], [14.15, '#c2fd3b'], [15.43, '#e2eb1b'], [16.72, '#fdd400'], [18.01, '#fd9f00'],
+        [19.29, '#fd6d00'], [20.58, '#fd3b00'], [21.86, '#f21900'], [23.15, '#d50700'], [24.44, '#b10000'],
+        [25.72, '#850000'], [27.01, '#6b0000'], [28.29, '#550000'],
+    ],
+    // 0 mm (dry) is white; GeoMet leaves anything below 0.1 mm transparent
+    precip: [
+        [0, '#ffffff'], [0.1, '#c2d9fe'], [1.05, '#bad5fe'], [2, '#aed1fe'], [3.5, '#9fc5fe'],
+        [5, '#8eb8fe'], [7.5, '#6ea5fe'], [10, '#509afb'], [15, '#2ca6eb'], [20, '#1cb7e1'], [25, '#21d7dc'],
+        [30, '#26e4d6'], [35, '#2ce2d0'], [40, '#35edc7'], [45, '#42fdbb'], [50, '#61fe9c'], [55, '#85fe78'],
+        [60, '#c7fe37'], [65, '#fefc00'], [70, '#fee700'], [75, '#fec300'], [80, '#fe7100'], [85, '#fc3400'],
+        [90, '#f20d00'], [95, '#e30000'], [100, '#cb0000'], [110, '#aa0000'], [120, '#840000'],
+        [135, '#4a0000'], [150, '#000000'],
+    ],
+    sst: [
+        [-2, '#002cd8'], [1.2, '#0247fb'], [4.4, '#158ee8'], [7.6, '#26cdd7'], [10.8, '#44fcb9'],
+        [14, '#90fd6e'], [17.2, '#dcfe22'], [20.4, '#fedc00'], [23.6, '#fd8700'], [26.8, '#fd4300'],
+        [30, '#dd2500'],
+    ],
+    waves: [
+        [0, '#0003e8'], [0.5, '#001ff2'], [1, '#003ffd'], [1.5, '#005bfd'], [2, '#0075fd'], [2.5, '#0091fd'],
+        [3, '#00aefd'], [3.5, '#00cbfd'], [4, '#04e3f9'], [4.5, '#11f5ec'], [5, '#24fcd9'], [5.5, '#41fcbc'],
+        [6, '#5bfca2'], [6.5, '#78fd85'], [7, '#97fd66'], [7.5, '#b3fd4a'], [8, '#cefd2f'], [8.5, '#e8fd15'],
+        [9, '#f3ec0a'], [9.5, '#fdda00'], [10, '#fdbd00'], [10.5, '#fda300'], [11, '#fd8300'],
+        [11.5, '#fd6900'], [12, '#fd4a00'], [12.5, '#fd2f00'], [13, '#fd1300'], [13.5, '#f50600'],
+        [14, '#e80000'], [14.5, '#d40000'], [15, '#bd0000'],
+    ],
+};
 const METRICS = {
-    temp: { group: 'Air', label: 'Temperature', unit: '°C', ids: [12101, 12001], convert: (v) => v - 273.15,
-        stops: [[-30, '#313695'], [-15, '#4575b4'], [0, '#abd9e9'], [10, '#ffffbf'], [20, '#fdae61'], [30, '#d73027'], [40, '#a50026']] },
-    dew: { group: 'Air', label: 'Dew point', unit: '°C', ids: [12103, 12003], convert: (v) => v - 273.15,
-        stops: [[-30, '#543005'], [-10, '#bf812d'], [5, '#f6e8c3'], [15, '#80cdc1'], [25, '#01665e']] },
-    rh: { group: 'Air', label: 'Humidity', unit: '%', ids: [13003],
-        stops: [[0, '#8c510a'], [30, '#d8b365'], [60, '#c7eae5'], [80, '#5ab4ac'], [100, '#01665e']] },
-    mslp: { group: 'Air', label: 'Pressure (MSL)', unit: 'hPa', ids: [10051], convert: (v) => v / 100,
-        stops: [[970, '#762a83'], [995, '#c2a5cf'], [1013, '#f7f7f7'], [1025, '#a6dba0'], [1040, '#1b7837']] },
-    wind: { group: 'Air', label: 'Wind speed', unit: 'm/s', ids: [11002],
-        stops: [[0, '#f7fbff'], [5, '#9ecae1'], [10, '#4292c6'], [18, '#08519c'], [25, '#08306b']] },
-    precip1: { group: 'Precipitation', label: 'Precipitation, last hour', unit: 'mm', period: 1, ids: [13019], stops: PRECIP_STOPS },
-    precip6: { group: 'Precipitation', label: 'Precipitation, last 6 hours', unit: 'mm', period: 6, ids: [13021], stops: PRECIP_STOPS },
-    precip24: { group: 'Precipitation', label: 'Precipitation, last 24 hours', unit: 'mm', period: 24, ids: [13023], stops: PRECIP_STOPS },
+    temp: { group: 'Air', wms: 'GDPS_15km_AirTemp_2m', label: 'Temperature', unit: '°C', ids: [12101, 12001], convert: (v) => v - 273.15,
+        stops: GEOMET_STOPS.temp },
+    dew: { group: 'Air', wms: 'GDPS_15km_DewPoint_2m', label: 'Dew point', unit: '°C', ids: [12103, 12003], convert: (v) => v - 273.15,
+        stops: GEOMET_STOPS.temp },
+    rh: { group: 'Air', wms: 'GDPS_15km_RelativeHumidity_2m', label: 'Humidity', unit: '%', ids: [13003],
+        stops: GEOMET_STOPS.rh },
+    mslp: { group: 'Air', wms: 'GDPS_15km_Pressure_MSL', label: 'Pressure (MSL)', unit: 'hPa', ids: [10051], convert: (v) => v / 100,
+        stops: GEOMET_STOPS.mslp },
+    wind: { group: 'Air', wms: 'GDPS_15km_WindSpeed_10m', label: 'Wind speed', unit: 'm/s', ids: [11002],
+        stops: GEOMET_STOPS.wind },
+    precip1: { group: 'Precipitation', wms: 'GDPS_15km_Precip-Accum1h', label: 'Precipitation, last hour', unit: 'mm', period: 1, ids: [13019], stops: GEOMET_STOPS.precip },
+    precip6: { group: 'Precipitation', wms: 'GDPS_15km_Precip-Accum6h', label: 'Precipitation, last 6 hours', unit: 'mm', period: 6, ids: [13021], stops: GEOMET_STOPS.precip },
+    precip24: { group: 'Precipitation', wms: 'GDPS_15km_Precip-Accum24h', label: 'Precipitation, last 24 hours', unit: 'mm', period: 24, ids: [13023], stops: GEOMET_STOPS.precip },
     // Marine: ships and buoys
-    sst: { group: 'Sea surface (ships and buoys)', label: 'Sea temperature', unit: '°C', ids: [22043, 22049, 22042], convert: (v) => v - 273.15,
-        stops: [[-2, '#313695'], [5, '#4575b4'], [12, '#abd9e9'], [18, '#ffffbf'], [24, '#fdae61'], [30, '#d73027']] },
-    waves: { group: 'Sea surface (ships and buoys)', label: 'Wave height', unit: 'm', ids: [22070, 22021, 22022],
-        stops: [[0, '#f7fcf0'], [1, '#ccebc5'], [2.5, '#7bccc4'], [4, '#2b8cbe'], [8, '#084081']] },
+    sst: { group: 'Sea surface (ships and buoys)', wms: 'GDPS_15km_SeaWaterTemp', label: 'Sea temperature', unit: '°C', ids: [22043, 22049, 22042], convert: (v) => v - 273.15,
+        stops: GEOMET_STOPS.sst },
+    waves: { group: 'Sea surface (ships and buoys)', wms: 'GDWPS_25km_HTSGW_PT1H', label: 'Wave height', unit: 'm', ids: [22070, 22021, 22022],
+        stops: GEOMET_STOPS.waves },
+    // Satellites: `targets` points these at the satellite groups instead of stations, ships and buoys
+    satWind: { group: 'Space-based (satellites)', targets: 'satellite', label: 'Cloud-level wind speed', unit: 'm/s', ids: [11002],
+        stops: GEOMET_STOPS.wind },
+    cloudTop: { group: 'Space-based (satellites)', targets: 'satellite', label: 'Cloud-top pressure', unit: 'hPa', ids: [20016], convert: (v) => v / 100,
+        stops: [[100, '#fde725'], [250, '#7ad151'], [400, '#22a884'], [550, '#2a788e'], [700, '#414487'], [1000, '#440154']] },
+    brightness: { group: 'Space-based (satellites)', targets: 'satellite', label: 'Brightness temperature', unit: 'K', ids: [12163],
+        stops: [[180, '#000004'], [210, '#320a5e'], [235, '#781c6d'], [255, '#bc3754'], [270, '#ed6925'], [290, '#fbb61a'], [320, '#fcffa4']] },
+    cloudAmount: { group: 'Space-based (satellites)', targets: 'satellite', label: 'Cloud amount', unit: '%', ids: [20081],
+        stops: [[0, '#1971c2'], [25, '#74c0fc'], [50, '#d0ebff'], [100, '#f8f9fa']] },
 };
 // Surface observations that can be coloured by a measure: stations, ships and buoys, cache and GTS
 const COLOURABLE = ['station', 'ship', 'buoy'].flatMap((k) => [`cache-${k}`, `gts-${k}`]);
+const SATELLITE_LAYERS = ['cache-satellite', 'gts-satellite'];
 const IS_STATION = ['in', ['get', 'layer'], ['literal', COLOURABLE]];
+
+// The layers a measure colours (stations, ships and buoys unless it says satellites)
+function colourTargets(m) {
+    return m && m.targets === 'satellite' ? SATELLITE_LAYERS : COLOURABLE;
+}
+
+function isColourTarget() {
+    return ['in', ['get', 'layer'], ['literal', colourTargets(METRICS[colourBy])]];
+}
 const IS_AIRCRAFT = ['in', ['get', 'layer'], ['literal', ['cache-aircraft', 'gts-aircraft']]];
 const NO_VALUE_COLOR = '#ced4da';
 const METRIC_QUEUE_MAX = 300;  // Station files waiting to be decoded, newest kept
@@ -218,6 +332,9 @@ function isGateway(record) {
     return record.decodedLayer === 'gts' || record.decodedLayer === 'wis2gts';
 }
 
+// The two sources' accent colours, as in the legend sections (style.css)
+const SOURCE_COLORS = { wis2: '#1c7ed6', gts: '#7048e8' };
+
 // Layers that draw observation points: WIS2 circles and GTS diamonds
 const POINT_LAYERS = ['points', 'points-gts'];
 
@@ -270,6 +387,11 @@ map.on('load', () => {
     var empty = { type: 'FeatureCollection', features: [] };
     map.addSource('points', { type: 'geojson', data: empty });
     map.addSource('pulses', { type: 'geojson', data: empty });
+    // Optional model field for the selected measure (ECCC GeoMet WMS), under everything else
+    map.addSource('model-field', { type: 'raster', tiles: [modelFieldUrl('temp')], tileSize: 256,
+        attribution: 'Model fields: ECCC GDPS/GDWPS via GeoMet' });
+    map.addLayer({ id: 'model-field', type: 'raster', source: 'model-field', layout: { visibility: 'none' },
+        paint: { 'raster-opacity': 0.55, 'raster-fade-duration': 0 } });
     map.addSource('alert-area', { type: 'geojson', data: empty });
     map.addLayer({
         id: 'alert-area',
@@ -289,10 +411,32 @@ map.on('load', () => {
         source: 'pulses',
         paint: {
             'circle-color': 'rgba(0, 0, 0, 0)',
-            'circle-stroke-color': ['get', 'color'],
+            // The source's colour from the legend: GTS purple, WIS2 blue
+            'circle-stroke-color': ['case', ['get', 'gateway'], SOURCE_COLORS.gts, SOURCE_COLORS.wis2],
             'circle-stroke-width': 1.5,
             'circle-pitch-alignment': 'map',
         },
+    });
+    // Each decoded satellite file as one footprint (the area its reports cover), under the points
+    map.addSource('swaths', { type: 'geojson', data: empty });
+    // No antialiasing, so neighbouring cells meet without hairline seams
+    map.addLayer({ id: 'swaths-fill', type: 'fill', source: 'swaths', paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.3, 'fill-antialias': false } });
+    map.on('click', 'swaths-fill', (e) => {
+        if (map.queryRenderedFeatures(e.point, { layers: POINT_LAYERS }).length) return;
+        openPopup(nearestSwathReport(e.features[0].properties.swath, e.lngLat));
+    });
+    map.on('mousemove', 'swaths-fill', (e) => {
+        if (map.queryRenderedFeatures(e.point, { layers: POINT_LAYERS }).length) return;
+        var f = e.features[0].properties;
+        map.getCanvas().style.cursor = 'pointer';
+        var m = METRICS[colourBy];
+        var reading = m && m.targets === 'satellite' && typeof f[`m_${colourBy}`] === 'number' ? ` · ${formatMetric(f[`m_${colourBy}`], m)}` : '';
+        var clouds = typeof f.m_cloudAmount === 'number' ? ` · cloud ${Math.round(f.m_cloudAmount)}%` : '';
+        hoverLabel.setLngLat(e.lngLat).setText(`${f.label}${reading || clouds}`).addTo(map);
+    });
+    map.on('mouseleave', 'swaths-fill', () => {
+        map.getCanvas().style.cursor = '';
+        hoverLabel.remove();
     });
     // Aircraft flight paths and satellite ground tracks, under the points
     map.addSource('tracks', { type: 'geojson', data: empty });
@@ -445,6 +589,8 @@ function addPoint(record) {
             discipline: record.discipline,
             via: record.decodedLayer || '',
             gateway: isGateway(record),
+            sat: satelliteKey(record),
+            inSwath: !!record.inSwath,
             outline: darken(record.color),
             topic: record.topic.toLowerCase(),
             ...metricValues(record),
@@ -458,6 +604,7 @@ function addPoint(record) {
     toAdd.push(feature);
     if (!reduceMotion && !feature.properties.superseded) pulses.push(feature);
     if (!seenLayers.has(feature.properties.layer)) showLegendRow(feature.properties.layer);
+    if (feature.properties.sat) addSatelliteRow(feature.properties.sat);
 
     var pool = record.decodedLayer ? pools.decoded : pools.wis2;
     pool.set(record.id, record);
@@ -514,6 +661,7 @@ function topicClass(record) {
 
 function removePoint(record) {
     if (record.track) tracksDirty = true;
+    if (record.fileKey) swathsDirty = true;
     records.delete(record.id);
     pools[record.decodedLayer ? 'decoded' : 'wis2'].delete(record.id);
     if (byDataId.get(record.props.data_id) === record) byDataId.delete(record.props.data_id);
@@ -535,6 +683,11 @@ function flushPoints() {
         toUpdate = [];
     }
     var now = Date.now();
+    if (swathsDirty && now - swathsBuilt > TRACK_REBUILD_MS) {
+        swathsDirty = false;
+        swathsBuilt = now;
+        map.getSource('swaths').setData({ type: 'FeatureCollection', features: buildSwaths() });
+    }
     if (tracksDirty && now - tracksBuilt > TRACK_REBUILD_MS) {
         tracksDirty = false;
         tracksBuilt = now;
@@ -565,10 +718,18 @@ function paintAge() {
     var opacity = ['interpolate', ['linear'], ['-', Date.now(), ['get', 'born']], 0, 1, FADE_MS, 0.35];
     // While stations are coloured by a measure, everything else steps back
     // (aircraft keep their own colour and opacity: they aren't coloured by the measures)
-    if (colourBy !== 'kind') opacity = ['case', ['any', IS_STATION, IS_AIRCRAFT], opacity, ['*', opacity, 0.25]];
+    if (colourBy !== 'kind') {
+        // Surface measures leave aircraft alone (they aren't coloured); satellite measures dim them too
+        var kept = METRICS[colourBy] && METRICS[colourBy].targets === 'satellite' ? isColourTarget() : ['any', isColourTarget(), IS_AIRCRAFT];
+        opacity = ['case', kept, opacity, ['*', opacity, 0.25]];
+    }
     map.setPaintProperty('points', 'circle-opacity', ['case', ['get', 'origin'], 0, opacity]);
     map.setPaintProperty('points', 'circle-stroke-opacity', opacity);
     map.setPaintProperty('points-gts', 'icon-opacity', opacity);
+    // Satellite coverage: opacity is the cloud amount (clear 0.05, overcast 0.8; 0.3 where
+    // the product has none), fading with age like the points
+    var cloud = ['case', ['has', 'm_cloudAmount'], ['interpolate', ['linear'], ['get', 'm_cloudAmount'], 0, 0.05, 100, 0.8], 0.3];
+    map.setPaintProperty('swaths-fill', 'fill-opacity', ['*', cloud, ['interpolate', ['linear'], ['-', Date.now(), ['get', 'born']], 0, 1, FADE_MS, 0.4]]);
     map.setPaintProperty('tracks', 'line-opacity', ['interpolate', ['linear'], ['-', Date.now(), ['get', 'born']], 0, 0.9, FADE_MS, 0.35]);
 }
 
@@ -607,7 +768,7 @@ class ProjectionControl {
 class LegendControl {
     onAdd(map) {
         var container = document.createElement('div');
-        container.className = 'maplibregl-ctrl legend';
+        container.className = 'legend layer-panel';
         container.innerHTML = `
             ${LAYER_GROUPS.map((g) => `
             <section class="legend-section legend-section-${g.key}">
@@ -625,7 +786,7 @@ class LegendControl {
             </label>`}`).join('')}
             </section>`).join('')}
             <div class="legend-colour">
-                <label>Colour surface observations by
+                <label>Color by
                     <select class="form-select form-select-sm">
                         <option value="kind">Kind of observation</option>
                         ${[...new Set(Object.values(METRICS).map((m) => m.group))].map((group) => `
@@ -634,13 +795,15 @@ class LegendControl {
                         </optgroup>`).join('')}
                     </select>
                 </label>
-                <div class="legend-scale" hidden><span></span><i></i><span></span></div>
-                <label class="legend-coloured-only" hidden><input type="checkbox" class="form-check-input"> Only show points with a value                <div class="legend-note legend-colour-status" hidden></div></label>
-            </div>
-            <div class="legend-note legend-decode" hidden></div>
-            <div class="legend-note">Pulses mark new arrivals; points fade over an hour</div>`;
+                <label class="legend-coloured-only" hidden><input type="checkbox" class="form-check-input"> Require value 
+                <div class="legend-note legend-colour-status" hidden></div></label>
+                <div class="legend-scale" hidden></div>
+                <label class="legend-model" title="The matching field from Environment and Climate Change Canada's global models, for the current hour, behind the points">
+                    <input type="checkbox" class="form-check-input"> Show model field (gridded value)
+                </label>
+                <div class="legend-model-info" hidden><span class="legend-note"></span><img alt="Model field legend"></div>
+            </div>`;
 
-        var status = container.querySelector('.legend-decode');
         container.querySelector('.legend-colour select').addEventListener('change', (e) => setColourBy(e.target.value, container));
         container.querySelector('.legend-coloured-only input').addEventListener('change', (e) => {
             colouredOnly = e.target.checked;
@@ -654,6 +817,7 @@ class LegendControl {
                 syncDecoding();
                 syncSublayers();
                 applyMapFilter();
+                if (key === 'obs' || key === 'origin') rebuildQueue();
             });
         });
         // Sublayers are greyed out while their parent is off
@@ -669,18 +833,14 @@ class LegendControl {
                 var on = !hidden.includes(k);
                 if (on !== decodeEnabled.has(k)) setDecodeEnabled(k, on);
             });
-            status.hidden = !decodeEnabled.size;
         };
         syncSublayers();
         // The decode layers are defined further down the script, so start once it has run
         setTimeout(syncDecoding);
-        setInterval(() => {
-            if (!decodeEnabled.size) return;
-            var plotted = [...decodeEnabled].reduce((n, key) => n + decodePlotted[key], 0);
-            status.textContent = decoderReady || plotted
-                ? `${plotted.toLocaleString()} reports plotted · ${decodeQueue.length} files waiting`
-                : 'Loading decoder…';
-        }, 1000);
+        container.querySelector('.legend-model input').addEventListener('change', (e) => {
+            modelFieldOn = e.target.checked;
+            updateModelField(container);
+        });
         return container;
     }
 
@@ -695,8 +855,69 @@ function isGroupRow(group, layer) {
     return group.layers.some((c) => c.parent === layer.key && !c.option && !c.follow);
 }
 
+function selectQueueTab(tab) {
+    document.querySelectorAll('.queue-tabs button').forEach((b) => b.setAttribute('aria-selected', b.dataset.tab === tab));
+    document.querySelectorAll('.queue-pane').forEach((pane) => { pane.hidden = pane.dataset.pane !== tab; });
+    if (tab === 'messages') flushQueue();
+}
+
+// Read-only key on the map: only what is drawn now, with the colour scale
+// while colouring by a measure
+class MapKey {
+    onAdd() {
+        this.container = document.createElement('div');
+        this.container.className = 'maplibregl-ctrl map-key';
+        this.container.addEventListener('click', (e) => {
+            if (!e.target.closest('.map-key-edit')) return;
+            document.body.classList.add('queue-open');
+            selectQueueTab('layers');
+        });
+        mapKey = this.container;
+        updateMapKey();
+        return this.container;
+    }
+
+    onRemove() {
+        // Nothing to do here
+    }
+}
+let mapKey = null;
+
+function updateMapKey() {
+    if (!mapKey) return;
+    var hidden = effectiveHidden();
+    var drawn = (key) => seenLayers.has(key) && !hidden.includes(key);
+    var symbol = (shape, color) => `<span class="legend-dot${shape === 'diamond' ? ' key-diamond' : ''}${shape === 'ring' ? ' legend-ring' : ''}" style="--color: ${color}; --outline: ${darken(color)}"></span>`;
+    var rows = [];
+    var m = METRICS[colourBy];
+    if (m) {
+        rows.push(`<div class="key-title">${esc(m.label)} (${esc(m.unit)})</div>`);
+        rows.push(`<div class="legend-scale"><span>${scaleLabel(m.stops[0][0])}</span><i style="background: linear-gradient(90deg, ${m.stops.map(([, c]) => c).join(', ')})"></i><span>${scaleLabel(m.stops[m.stops.length - 1][0])}</span></div>`);
+        // With "Require value" on, points without one aren't drawn, so there's nothing to explain
+        if (!colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}No value yet</div>`);
+    } else {
+        for (var [key, c] of Object.entries(OBS_CLASSES)) {
+            var shapes = [drawn(`cache-${key}`) && 'circle', drawn(`gts-${key}`) && 'diamond'].filter(Boolean);
+            if (shapes.length) rows.push(`<div class="key-row">${shapes.map((shape) => symbol(shape, c.color)).join('')}${esc(c.label)}</div>`);
+        }
+    }
+    if ((drawn('cache-satellite') || drawn('gts-satellite')) && swathMembers.size) {
+        rows.push(`<div class="key-row"><span class="legend-dot key-swath"></span>Satellite coverage, darker = cloudier</div>`);
+    }
+    if (drawn('wis2gts')) rows.push(`<div class="key-row">${symbol('diamond', COLORS.wis2gts)}WIS2-to-GTS</div>`);
+    if (!hidden.includes('gts-tracks') && seenLayers.has('gts-aircraft')) {
+        rows.push(`<div class="key-row"><span class="legend-dot legend-line" style="--color: linear-gradient(90deg, #99e9f2, #22b8cf, #1971c2, #5f3dc4)"></span>Aircraft tracks by altitude</div>`);
+    }
+    if (modelFieldOn && m && m.wms) rows.push(`<div class="key-note">Background: ECCC model ${esc(m.label.toLowerCase())}</div>`);
+    rows.push('<div class="key-note">Pulses mark new arrivals; points fade over an hour</div>');
+    // How each source is drawn: WIS2 cache circles, WIS2 origin rings, GTS diamonds
+    rows.push(`<div class="key-shapes">${symbol('circle', '#adb5bd')}WIS2${drawn('origin') ? ` ${symbol('ring', COLORS.origin)}WIS2 origin` : ''} ${symbol('diamond', '#adb5bd')}GTS <button type="button" class="btn btn-link btn-sm map-key-edit">Edit layers</button></div>`);
+    mapKey.innerHTML = rows.join('');
+}
+
 function showLegendRow(key) {
     seenLayers.add(key);
+    updateMapKey();
     var row = document.querySelector(`.legend-toggle[data-layer="${key}"]`);
     if (row) row.hidden = false;
     // Rows that follow their parent, such as aircraft tracks
@@ -773,7 +994,7 @@ function buildPopup(record) {
         <div class="pp-actions"></div>
         <div class="pp-tabs" role="tablist">
             <button type="button" role="tab" data-tab="data" aria-selected="true">Data</button>
-            <button type="button" role="tab" data-tab="forecast" aria-selected="false">Model forecast</button>
+            ${isSpaceBased(record.topic) || /-satellite$/.test(layerOf(record)) ? '' : '<button type="button" role="tab" data-tab="forecast" aria-selected="false">Model forecast</button>'}
             <button type="button" role="tab" data-tab="message" aria-selected="false">Message</button>
         </div>
         <div class="pp-decoded" data-panel="data"></div>
@@ -1300,11 +1521,87 @@ const KEY_VALUES = [
     { label: 'Humidity', ids: [13003] },
     { label: 'Pressure (MSL)', ids: [10051] },
     { label: 'Station pressure', ids: [10004], unless: [10051] },
-    { label: 'Wind', ids: [11002], wind: true },
+    { label: 'Wind speed', ids: [11002], wind: true },
     { label: 'Visibility', ids: [20001] },
     { label: 'Cloud cover', ids: [20010] },
     { label: 'Precipitation', ids: [13011] },
 ];
+
+// Wind as separate cards: speed (m/s and knots), the strongest gust when
+// reported, and direction with an arrow showing where the wind blows to
+const COMPASS_POINTS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+
+// ---------- Satellite reports: what made them and what they measure.
+// Code tables 0 01 007 (satellite) and 0 02 019 (instrument), common entries only;
+// anything else shows its code.
+const SATELLITE_NAMES = { 3: 'Metop-B', 4: 'Metop-A', 5: 'Metop-C', 55: 'Meteosat-8', 56: 'Meteosat-9', 57: 'Meteosat-10',
+    70: 'Meteosat-11', 173: 'Himawari-8', 174: 'Himawari-9', 209: 'NOAA-18', 223: 'NOAA-19', 224: 'Suomi NPP',
+    225: 'NOAA-20', 226: 'NOAA-21', 270: 'GOES-16', 271: 'GOES-17', 272: 'GOES-18',
+    750: 'COSMIC-2 E1', 751: 'COSMIC-2 E2', 752: 'COSMIC-2 E3', 753: 'COSMIC-2 E4', 754: 'COSMIC-2 E5', 755: 'COSMIC-2 E6' };
+const INSTRUMENT_NAMES = { 203: 'MHS', 221: 'IASI', 570: 'AMSU-A', 591: 'AVHRR/3', 616: 'VIIRS', 620: 'CrIS', 621: 'ATMS' };
+
+function satelliteTiles(rows, values) {
+    var tile = (label, html) => `<div class="pp-tile"><div>${esc(label)}</div><strong>${html}</strong></div>`;
+    var number = (id) => (values.has(id) && typeof values.get(id)[0] === 'number' ? values.get(id)[0] : null);
+    var count = (id) => rows.filter((r) => r[0] === id).length;
+    var all = (id) => rows.filter((r) => r[0] === id && typeof r[2] === 'number').map((r) => r[2]);
+    var tiles = [];
+
+    var sat = number(1007), inst = number(2019);
+    var name = sat === null ? null : SATELLITE_NAMES[sat] || `Satellite ${sat}`;
+    var instrument = inst === null ? null : INSTRUMENT_NAMES[inst] || `instrument ${inst}`;
+    tiles.push(tile('Satellite', `${esc(name || 'Unknown')}${instrument ? ` <small>${esc(instrument)}</small>` : ''}`));
+
+    // What kind of product, from the elements it carries
+    var product = count(15037) ? 'Radio occultation'
+        : values.has(11002) && (values.has(2023) || values.has(11113)) ? 'Cloud-motion winds'
+        : count(12163) ? 'Radiances'
+        : count(12101) > 5 ? 'Temperature and humidity profile'
+        : values.has(10081) ? 'Altimetry'
+        : values.has(15021) ? 'Trace gases'
+        : 'Satellite data';
+    tiles.push(tile('Product', esc(product)));
+    if (number(5040) !== null) tiles.push(tile('Orbit', esc(number(5040).toLocaleString())));
+
+    if (product === 'Cloud-motion winds') tiles.push(...windTiles(values));
+    if (number(20016) !== null) tiles.push(tile('Cloud-top pressure', `${esc(Math.round(number(20016) / 100))} hPa`));
+    if (number(20014) !== null) tiles.push(tile('Cloud-top height', `${esc((number(20014) / 1000).toFixed(1))} km`));
+    if (product === 'Cloud-motion winds' && number(12001) !== null) tiles.push(tile('Cloud temperature', `${esc((number(12001) - 273.15).toFixed(1))} °C`));
+    if (number(20081) !== null) tiles.push(tile('Cloud amount', `${esc(Math.round(number(20081)))} %`));
+
+    var bt = all(12163);
+    if (bt.length) {
+        tiles.push(tile('Channels', esc(bt.length)));
+        tiles.push(tile('Brightness temperature', `${esc(Math.round(Math.min(...bt)))}–${esc(Math.round(Math.max(...bt)))} K`));
+    }
+    if (number(12061) !== null) tiles.push(tile('Skin temperature', `${esc((number(12061) - 273.15).toFixed(1))} °C`));
+    if (product === 'Temperature and humidity profile') tiles.push(tile('Profile levels', esc(count(12101))));
+    if (product === 'Radio occultation') tiles.push(tile('Profile levels', esc(count(15037))));
+
+    // Where the sun and the satellite were, seen from the ground
+    var sun = number(7025);
+    if (sun !== null) tiles.push(tile('Sun', `${sun < 90 ? 'Day' : 'Night'} <small>${esc(Math.round(sun))}° from overhead</small>`));
+    if (number(7024) !== null) tiles.push(tile('Viewing angle', `${esc(Math.round(number(7024)))}° <small>from overhead</small>`));
+    return tiles;
+}
+
+function windTiles(values) {
+    var tile = (label, html) => `<div class="pp-tile"><div>${esc(label)}</div><strong>${html}</strong></div>`;
+    var number = (id) => (values.has(id) && typeof values.get(id)[0] === 'number' ? values.get(id)[0] : null);
+    var speed = number(11002), dir = number(11001), gust = number(11041);
+    var tiles = [];
+    if (speed !== null) tiles.push(tile('Wind speed', `${esc(Number(speed.toFixed(1)))} m/s <small>${knots(speed)} kn</small>`));
+    if (dir !== null && speed !== 0) {
+        var point = COMPASS_POINTS[Math.round(dir / 22.5) % 16];
+        tiles.push(tile('Wind direction', `<span class="wind-arrow" style="--to: ${(dir + 180) % 360}deg" aria-hidden="true">↑</span>`
+            + `From ${esc(point)} <small>${esc(Math.round(dir))}°</small>`));
+    } else if (speed === 0) {
+        tiles.push(tile('Wind direction', 'Calm'));
+    }
+    // A gust no stronger than the mean wind is an unset or unrelated value; leave it out
+    if (gust !== null && gust > (speed || 0)) tiles.push(tile('Wind gust', `${esc(Number(gust.toFixed(1)))} m/s <small>${knots(gust)} kn</small>`));
+    return tiles;
+}
 
 function renderDecoded(out, title, result) {
     var values = new Map();
@@ -1316,15 +1613,19 @@ function renderDecoded(out, title, result) {
     if (name && title) title.textContent = name;
 
     var profile = result.profile && result.profile.filter((l) => l[0] > 0);
-    var sounding = profile && profile.length >= 2;
+    // Satellite profiles (e.g. radio occultations) aren't radiosonde soundings, so no Skew-T for them
+    var sounding = profile && profile.length >= 2 && !values.has(1007);
     var marine = sounding ? null : marineDetails(result.rows);
-    var tiles = sounding ? soundingTiles(profile) : [];
-    for (var key of sounding ? [] : KEY_VALUES) {
+    var satellite = values.has(1007);
+    var tiles = sounding ? soundingTiles(profile) : satellite ? satelliteTiles(result.rows, values) : [];
+    for (var key of sounding || satellite ? [] : KEY_VALUES) {
         var id = key.ids.find((i) => values.has(i));
         if (!id || (key.unless && key.unless.some((i) => values.has(i)))) continue;
+        if (key.wind) {
+            tiles.push(...windTiles(values));
+            continue;
+        }
         var text = formatValue(...values.get(id)).join(' ');
-        if (key.wind && marine) text += ` (${knots(values.get(id)[0])} kn)`;
-        if (key.wind && values.has(11001)) text += ` from ${values.get(11001)[0]}°`;
         tiles.push(`<div class="pp-tile"><div>${esc(key.label)}</div><strong>${esc(text)}</strong></div>`);
     }
     // Aircraft: where the flight is from and going, and what it's doing
@@ -2337,7 +2638,7 @@ const DISCIPLINES = {
     'climate': 'Climate',
     'hydrology': 'Hydrology',
     'ocean': 'Ocean',
-    'atmospheric-composition': 'Atmos. composition',
+    'atmospheric-composition': 'Atmosphere',
     'cryosphere': 'Cryosphere',
     'space-weather': 'Space weather',
     'other': 'Other',
@@ -2353,7 +2654,9 @@ const FORMATS = {
     'hdf': 'HDF / NetCDF',
     'other': 'Other',
 };
-const filters = { text: '', channel: '', centres: new Set(), format: '', disciplines: new Set() };
+const filters = { text: '', centres: new Set(), format: '', disciplines: new Set() };
+// Each filter either keeps only what matches ('only') or hides what matches ('hide')
+const filterModes = { text: 'only', centres: 'only', format: 'only', disciplines: 'only' };
 
 // File type of a notification's data, from the canonical link's media type,
 // falling back to the file extension for generic types
@@ -2400,42 +2703,64 @@ function disciplineOf(t) {
     return 'other';
 }
 
+// A small switch at the start of a filter row: Only (keep matches) or Hide (drop matches)
+function filterModeButton(key) {
+    return `<button type="button" class="filter-mode" data-filter="${key}" aria-pressed="false" title="Only: show just what matches. Hide: show everything except what matches.">Only</button>`;
+}
+
+function paintFilterMode(button) {
+    var hide = filterModes[button.dataset.filter] === 'hide';
+    button.textContent = hide ? 'Hide' : 'Only';
+    button.setAttribute('aria-pressed', hide);
+    // Selected chips and centres turn red while their filter hides them
+    document.body.classList.toggle(`hide-${button.dataset.filter}`, hide);
+}
+
 function matchesFilters(item) {
-    return (!filters.channel || item.channel === filters.channel)
-        && (!filters.centres.size || filters.centres.has(item.centre))
-        && (!filters.format || item.format === filters.format)
-        && (!filters.disciplines.size || filters.disciplines.has(item.discipline))
-        && (!filters.text || item.topic.toLowerCase().includes(filters.text));
+    // The Cache and Origin layer switches apply to the message list as well
+    var hidden = effectiveHidden();
+    var test = (key, active, matches) => !active || (filterModes[key] === 'hide' ? !matches : matches);
+    return !(item.channel === 'cache' ? hidden.includes('obs') : hidden.includes('origin'))
+        && test('centres', filters.centres.size, filters.centres.has(item.centre))
+        && test('format', filters.format, item.format === filters.format)
+        && test('disciplines', filters.disciplines.size, filters.disciplines.has(item.discipline))
+        && test('text', filters.text, item.topic.toLowerCase().includes(filters.text));
 }
 
 function filtersActive() {
-    return !!(filters.text || filters.channel || filters.centres.size || filters.format || filters.disciplines.size);
+    return !!(filters.text || filters.centres.size || filters.format || filters.disciplines.size);
 }
 
 function applyMapFilter() {
     var expr = ['all'];
-    if (filters.channel) expr.push(['==', ['get', 'channel'], filters.channel]);
-    if (filters.centres.size) expr.push(['in', ['get', 'centre'], ['literal', [...filters.centres]]]);
-    if (filters.format) expr.push(['==', ['get', 'format'], filters.format]);
-    if (filters.disciplines.size) expr.push(['in', ['get', 'discipline'], ['literal', [...filters.disciplines]]]);
-    if (filters.text) expr.push(['in', filters.text, ['get', 'topic']]);
+    var add = (key, condition) => expr.push(filterModes[key] === 'hide' ? ['!', condition] : condition);
+    if (filters.centres.size) add('centres', ['in', ['get', 'centre'], ['literal', [...filters.centres]]]);
+    if (filters.format) add('format', ['==', ['get', 'format'], filters.format]);
+    if (filters.disciplines.size) add('disciplines', ['in', ['get', 'discipline'], ['literal', [...filters.disciplines]]]);
+    if (filters.text) add('text', ['in', filters.text, ['get', 'topic']]);
     if (hiddenLayers.size) {
         var hidden = effectiveHidden();
         expr.push(['!', ['in', ['get', 'layer'], ['literal', hidden]]]);
         // Reports decoded by a switched-off option or layer go too, whatever group they're in
         var hiddenVia = Object.keys(DECODE_LAYERS).filter((k) => hidden.includes(k));
         if (hiddenVia.length) expr.push(['!', ['in', ['coalesce', ['get', 'via'], ''], ['literal', hiddenVia]]]);
+        // Individual satellites switched off under Space-based
+        var hiddenSats = [...hiddenLayers].filter((k) => k.startsWith('sat:'));
+        if (hiddenSats.length) expr.push(['!', ['in', ['coalesce', ['get', 'sat'], ''], ['literal', hiddenSats]]]);
     }
     if (!map.getLayer('points')) return;
     var tracksOn = !effectiveHidden().includes('gts-tracks');
     // With aircraft tracks on, tracked aircraft are drawn in the air instead of on the ground
     // Optionally only the points coloured by the selected measure
-    if (colouredOnly && METRICS[colourBy]) expr.push(['all', IS_STATION, ['has', `m_${colourBy}`]]);
-    var shown = tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr;
+    if (colouredOnly && METRICS[colourBy]) expr.push(['all', isColourTarget(), ['has', `m_${colourBy}`]]);
+    // Satellite reports drawn as part of a swath aren't drawn as points as well
+    var shown = [...(tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr), ['!=', ['get', 'inSwath'], true]];
     map.setFilter('points', [...shown, ['!=', ['get', 'gateway'], true]]);
     map.setFilter('points-gts', [...shown, ['==', ['get', 'gateway'], true]]);
-    map.setFilter('pulses', tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : (expr.length > 1 ? expr : null));
+    map.setFilter('pulses', [...(tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr), ['!=', ['get', 'inSwath'], true]]);
+    map.setFilter('swaths-fill', expr.length > 1 ? expr : null);
     map.setFilter('tracks', [...expr, ['==', ['geometry-type'], 'LineString']]);
+    updateMapKey();
     map.setFilter('track-ribbons', [...expr, ['==', ['geometry-type'], 'Polygon']]);
 }
 
@@ -2444,7 +2769,7 @@ function applyFilters() {
     rebuildQueue();
     var active = filtersActive();
     queueToggle.classList.toggle('filtered', active);
-    queueToggle.title = active ? 'Message queue (filters on)' : 'Message queue';
+    queueToggle.title = active ? 'Layers and messages (filters on)' : 'Layers and messages';
     document.querySelector('.queue-reset').hidden = !active;
 }
 
@@ -2551,7 +2876,7 @@ class QueueControl {
         toggle.type = 'button';
         toggle.className = 'queue-toggle';
         queueToggle = toggle;
-        toggle.title = 'Message queue';
+        toggle.title = 'Layers and messages';
         toggle.innerHTML = '&#9776;';
         container.appendChild(toggle);
         toggle.addEventListener('click', function(){
@@ -2562,42 +2887,47 @@ class QueueControl {
         var sidebar = document.createElement('aside');
         sidebar.className = 'queue';
         sidebar.innerHTML = `
-            <div class="queue-header">
-                <div class="queue-title"><strong>Messages</strong><span class="queue-count"></span></div>
-                <input type="search" class="form-control form-control-sm" placeholder="Filter topics">
+            <!-- Filters shared by the map and the message list -->
+            <div class="queue-header queue-filters">
+                <div class="queue-title"><strong>Filters</strong>
+                    <button type="button" class="btn btn-sm btn-link queue-reset" hidden>Reset filters</button>
+                </div>
+                <div class="filter-row">${filterModeButton('text')}<input type="search" class="form-control form-control-sm" placeholder="Filter topics"></div>
                 <div class="queue-selects">
-                    <select class="form-select form-select-sm queue-channel" aria-label="Channel">
-                        <option value="">Cache &amp; origin</option>
-                        <option value="cache">Cache</option>
-                        <option value="origin">Origin</option>
-                    </select>
-                    <div class="centre-picker">
+                    <div class="filter-row">${filterModeButton('centres')}<div class="centre-picker">
                         <button type="button" class="form-select form-select-sm centre-toggle" aria-label="Centres" aria-expanded="false">All centres</button>
                         <div class="centre-menu" hidden>
                             <input type="search" class="form-control form-control-sm" placeholder="Search centres" aria-label="Search centres">
                             <ul class="centre-list" aria-label="Centres"></ul>
                         </div>
-                    </div>
-                    <select class="form-select form-select-sm queue-format" aria-label="File type">
+                    </div></div>
+                    <div class="queue-chips centre-chips" aria-label="Selected centres"></div>
+                    <div class="filter-row">${filterModeButton('format')}<select class="form-select form-select-sm queue-format" aria-label="File type">
                         <option value="">All file types</option>
                         ${Object.entries(FORMATS).map(([key, label]) => `<option value="${key}">${label}</option>`).join('')}
-                    </select>
+                    </select></div>
                 </div>
-                <div class="queue-chips centre-chips" aria-label="Selected centres"></div>
                 <div class="queue-chips" role="group" aria-label="Earth system discipline">
+                    ${filterModeButton('disciplines')}
                     ${Object.entries(DISCIPLINES).map(([key, label]) =>
                         `<button type="button" class="queue-chip" data-discipline="${key}" aria-pressed="false">${label}</button>`).join('')}
                 </div>
+            </div>
+            <div class="queue-tabs" role="tablist">
+                <button type="button" role="tab" data-tab="layers" aria-selected="true">Layers</button>
+                <button type="button" role="tab" data-tab="messages" aria-selected="false">Messages</button>
+            </div>
+            <div class="queue-pane queue-pane-layers" data-pane="layers"></div>
+            <div class="queue-pane queue-pane-messages" data-pane="messages" hidden>
                 <div class="queue-controls">
                     <label class="form-check-label"><input type="checkbox" class="form-check-input queue-mapped"> On map only</label>
-                    <span>
-                        <button type="button" class="btn btn-sm btn-link queue-reset" hidden>Reset filters</button>
-                        <button type="button" class="btn btn-sm btn-outline-secondary queue-pause">Pause</button>
-                    </span>
+                    <span class="queue-count"></span>
+                    <button type="button" class="btn btn-sm btn-outline-secondary queue-pause">Pause</button>
                 </div>
-            </div>
-            <ol class="queue-list"></ol>`;
+                <ol class="queue-list"></ol>
+            </div>`;
         document.body.appendChild(sidebar);
+        sidebar.querySelectorAll('.queue-tabs button').forEach((button) => button.addEventListener('click', () => selectQueueTab(button.dataset.tab)));
         queueList = sidebar.querySelector('.queue-list');
         queueCount = sidebar.querySelector('.queue-count');
         queueFilter = sidebar.querySelector('input[type=search]');
@@ -2609,7 +2939,6 @@ class QueueControl {
         centreChips = sidebar.querySelector('.centre-chips');
         var centreMenu = sidebar.querySelector('.centre-menu');
         loadCentres();
-        var queueChannel = sidebar.querySelector('.queue-channel');
         var queueFormat = sidebar.querySelector('.queue-format');
         queueFormat.addEventListener('change', function(){
             filters.format = queueFormat.value;
@@ -2619,10 +2948,6 @@ class QueueControl {
 
         queueFilter.addEventListener('input', function(){
             filters.text = queueFilter.value.trim().toLowerCase();
-            applyFilters();
-        });
-        queueChannel.addEventListener('change', function(){
-            filters.channel = queueChannel.value;
             applyFilters();
         });
         var openCentreMenu = (open) => {
@@ -2652,11 +2977,19 @@ class QueueControl {
             chip.setAttribute('aria-pressed', filters.disciplines.has(key));
             applyFilters();
         }));
+        sidebar.querySelectorAll('.filter-mode').forEach((button) => button.addEventListener('click', () => {
+            var key = button.dataset.filter;
+            filterModes[key] = filterModes[key] === 'only' ? 'hide' : 'only';
+            paintFilterMode(button);
+            applyFilters();
+        }));
         sidebar.querySelector('.queue-reset').addEventListener('click', function(){
-            filters.text = filters.channel = filters.format = '';
+            Object.keys(filterModes).forEach((key) => { filterModes[key] = 'only'; });
+            sidebar.querySelectorAll('.filter-mode').forEach(paintFilterMode);
+            filters.text = filters.format = '';
             filters.disciplines.clear();
             filters.centres.clear();
-            queueFilter.value = queueChannel.value = queueFormat.value = centreSearch.value = '';
+            queueFilter.value = queueFormat.value = centreSearch.value = '';
             chips.forEach((chip) => chip.setAttribute('aria-pressed', 'false'));
             centreList.querySelectorAll('input').forEach((input) => { input.checked = false; });
             searchCentres();
@@ -2718,15 +3051,83 @@ function flushQueue() {
     queuePause.textContent = queuePaused ? `Resume (${pending.length} new)` : 'Pause';
     if (queuePaused || !pending.length) return;
 
-    var frag = document.createDocumentFragment();
-    for (var i = pending.length - 1; i >= 0; i--) {
-        frag.appendChild(renderQueueRow(pending[i]));
+    // Oldest first, so each message either joins a recent group (which moves to the
+    // top) or becomes the new top row
+    for (var entry of pending) {
+        var key = groupKey(entry), group = findGroup(key, entry.time, isSpaceBased(entry.topic));
+        if (group) {
+            addToGroup(group, entry);
+            queueList.prepend(group);
+        } else {
+            var row = renderQueueRow(entry);
+            row.dataset.group = key;
+            row.groupEntries = [entry];
+            row.latest = entry.time;
+            queueList.prepend(row);
+        }
     }
-    queueList.prepend(frag);
     pending = [];
     while (queueList.childElementCount > QUEUE_MAX) {
         queueList.lastElementChild.remove();
     }
+}
+
+// Messages that arrive in runs share a row with a count: back-to-back ones with
+// the same topic, and satellite series (one message per granule or bulletin)
+const GROUP_WINDOW_MS = 2 * 60 * 1000;
+
+function groupKey(entry) {
+    // Satellite bulletin numbers vary within a series (e.g. I/N/C/X/40/EUMP, .../41/EUMP)
+    var path = isSpaceBased(entry.topic) ? entry.path.replace(/\/\d+(?=\/|$)/g, '/…') : entry.path;
+    return `${entry.channel} ${entry.centre} ${path}`;
+}
+
+// The row this message joins: any topic merges with an identical row directly
+// above it (back to back); satellite series, which interleave with other
+// traffic, also look further down the recent rows
+const GROUP_SEARCH_ROWS = 40;
+function findGroup(key, time, satellite) {
+    var row = queueList.firstElementChild;
+    for (var i = 0; row && i < (satellite ? GROUP_SEARCH_ROWS : 1); i++, row = row.nextElementSibling) {
+        if (row.dataset.group === key && time - row.latest <= GROUP_WINDOW_MS) return row;
+    }
+    return null;
+}
+
+function addToGroup(row, entry) {
+    row.groupEntries.push(entry);
+    row.latest = entry.time;
+    row.querySelector('.queue-meta').textContent = `${entry.channel} · ${entry.time.toLocaleTimeString()}`;
+    row.querySelector('.queue-topic').textContent = row.dataset.group.split(' ').slice(2).join(' ');
+    var badge = row.querySelector('.queue-group-count');
+    if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'queue-group-count';
+        row.firstElementChild.appendChild(badge);
+        row.title = 'Click to list these messages';
+    }
+    badge.textContent = `× ${row.groupEntries.length}`;
+    var list = row.querySelector('.queue-group');
+    if (list) list.prepend(renderQueueRow(entry));
+}
+
+// Opens or closes the list of messages in a group row
+function toggleGroup(row) {
+    var list = row.querySelector('.queue-group');
+    if (list) {
+        list.remove();
+        row.classList.remove('queue-group-open');
+        return;
+    }
+    list = document.createElement('ol');
+    list.className = 'queue-group';
+    list.addEventListener('click', (e) => e.stopPropagation());  // Rows inside act on their own
+    row.groupEntries.slice().reverse().forEach((entry) => list.appendChild(renderQueueRow(entry)));
+    row.appendChild(list);
+    row.classList.add('queue-group-open');
+    // Pause so the group isn't pushed out of the list while it's open
+    queuePaused = true;
+    flushQueue();
 }
 
 function rebuildQueue() {
@@ -2867,6 +3268,7 @@ function renderQueueRow(entry) {
 
     entry.row = row;
     row.addEventListener('click', function(){
+        if (row.groupEntries && row.groupEntries.length > 1) return toggleGroup(row);
         var target = currentRecord(entry);
         if (target) {
             openPopup(target);
@@ -2957,7 +3359,10 @@ function connectFastest() {
 map.addControl(new QueueControl(), 'top-left');
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-left');
 map.addControl(new ProjectionControl(), 'top-left');
-map.addControl(new LegendControl(), 'bottom-left');
+// Layer switches and styling live in the sidebar's Layers tab; the map shows a
+// read-only key of what is currently drawn
+document.querySelector('.queue-pane-layers').appendChild(new LegendControl().onAdd(map));
+map.addControl(new MapKey(), 'bottom-left');
 
 connectFastest();
 
@@ -3318,7 +3723,7 @@ async function pumpDecode() {
         if (bytes) {
             var limit = DECODE_FILE_MAX_REPORTS;
             var subsets = JSON.parse(await callDecoder('decode_subsets', bytes, limit));
-            subsets.forEach(([rows, profile], i) => plotDecodedReport(job, rows, profile, i));
+            subsets.forEach(([rows, profile], i) => plotDecodedReport(job, rows, profile, i, subsets.length));
         }
     } catch (err) {
         console.debug(`Could not decode ${job.href}: ${err.message}`);
@@ -3327,7 +3732,7 @@ async function pumpDecode() {
     pumpDecode();
 }
 
-function plotDecodedReport(job, rows, profile, index) {
+function plotDecodedReport(job, rows, profile, index, total) {
     var values = new Map();
     for (var [id, name, value] of rows) {
         if (!values.has(id)) values.set(id, value);
@@ -3370,6 +3775,12 @@ function plotDecodedReport(job, rows, profile, index) {
         alt: aircraftAltitude(values, t),
         born: Date.now(),
     };
+    if (subLayer && subLayer.endsWith('-satellite')) {
+        record.fileKey = props.data_id;  // Reports from one file make one swath
+        // A file big enough for coverage is drawn as coverage from the start, so its points never flash up
+        if (total >= SWATH_MIN_REPORTS) record.inSwath = true;
+        swathsDirty = true;
+    }
     addPoint(record);
     if (record.track) tracksDirty = true;
     decodePlotted[job.kind]++;
@@ -3437,6 +3848,11 @@ function precipitationTotals(rows) {
     return totals;
 }
 
+// Scale ends with at most one decimal (e.g. 28.3 m/s, not 28.29)
+function scaleLabel(v) {
+    return Number(v.toFixed(1));
+}
+
 function formatMetric(value, m) {
     var digits = m.unit === '%' ? 0 : 1;
     return `${value.toFixed(digits)} ${m.unit}`;
@@ -3464,31 +3880,39 @@ function setColourBy(key, legend) {
     var color = ['get', 'color'];
     if (m) {
         var value = ['get', `m_${key}`];
+        var target = isColourTarget();
         color = ['case',
-            ['all', IS_STATION, ['has', `m_${key}`]], ['interpolate', ['linear'], value, ...m.stops.flat()],
-            IS_STATION, NO_VALUE_COLOR,
+            ['all', target, ['has', `m_${key}`]], ['interpolate', ['linear'], value, ...m.stops.flat()],
+            target, NO_VALUE_COLOR,
             ['get', 'color']];
         // Outlines follow the same scale, darkened
         var outline = ['case',
-            ['all', IS_STATION, ['has', `m_${key}`]], ['interpolate', ['linear'], value, ...m.stops.flatMap(([v, c]) => [v, darken(c)])],
-            IS_STATION, darken(NO_VALUE_COLOR),
+            ['all', target, ['has', `m_${key}`]], ['interpolate', ['linear'], value, ...m.stops.flatMap(([v, c]) => [v, darken(c)])],
+            target, darken(NO_VALUE_COLOR),
             ['get', 'outline']];
     }
     map.setPaintProperty('points', 'circle-color', color);
     map.setPaintProperty('points-gts', 'icon-halo-color', m ? outline : ['get', 'outline']);
     map.setPaintProperty('points', 'circle-stroke-color', ['case', ['get', 'origin'], ['get', 'color'], m ? outline : ['get', 'outline']]);
     map.setPaintProperty('points-gts', 'icon-color', color);
+    map.setPaintProperty('swaths-fill', 'fill-color', color);
     paintAge();
+    // The sidebar's scale is optional (the map key always has one), so only fill it in if it has its parts
     var scale = legend.querySelector('.legend-scale');
-    scale.hidden = !m;
-    legend.querySelector('.legend-coloured-only').hidden = !m;
+    if (scale) scale.hidden = !m;
+    var colouredOnlyRow = legend.querySelector('.legend-coloured-only');
+    if (colouredOnlyRow) colouredOnlyRow.hidden = !m;
+    updateModelField(legend);
     applyMapFilter();
     if (m) {
-        var [lo, bar, hi] = scale.children;
-        lo.textContent = `${m.stops[0][0]}`;
-        hi.textContent = `${m.stops[m.stops.length - 1][0]} ${m.unit}`;
-        bar.style.background = `linear-gradient(90deg, ${m.stops.map(([v, c]) => c).join(', ')})`;
-        queueStationDecodes();
+        if (scale && scale.children.length === 3) {
+            var [lo, bar, hi] = scale.children;
+            lo.textContent = `${scaleLabel(m.stops[0][0])}`;
+            hi.textContent = `${scaleLabel(m.stops[m.stops.length - 1][0])} ${m.unit}`;
+            bar.style.background = `linear-gradient(90deg, ${m.stops.map(([v, c]) => c).join(', ')})`;
+        }
+        if (m.targets === 'satellite') metricQueue = [];
+        else queueStationDecodes();
     } else {
         metricQueue = [];
     }
@@ -3498,7 +3922,8 @@ function setColourBy(key, legend) {
 function showColourStatus(legend) {
     var el = legend.querySelector('.legend-colour-status');
     if (colourBy === 'kind') { el.hidden = true; return; }
-    var points = [...records.values()].filter((r) => COLOURABLE.includes(layerOf(r)));
+    var targets = colourTargets(METRICS[colourBy]);
+    var points = [...records.values()].filter((r) => targets.includes(layerOf(r)));
     var known = points.filter((r) => r.feature && r.feature.properties[`m_${colourBy}`] !== undefined).length;
     el.hidden = false;
     el.textContent = `${known.toLocaleString()} of ${points.length.toLocaleString()} have a value` + (metricQueue.length ? ` · decoding ${metricQueue.length}` : '');
@@ -3549,6 +3974,219 @@ function setFeatureProperties(record, props) {
     if (!toAdd.includes(record.feature)) {
         toUpdate.push({ id: record.id, addOrUpdateProperties: Object.entries(props).map(([key, value]) => ({ key, value })) });
     }
+}
+
+// ---------- One layer row per satellite, added under Space-based (satellites) as
+// each satellite is first seen. The name comes from the satellite identifier
+// (001007) when the report is decoded, otherwise from the topic
+// (.../space-based-observations/noaa-20/...), so both give the same row.
+function satelliteKey(record) {
+    var parent = layerOf(record);
+    if (!/-satellite$/.test(parent)) return null;
+    var name = satelliteName(record);
+    return name ? `sat:${parent}:${name.toLowerCase()}` : null;
+}
+
+function satelliteName(record) {
+    var row = record.decoded && record.decoded.rows && record.decoded.rows.find((x) => x[0] === 1007);
+    if (row) return SATELLITE_NAMES[row[2]] || `Satellite ${row[2]}`;
+    var match = /space-based-observations\/([^/]+)/.exec(record.topic);
+    return match ? match[1].toUpperCase() : null;
+}
+
+function addSatelliteRow(key) {
+    if (seenLayers.has(key)) return;
+    var [, parent] = key.split(':');
+    var parentRow = document.querySelector(`.legend-toggle[data-layer="${parent}"]`);
+    if (!parentRow) return;
+    seenLayers.add(key);
+    LAYER_PARENTS[key] = parent;
+    var name = key.split(':').slice(2).join(':');
+    var row = document.createElement('label');
+    row.className = 'legend-toggle legend-sub legend-depth-2 legend-satellite';
+    row.dataset.layer = key;
+    row.innerHTML = `<input type="checkbox" class="form-check-input"${hiddenLayers.has(key) ? '' : ' checked'}><span class="legend-dot" style="--color: ${OBS_CLASSES.satellite.color}; --outline: ${darken(OBS_CLASSES.satellite.color)}"></span><span></span>`;
+    row.lastElementChild.textContent = name.toUpperCase().replace(/^SATELLITE /, 'Satellite ');
+    var input = row.querySelector('input');
+    var parentOff = ancestors(key).some((a) => hiddenLayers.has(a));
+    input.disabled = parentOff;
+    row.classList.toggle('legend-disabled', parentOff);
+    input.addEventListener('change', () => {
+        input.checked ? hiddenLayers.delete(key) : hiddenLayers.add(key);
+        applyMapFilter();
+    });
+    // Alphabetical among this group's satellites, right after the group's row
+    var after = parentRow;
+    for (var sibling = parentRow.nextElementSibling; sibling && sibling.classList.contains('legend-satellite') && sibling.dataset.layer.startsWith(`sat:${parent}:`); sibling = sibling.nextElementSibling) {
+        if (sibling.dataset.layer > key) break;
+        after = sibling;
+    }
+    after.after(row);
+}
+
+// ---------- Satellite coverage. Each decoded satellite file covers the convex hull
+// of its reports; the hulls of one satellite are joined on a grid, so its passes
+// read as one area with no seams, and each cell's opacity is the cloud amount of
+// the reports in it. Files with only a few reports (e.g. a radio occultation)
+// stay as points.
+const SWATH_MIN_REPORTS = 5;
+const SWATH_CELL = 2;  // Grid cell size in degrees
+let swathsDirty = false;
+let swathsBuilt = 0;
+const swathMembers = new Map();  // swath key -> record ids
+
+// Convex hull (monotone chain) of [lon, lat] points, as a closed ring
+function convexHull(points) {
+    var pts = points.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    var cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    var lower = [], upper = [];
+    for (var p of pts) {
+        while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+        lower.push(p);
+    }
+    for (var i = pts.length - 1; i >= 0; i--) {
+        while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], pts[i]) <= 0) upper.pop();
+        upper.push(pts[i]);
+    }
+    var ring = lower.slice(0, -1).concat(upper.slice(0, -1));
+    return ring.length >= 3 ? ring.concat([ring[0]]) : null;
+}
+
+// Whether a point is inside a ring, or within `margin` degrees of its edge
+// (so neighbouring strips of one pass meet without gaps)
+function inOrNearRing([x, y], ring, margin) {
+    var inside = false;
+    for (var i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        var [xi, yi] = ring[i], [xj, yj] = ring[j];
+        if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+    }
+    if (inside) return true;
+    for (var k = 1; k < ring.length; k++) {
+        var [ax, ay] = ring[k - 1], [bx, by] = ring[k];
+        var dx = bx - ax, dy = by - ay, len = dx * dx + dy * dy || 1;
+        var t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / len));
+        if (Math.hypot(x - ax - t * dx, y - ay - t * dy) <= margin) return true;
+    }
+    return false;
+}
+
+function buildSwaths() {
+    var files = new Map();
+    for (var record of pools.decoded.values()) {
+        if (!record.fileKey || !records.has(record.id)) continue;
+        if (!files.has(record.fileKey)) files.set(record.fileKey, []);
+        files.get(record.fileKey).push(record);
+    }
+    swathMembers.clear();
+    var cells = new Map();  // satellite + cell -> { sums, counts, file means, first record }
+    var metricKeys = Object.keys(METRICS);
+    var valueOf = (r, m) => r.feature && r.feature.properties[`m_${m}`];
+    for (var [key, reports] of files) {
+        if (reports.length < SWATH_MIN_REPORTS) continue;
+        var first = reports[0], sat = satelliteKey(first) || `${first.subLayer}:${key}`;
+        // Longitudes unwrapped around the first report so a pass across ±180 stays whole
+        var lon0 = first.coords[0];
+        var unwrapLon = (lon) => {
+            while (lon - lon0 > 180) lon -= 360;
+            while (lon - lon0 < -180) lon += 360;
+            return lon;
+        };
+        var ring = convexHull(reports.map((r) => [unwrapLon(r.coords[0]), r.coords[1]]));
+        if (!ring) continue;
+        if (!swathMembers.has(sat)) swathMembers.set(sat, []);
+        swathMembers.get(sat).push(...reports.map((r) => r.id));
+        reports.forEach((r) => {
+            if (!r.inSwath) {
+                r.inSwath = true;
+                setFeatureProperties(r, { inSwath: true });
+            }
+        });
+        // The file's own means fill cells it covers that hold none of its reports
+        var fileMeans = {};
+        for (var m of metricKeys) {
+            var vals = reports.map((r) => valueOf(r, m)).filter((v) => typeof v === 'number');
+            if (vals.length) fileMeans[m] = vals.reduce((a, b) => a + b, 0) / vals.length;
+        }
+        var cellOf = (lon, lat) => {
+            var cx = Math.floor((((lon + 180) % 360 + 360) % 360 - 180) / SWATH_CELL) * SWATH_CELL;
+            return `${sat}|${cx}|${Math.floor(lat / SWATH_CELL) * SWATH_CELL}`;
+        };
+        var cellFor = (id) => {
+            if (!cells.has(id)) cells.set(id, { sat, sums: {}, counts: {}, fills: [], first, born: 0, reports: 0 });
+            return cells.get(id);
+        };
+        // Cells the file's footprint covers
+        var xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
+        for (var lat = Math.floor(Math.min(...ys) / SWATH_CELL) * SWATH_CELL; lat < Math.max(...ys); lat += SWATH_CELL) {
+            for (var lon = Math.floor(Math.min(...xs) / SWATH_CELL) * SWATH_CELL; lon < Math.max(...xs); lon += SWATH_CELL) {
+                if (!inOrNearRing([lon + SWATH_CELL / 2, lat + SWATH_CELL / 2], ring, SWATH_CELL * 0.75)) continue;
+                var cell = cellFor(cellOf(lon, lat));
+                cell.fills.push(fileMeans);
+                cell.born = Math.max(cell.born, ...reports.map((r) => r.born));
+            }
+        }
+        // Reports in each cell give it its own values
+        for (var r of reports) {
+            var cell = cellFor(cellOf(r.coords[0], r.coords[1]));
+            cell.reports++;
+            cell.born = Math.max(cell.born, r.born);
+            for (var m of metricKeys) {
+                var v = valueOf(r, m);
+                if (typeof v !== 'number') continue;
+                cell.sums[m] = (cell.sums[m] || 0) + v;
+                cell.counts[m] = (cell.counts[m] || 0) + 1;
+            }
+        }
+    }
+    var features = [];
+    for (var [id, cell] of cells) {
+        var [, cx, cy] = id.split('|').map(Number);
+        var props = {};
+        for (var m of metricKeys) {
+            if (cell.counts[m]) props[`m_${m}`] = cell.sums[m] / cell.counts[m];
+            else {
+                var fills = cell.fills.map((f) => f[m]).filter((v) => typeof v === 'number');
+                if (fills.length) props[`m_${m}`] = fills.reduce((a, b) => a + b, 0) / fills.length;
+            }
+        }
+        var first = cell.first, satRow = first.decoded && first.decoded.rows.find((x) => x[0] === 1007);
+        features.push({
+            type: 'Feature',
+            geometry: { type: 'Polygon', coordinates: [[[cx, cy], [cx + SWATH_CELL, cy], [cx + SWATH_CELL, cy + SWATH_CELL], [cx, cy + SWATH_CELL], [cx, cy]]] },
+            properties: {
+                swath: cell.sat,
+                label: satRow ? SATELLITE_NAMES[satRow[2]] || `Satellite ${satRow[2]}` : 'Satellite',
+                count: (swathMembers.get(cell.sat) || []).length,
+                color: first.color,
+                outline: darken(first.color),
+                born: cell.born,
+                layer: first.subLayer,
+                via: first.decodedLayer || '',
+                gateway: isGateway(first),
+                sat: satelliteKey(first),
+                channel: first.channel,
+                centre: first.centre,
+                format: first.format,
+                discipline: first.discipline,
+                topic: first.topic.toLowerCase(),
+                ...props,
+            },
+        });
+    }
+    return features;
+}
+
+// The report in a swath closest to where it was clicked
+function nearestSwathReport(key, lngLat) {
+    var ids = swathMembers.get(key) || [];
+    var best = null, bestKm = Infinity;
+    for (var id of ids) {
+        var r = records.get(id);
+        if (!r) continue;
+        var km = distanceKm(r.coords, [lngLat.lng, lngLat.lat]);
+        if (km < bestKm) { best = r; bestKm = km; }
+    }
+    return best;
 }
 
 // ---------- Tracks. Aircraft reports are joined by identifier in time order.
@@ -3648,14 +4286,19 @@ function buildTracks() {
         }
         if (!runs.length) continue;
         var last = reports[reports.length - 1];
+        // Satellite tracks carry the same name and layer key as the satellite's row
+        // under Space-based, so switching that row off hides the track too
+        var sat = kind === 'satellite' ? satelliteKey(last) : null;
+        if (sat) addSatelliteRow(sat);
         var common = {
             kind,
-            label: kind === 'aircraft' ? `Aircraft ${key.slice(9)}` : `Satellite ${key.slice(10)}`,
+            label: kind === 'aircraft' ? `Aircraft ${key.slice(9)}` : satelliteName(last) || `Satellite ${key.slice(10)}`,
             count: reports.length,
             lastId: last.id,
             color: last.color,
             born: last.born,
             layer: last.subLayer,
+            sat,
             channel: last.channel,
             centre: last.centre,
             format: last.format,
