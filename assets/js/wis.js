@@ -63,6 +63,7 @@ const METRICS = {
 // Surface observations that can be coloured by a measure: stations, ships and buoys, cache and GTS
 const COLOURABLE = ['station', 'ship', 'buoy'].flatMap((k) => [`cache-${k}`, `gts-${k}`]);
 const IS_STATION = ['in', ['get', 'layer'], ['literal', COLOURABLE]];
+const IS_AIRCRAFT = ['in', ['get', 'layer'], ['literal', ['cache-aircraft', 'gts-aircraft']]];
 const NO_VALUE_COLOR = '#ced4da';
 const METRIC_QUEUE_MAX = 300;  // Station files waiting to be decoded, newest kept
 let colourBy = 'kind';
@@ -70,9 +71,10 @@ let colouredOnly = false;  // Hide every point not coloured by the measure
 let metricQueue = [];
 let metricBusy = false;
 
-// GTS satellite bulletins are numerous and large, so that sublayer is off until
-// asked for (and the bulletins aren't downloaded until then)
-const GTS_OPT_IN = ['satellite'];
+// GTS sublayers that start off. Their bulletins aren't downloaded until they're
+// switched on, so their rows appear when the first such notification arrives
+// (see revealGatewayRows) rather than when a report is plotted.
+const GTS_OPT_IN = ['satellite', 'aircraft'];
 
 // Legend rows, grouped by source; each can be switched on and off. Rows other
 // than opt-in ones stay hidden until a point of that kind has arrived. Opt-in
@@ -92,7 +94,7 @@ const LAYER_GROUPS = [
             title: 'Download and decode the BUFR bulletins republished from the GTS into WIS2 (centres ending -gts-to-wis2), and plot the reports inside' },
         // Each decoded report is sorted by the identifiers it carries (see reportClass)
         ...Object.entries(OBS_CLASSES).filter(([key, c]) => !c.cacheOnly).flatMap(([key, c]) => [
-            { key: `gts-${key}`, parent: 'gts', label: c.label, color: c.color, optIn: GTS_OPT_IN.includes(key),
+            { key: `gts-${key}`, parent: 'gts', label: c.label, color: c.color,
                 title: c.title + (GTS_OPT_IN.includes(key) ? '; downloaded only while this is on' : '') },
             // Aircraft can be drawn as flight paths; shown once the Aircraft row is
             ...(key === 'aircraft' ? [{ key: 'gts-tracks', parent: 'gts-aircraft', label: 'Tracks', follow: true, track: true,
@@ -562,7 +564,8 @@ function animatePulses() {
 function paintAge() {
     var opacity = ['interpolate', ['linear'], ['-', Date.now(), ['get', 'born']], 0, 1, FADE_MS, 0.35];
     // While stations are coloured by a measure, everything else steps back
-    if (colourBy !== 'kind') opacity = ['case', IS_STATION, opacity, ['*', opacity, 0.25]];
+    // (aircraft keep their own colour and opacity: they aren't coloured by the measures)
+    if (colourBy !== 'kind') opacity = ['case', ['any', IS_STATION, IS_AIRCRAFT], opacity, ['*', opacity, 0.25]];
     map.setPaintProperty('points', 'circle-opacity', ['case', ['get', 'origin'], 0, opacity]);
     map.setPaintProperty('points', 'circle-stroke-opacity', opacity);
     map.setPaintProperty('points-gts', 'icon-opacity', opacity);
@@ -771,9 +774,11 @@ function buildPopup(record) {
         <div class="pp-tabs" role="tablist">
             <button type="button" role="tab" data-tab="data" aria-selected="true">Data</button>
             <button type="button" role="tab" data-tab="forecast" aria-selected="false">Model forecast</button>
+            <button type="button" role="tab" data-tab="message" aria-selected="false">Message</button>
         </div>
         <div class="pp-decoded" data-panel="data"></div>
-        <div class="pp-forecast" data-panel="forecast" hidden></div>`;
+        <div class="pp-forecast" data-panel="forecast" hidden></div>
+        <div class="pp-message" data-panel="message" hidden></div>`;
 
     var title = div.querySelector('.pp-title');
     title.textContent = record.wsi || props.metadata_id || record.centre;
@@ -791,11 +796,13 @@ function buildPopup(record) {
     }
     // Data and model forecast tabs; the forecast is only fetched once its tab is opened
     var forecastOut = div.querySelector('.pp-forecast');
+    var messageOut = div.querySelector('.pp-message');
     div.querySelectorAll('.pp-tabs button').forEach((button) => button.addEventListener('click', () => {
         var key = button.dataset.tab;
         div.querySelectorAll('.pp-tabs button').forEach((b) => b.setAttribute('aria-selected', b === button));
         div.querySelectorAll('[data-panel]').forEach((panel) => { panel.hidden = panel.dataset.panel !== key; });
         if (key === 'forecast' && !forecastOut.hasChildNodes()) showForecast(forecastOut, record);
+        if (key === 'message' && !messageOut.hasChildNodes()) showMessage(messageOut, record);
         keepPopupInView();
     }));
     if (!record.source && !record.decoded) {
@@ -1581,6 +1588,50 @@ const FORECAST_MODELS = [
 ];
 const FORECAST_CACHE_MS = 15 * 60 * 1000;
 const forecastCache = new Map();  // rounded "lat,lon" -> { time, promise }
+
+// The WIS2 notification the point came from (for a decoded report, the
+// notification of the file it was decoded from), as highlighted JSON
+function showMessage(out, record) {
+    var message = record.notification;
+    if (!message) {
+        out.innerHTML = '<div class="pp-status">No notification kept for this point.</div>';
+        return;
+    }
+    var json = JSON.stringify(message, null, 2);
+    out.innerHTML = `
+        <div class="pp-message-head">
+            <span class="pp-status">WIS2 notification${isGateway(record) || record.decodedLayer ? ' for the file this report was decoded from' : ''}</span>
+            <button type="button" class="btn btn-sm btn-outline-secondary">Copy</button>
+        </div>
+        <div class="pp-mono pp-message-topic"></div>
+        <pre class="pp-json"></pre>`;
+    out.querySelector('.pp-message-topic').textContent = record.topic;
+    out.querySelector('.pp-json').innerHTML = highlightJson(json);
+    var copy = out.querySelector('button');
+    copy.addEventListener('click', () => {
+        navigator.clipboard.writeText(json).then(() => {
+            copy.textContent = 'Copied';
+            setTimeout(() => { copy.textContent = 'Copy'; }, 1500);
+        }).catch(() => { copy.textContent = 'Copy failed'; });
+    });
+}
+
+// Escapes JSON text and wraps keys, strings, numbers and literals for colouring;
+// URLs become links
+function highlightJson(json) {
+    return esc(json).replace(/(&#34;(?:[^&]|&(?!#34;))*?&#34;)(\s*:)?|(-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b|\b(true|false|null)\b/g,
+        (match, str, colon, num, lit) => {
+            if (str && colon) return `<span class="json-key">${str}</span>${colon}`;
+            if (str) {
+                var inner = str.slice(5, -5);
+                return /^https?:\/\//.test(inner)
+                    ? `<span class="json-string">&#34;<a href="${inner}" target="_blank" rel="noopener">${inner}</a>&#34;</span>`
+                    : `<span class="json-string">${str}</span>`;
+            }
+            if (num !== undefined) return `<span class="json-number">${num}</span>`;
+            return `<span class="json-literal">${lit}</span>`;
+        });
+}
 
 async function showForecast(out, record) {
     out.innerHTML = `<div class="pp-status">Loading ${FORECAST_MODELS.map((m) => m.label).join(' and ')} forecasts…</div>`;
@@ -2935,6 +2986,7 @@ function parseMessage(topic, message) {
 function onMessage(topic, feature) {
     // Kept for every message so the sidebar can find a downloadable copy
     rememberLinks((feature.properties || {}).data_id, feature.links || []);
+    revealGatewayRows(topic);
     var kind = Object.keys(DECODE_LAYERS).find((key) => DECODE_LAYERS[key](topic, feature));
     if (kind && decodeEnabled.has(kind)) queueDecode(kind, topic, feature);
 
@@ -2972,6 +3024,7 @@ function onMessage(topic, feature) {
         format: formatOf(feature),
         color: COLORS.origin,
         source: webcam ? null : bufrSource(feature, props),
+        notification: feature,
         decoded: null,
         born: Date.now(),
     };
@@ -3216,6 +3269,14 @@ let decodeQueue = [];
 let decodeBusy = false;
 const decodeSeen = new Set();
 
+// Shows the GTS Aircraft and Satellites rows once such a bulletin has been
+// announced, even though it isn't downloaded while the row is off
+function revealGatewayRows(topic) {
+    if (!/-gts-to-wis2\//.test(topic)) return;
+    if (!seenLayers.has('gts-aircraft') && GATEWAY_AIRCRAFT.test(topic)) showLegendRow('gts-aircraft');
+    if (!seenLayers.has('gts-satellite') && GATEWAY_SATELLITE.test(topic)) showLegendRow('gts-satellite');
+}
+
 // Satellite and GTS aircraft files are only fetched while their group is on
 function satelliteSkipped(kind, topic) {
     if (kind === 'gts' && GATEWAY_AIRCRAFT.test(topic)) return effectiveHidden().includes('gts-aircraft');
@@ -3278,7 +3339,7 @@ function plotDecodedReport(job, rows, profile, index) {
     var props = job.feature.properties || {};
     var [channel, t] = job.topic.split('/a/wis2/');
     // GTS reports join GTS-to-WIS2's groups and decoded cache files join Cache's
-    var cls = reportClass(values, profile);
+    var cls = GATEWAY_AIRCRAFT.test(job.topic) ? 'aircraft' : reportClass(values, profile);
     var subLayer = job.kind === 'gts' ? `gts-${cls}` : job.kind === 'files' ? `cache-${cls}` : null;
     if (subLayer === 'gts-satellite' && effectiveHidden().includes(subLayer)) return;
     var record = {
@@ -3300,6 +3361,7 @@ function plotDecodedReport(job, rows, profile, index) {
             datetime: reportTime(values),
         },
         links: job.feature.links || [],
+        notification: job.feature,
         wsi: reportId(values),
         format: 'bufr',
         color: subLayer ? OBS_CLASSES[cls].color : COLORS[job.kind],
@@ -3349,6 +3411,7 @@ function plotCitypage(job, xml) {
         subLayer: 'cache-other',
         props: { data_id: key, pubtime: props.pubtime, metadata_id: site.textContent.trim() },
         links: job.feature.links || [],
+        notification: job.feature,
         wsi: null,
         french: french,
         format: 'xml',
@@ -3726,7 +3789,7 @@ function trackRoute(reports) {
 // Order matters: satellite and aircraft reports can also carry station-like ids.
 function reportClass(values, profile) {
     if (values.has(1007)) return 'satellite';
-    if (values.has(1008) || values.has(1006)) return 'aircraft';
+    if (values.has(1008) || values.has(1006) || values.has(7010) || values.has(8009) || values.has(8004)) return 'aircraft';
     if (profile && profile.length >= 2) return 'upperair';
     if (values.has(1011)) return 'ship';
     if (values.has(1087) || values.has(1005) || values.has(2149)) return 'buoy';

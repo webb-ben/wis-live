@@ -1213,3 +1213,34 @@
   border-color: var(--outline);
   box-shadow: none;
 }
+
+/* The WIS2 notification tab */
+.pp-message-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+}
+.pp-message-topic {
+  margin-bottom: 4px;
+  font-size: 11px;
+  word-break: break-all;
+}
+.pp-json {
+  max-height: 60vh;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border-radius: 6px;
+  background-color: #f8f9fa;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.json-key { color: #1864ab; }
+.json-string { color: #2b8a3e; }
+.json-string a { color: inherit; }
+.json-number { color: #c2255c; }
+.json-literal { color: #7048e8; }
