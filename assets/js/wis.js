@@ -11,7 +11,7 @@ String.prototype.hexDecode = function(){
 
 // Map
 const MAX_POINTS = 50000;        // Oldest points are dropped beyond this...
-const MAX_GTS_POINTS = 30000;    // ...with GTS reports capped separately so they can't crowd out the rest
+const MAX_DECODED_POINTS = 30000;  // ...with reports decoded from files capped separately so they can't crowd out the rest
 const FADE_MS = 60 * 60 * 1000;  // Points fade over an hour
 const PULSE_MS = 1600;           // Length of the ripple on new arrivals
 const COLORS = {
@@ -19,16 +19,26 @@ const COLORS = {
     webcam: '#F8A700',
     origin: '#6f9fd8',
     gts: '#9b6cd1',
+    files: '#d16c9b',
 };
-// Legend rows; each can be switched on and off. Rows other than opt-in ones
-// stay hidden until a point of that kind has arrived.
-const LAYERS = [
-    { key: 'obs', label: 'Cache', color: COLORS.cache },
-    { key: 'webcam', label: 'Webcam', color: COLORS.webcam },
-    { key: 'origin', label: 'Origin', color: COLORS.origin, ring: true },
-    { key: 'gts', label: 'GTS bulletin reports', color: COLORS.gts, optIn: true },
+// Legend rows, grouped by source; each can be switched on and off. Rows other
+// than opt-in ones stay hidden until a point of that kind has arrived. Opt-in
+// rows are decoded in the browser, since their notifications carry no location.
+const LAYER_GROUPS = [
+    { label: 'WIS2 data', layers: [
+        { key: 'obs', label: 'Cache', color: COLORS.cache },
+        { key: 'webcam', label: 'Webcam images', color: COLORS.webcam },
+        { key: 'origin', label: 'Origin', color: COLORS.origin, ring: true },
+        { key: 'files', label: 'Cache (decode required)', color: COLORS.files, optIn: true,
+            title: 'Download and decode small BUFR files whose notification has no location, and plot the reports inside' },
+    ] },
+    { label: 'GTS-to-WIS2 gateway', layers: [
+        { key: 'gts', label: 'GTS bulletins (decode required)', color: COLORS.gts, optIn: true,
+            title: 'Download and decode the BUFR bulletins republished from the GTS, and plot the reports inside' },
+    ] },
 ];
-const hiddenLayers = new Set(['gts']);
+const hiddenLayers = new Set(['gts', 'files']);
+let showSpace = true;  // Satellite products, switched as a group across every layer
 const seenLayers = new Set();
 const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -65,13 +75,13 @@ const map = new maplibregl.Map({
     },
     center: [0, 30],
     zoom: 2,
-    minZoom: 1,
+    minZoom: 0,
     maxZoom: 15,
 });
 
 const ALTITUDE_ID = 1e9;     // Altitude bars share the points source, offset from their point's id
 const records = new Map();  // id -> record for every point on the map
-const pools = { wis2: new Map(), gts: new Map() };  // Same records, in arrival order per cap
+const pools = { wis2: new Map(), decoded: new Map() };  // Same records, in arrival order per cap
 const byDataId = new Map(); // data_id -> record, so each observation is drawn once
 let nextId = 1;
 let toAdd = [];
@@ -192,6 +202,7 @@ function addPoint(record) {
             channel: record.channel,
             centre: record.centre,
             discipline: record.discipline,
+            space: isSpaceBased(record.topic),
             topic: record.topic.toLowerCase(),
         },
     };
@@ -200,9 +211,9 @@ function addPoint(record) {
     if (!reduceMotion) pulses.push(feature);
     if (!seenLayers.has(feature.properties.layer)) showLegendRow(feature.properties.layer);
 
-    var pool = record.gts ? pools.gts : pools.wis2;
+    var pool = record.decodedLayer ? pools.decoded : pools.wis2;
     pool.set(record.id, record);
-    if (pool.size > (record.gts ? MAX_GTS_POINTS : MAX_POINTS)) {
+    if (pool.size > (record.decodedLayer ? MAX_DECODED_POINTS : MAX_POINTS)) {
         removePoint(pool.values().next().value);
     }
     return record;
@@ -229,14 +240,14 @@ function altitudeBar(record, properties) {
 }
 
 function layerOf(record) {
-    if (record.gts) return 'gts';
+    if (record.decodedLayer) return record.decodedLayer;
     if (record.channel !== 'cache') return 'origin';
     return record.webcam ? 'webcam' : 'obs';
 }
 
 function removePoint(record) {
     records.delete(record.id);
-    pools[record.gts ? 'gts' : 'wis2'].delete(record.id);
+    pools[record.decodedLayer ? 'decoded' : 'wis2'].delete(record.id);
     if (byDataId.get(record.props.data_id) === record) byDataId.delete(record.props.data_id);
     var ids = record.alt > 0 ? [record.id, record.id + ALTITUDE_ID] : [record.id];
     var queued = toAdd.length;
@@ -318,31 +329,35 @@ class LegendControl {
         var container = document.createElement('div');
         container.className = 'maplibregl-ctrl legend';
         container.innerHTML = `
-            ${LAYERS.map((l) => `
-            <label class="legend-toggle" data-layer="${l.key}"${l.optIn ? '' : ' hidden'}>
+            ${LAYER_GROUPS.map((g) => `
+            <div class="legend-group">${g.label}</div>
+            ${g.layers.map((l) => `
+            <label class="legend-toggle" data-layer="${l.key}"${l.optIn ? '' : ' hidden'}${l.title ? ` title="${l.title}"` : ''}>
                 <input type="checkbox" class="form-check-input"${hiddenLayers.has(l.key) ? '' : ' checked'}>
                 <span class="legend-dot${l.ring ? ' legend-ring' : ''}" style="--color: ${l.color}"></span>${l.label}
-            </label>`).join('')}
-            <div class="legend-note legend-gts" hidden></div>
+            </label>`).join('')}`).join('')}
+            <div class="legend-note legend-decode" hidden></div>
             <div class="legend-note">Pulses mark new arrivals; points fade over an hour</div>
             <div class="legend-about">WIS 2.0 Live shows real-time weather observations as they are published through the WMO Information System. This page is not affiliated with WMO.</div>`;
 
-        var status = container.querySelector('.legend-gts');
-        container.querySelectorAll('.legend-toggle').forEach((row) => {
+        var status = container.querySelector('.legend-decode');
+        container.querySelectorAll('.legend-toggle[data-layer]').forEach((row) => {
             var key = row.dataset.layer;
             row.querySelector('input').addEventListener('change', (e) => {
                 e.target.checked ? hiddenLayers.delete(key) : hiddenLayers.add(key);
-                if (key === 'gts') {
-                    setGtsEnabled(e.target.checked);
-                    status.hidden = !e.target.checked;
+                if (DECODE_LAYERS[key]) {
+                    setDecodeEnabled(key, e.target.checked);
+                    status.hidden = !decodeEnabled.size;
                 }
                 applyMapFilter();
             });
         });
         setInterval(() => {
-            if (!gtsEnabled) return;
-            status.textContent = decoderReady || gtsPlotted
-                ? `${gtsPlotted.toLocaleString()} reports plotted · ${gtsQueue.length} bulletins waiting · tilt to see aircraft altitude`
+            if (!decodeEnabled.size) return;
+            var plotted = [...decodeEnabled].reduce((n, key) => n + decodePlotted[key], 0);
+            status.textContent = decoderReady || plotted
+                ? `${plotted.toLocaleString()} reports plotted · ${decodeQueue.length} files waiting`
+                    + (decodeEnabled.has('gts') ? ' · tilt to see aircraft altitude' : '')
                 : 'Loading decoder…';
         }, 1000);
         return container;
@@ -641,8 +656,10 @@ function renderDecoded(out, title, result) {
     var name = [1015, 1019].map((id) => stationName(values.get(id))).find(Boolean);
     if (name && title) title.textContent = name;
 
-    var tiles = [];
-    for (var key of KEY_VALUES) {
+    var profile = result.profile && result.profile.filter((l) => l[0] > 0);
+    var sounding = profile && profile.length >= 2;
+    var tiles = sounding ? soundingTiles(profile) : [];
+    for (var key of sounding ? [] : KEY_VALUES) {
         var id = key.ids.find((i) => values.has(i));
         if (!id || (key.unless && key.unless.some((i) => values.has(i)))) continue;
         var text = formatValue(...values.get(id)).join(' ');
@@ -658,6 +675,9 @@ function renderDecoded(out, title, result) {
             <button type="button" class="btn btn-sm btn-outline-secondary" data-step="1" aria-label="Next report"${result.index < result.subsets - 1 ? '' : ' disabled'}>&rsaquo;</button>
         </div>` : ''}
         ${name && !title ? `<div class="pp-name">${esc(name)}</div>` : ''}
+        ${sounding ? `
+        <div class="sounding"></div>
+        <button type="button" class="btn btn-sm btn-outline-secondary sounding-expand">Expand sounding</button>` : ''}
         ${tiles.length ? `<div class="pp-tiles">${tiles.join('')}</div>` : ''}
         <details class="pp-more"${tiles.length ? '' : ' open'}>
             <summary>All decoded fields (${result.rows.length})</summary>
@@ -668,6 +688,186 @@ function renderDecoded(out, title, result) {
     out.querySelectorAll('.pp-pager button').forEach((button) => button.addEventListener('click', () => {
         showReport(out, title, result.key, result.index + Number(button.dataset.step));
     }));
+    if (sounding) {
+        var label = name || (title && title.textContent) || 'Sounding';
+        renderSkewT(out.querySelector('.sounding'), profile, { width: 300, height: 390, time: soundingTime(values) });
+        out.querySelector('.sounding-expand').addEventListener('click', () => openSounding(profile, label, values));
+    }
+}
+
+// ---------- Upper-air sounding (TEMP) viewer: Skew-T log-P diagram
+// profile levels: [pressure hPa, height gpm, temperature C, dewpoint C, wind dir, wind m/s, dlat, dlon]
+const STANDARD_LEVELS = [1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10];
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function soundingTiles(profile) {
+    var tile = (label, text) => `<div class="pp-tile"><div>${esc(label)}</div><strong>${esc(text)}</strong></div>`;
+    var surface = profile.reduce((a, b) => (b[0] > a[0] ? b : a));
+    var top = profile.reduce((a, b) => (b[0] < a[0] ? b : a));
+    var windy = profile.filter((l) => l[5] !== null).reduce((a, b) => (!a || b[5] > a[5] ? b : a), null);
+    var tiles = [];
+    if (surface[2] !== null) tiles.push(tile(`Temperature at ${Math.round(surface[0])} hPa`, `${surface[2].toFixed(1)} °C`));
+    if (surface[3] !== null) tiles.push(tile('Dew point', `${surface[3].toFixed(1)} °C`));
+    tiles.push(tile('Highest level', top[1] !== null ? `${(top[1] / 1000).toFixed(1)} km (${formatPressure(top[0])} hPa)` : `${formatPressure(top[0])} hPa`));
+    if (windy) tiles.push(tile('Strongest wind', `${windy[5].toFixed(0)} m/s at ${formatPressure(windy[0])} hPa`));
+    tiles.push(tile('Levels', profile.length.toLocaleString()));
+    return tiles;
+}
+
+function formatPressure(p) {
+    return p >= 10 ? Math.round(p) : p.toFixed(1);
+}
+
+function svgEl(name, attrs, parent) {
+    var el = document.createElementNS(SVG_NS, name);
+    for (var k in attrs) el.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(el);
+    return el;
+}
+
+// Pressure lines labelled on the chart, and the minor ticks between them
+const SKEWT_LABELS = [1000, 850, 700, 500, 300, 200, 100, 50, 20, 10];
+const SKEWT_TICKS = [1000, 900, 800, 700, 600, 500, 400, 300, 200, 100, 90, 80, 70, 60, 50, 40, 30, 20, 10];
+const SKEWT_SKEW = 16;  // Isotherms lean right by this many °C per e-fold of pressure
+
+function renderSkewT(container, profile, opts) {
+    var W = opts.width, H = opts.height;
+    var m = { top: 40, right: 10, bottom: 34, left: 46 };
+    var w = W - m.left - m.right, h = H - m.top - m.bottom;
+
+    // From just below 1000 hPa (or the surface) up to the highest level reported
+    var ps = profile.map((l) => l[0]);
+    var pMax = Math.max(1050, Math.max(...ps));
+    var pMin = Math.max(1, Math.min(100, Math.min(...ps) * 0.95));
+    var y = (p) => m.top + h * (Math.log(p) - Math.log(pMin)) / (Math.log(pMax) - Math.log(pMin));
+    var tLeft = -50, tRight = 50;
+    var x = (t, p) => m.left + w * (t + SKEWT_SKEW * Math.log(1000 / p) - tLeft) / (tRight - tLeft);
+
+    var svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: 'skewt', role: 'img',
+        'aria-label': 'Skew-T log-P diagram of temperature and dew point against pressure' });
+    var clipId = `skewt-clip-${Math.random().toString(36).slice(2)}`;
+    svgEl('rect', { x: m.left, y: m.top, width: w, height: h }, svgEl('clipPath', { id: clipId }, svgEl('defs', {}, svg)));
+    svgEl('rect', { x: 0, y: 0, width: W, height: H, class: 'skewt-bg' }, svg);
+    var plot = svgEl('g', { 'clip-path': `url(#${clipId})` }, svg);
+
+    // Title
+    svgEl('text', { x: m.left + w / 2, y: 15, class: 'skewt-title', 'text-anchor': 'middle' }, svg).textContent = 'Skew-T log-P Diagram';
+    if (opts.time) {
+        var stamp = opts.time.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+        svgEl('text', { x: m.left + w / 2, y: 30, class: 'skewt-title', 'text-anchor': 'middle' }, svg).textContent = stamp;
+    }
+
+    // Skewed isotherms, with 0 °C dashed, and the pressure grid
+    for (var t = -160; t <= 50; t += 10) {
+        svgEl('line', { x1: x(t, pMax), y1: y(pMax), x2: x(t, pMin), y2: y(pMin), class: t === 0 ? 'skewt-zero' : 'skewt-isotherm' }, plot);
+    }
+    for (var p of SKEWT_LABELS.filter((p) => p <= pMax && p >= pMin)) {
+        svgEl('line', { x1: m.left, y1: y(p), x2: m.left + w, y2: y(p), class: 'skewt-isobar' }, plot);
+        svgEl('text', { x: m.left - 6, y: y(p) + 3.5, class: 'skewt-label', 'text-anchor': 'end' }, svg).textContent = p;
+    }
+    for (var p of SKEWT_TICKS.filter((p) => p <= pMax && p >= pMin)) {
+        var major = SKEWT_LABELS.includes(p);
+        svgEl('line', { x1: m.left - (major ? 4 : 2), y1: y(p), x2: m.left, y2: y(p), class: 'skewt-tick' }, svg);
+    }
+    for (var t = tLeft; t <= tRight; t += 10) {
+        var xb = m.left + w * (t - tLeft) / (tRight - tLeft);
+        svgEl('line', { x1: xb, y1: m.top + h, x2: xb, y2: m.top + h + 4, class: 'skewt-tick' }, svg);
+        svgEl('text', { x: xb, y: m.top + h + 14, class: 'skewt-label', 'text-anchor': 'middle' }, svg).textContent = t;
+    }
+    svgEl('text', { x: m.left + w / 2, y: H - 4, class: 'skewt-axis', 'text-anchor': 'middle' }, svg).textContent = 'Temperature (°C)';
+    svgEl('text', { x: 0, y: 0, class: 'skewt-axis', 'text-anchor': 'middle',
+        transform: `translate(11 ${m.top + h / 2}) rotate(-90)` }, svg).textContent = 'Pressure (hPa)';
+
+    // Temperature and dew point profiles, highest pressure (lowest altitude) first
+    var sorted = profile.slice().sort((a, b) => b[0] - a[0]);
+    var line = (i, cls) => {
+        var pts = sorted.filter((l) => l[i] !== null && l[0] >= pMin).map((l) => `${x(l[i], l[0]).toFixed(1)},${y(l[0]).toFixed(1)}`);
+        if (pts.length > 1) svgEl('polyline', { points: pts.join(' '), class: cls }, plot);
+    };
+    line(3, 'skewt-dewpoint');
+    line(2, 'skewt-temperature');
+    svgEl('rect', { x: m.left, y: m.top, width: w, height: h, class: 'skewt-frame' }, svg);
+
+    // Legend, top right
+    var legend = svgEl('g', { transform: `translate(${m.left + w - 92} ${m.top + 6})` }, svg);
+    svgEl('rect', { x: 0, y: 0, width: 86, height: 34, rx: 3, class: 'skewt-legend' }, legend);
+    [['Temperature', 'skewt-temperature'], ['Dewpoint', 'skewt-dewpoint']].forEach(([text, cls], i) => {
+        svgEl('line', { x1: 6, y1: 11 + i * 13, x2: 22, y2: 11 + i * 13, class: cls }, legend);
+        svgEl('text', { x: 27, y: 14.5 + i * 13, class: 'skewt-label skewt-legend-text' }, legend).textContent = text;
+    });
+
+    // Hover readout
+    var readout = svgEl('text', { x: m.left + 4, y: m.top + h - 6, class: 'skewt-readout' }, svg);
+    var guide = svgEl('line', { x1: m.left, x2: m.left + w, class: 'skewt-guide', visibility: 'hidden' }, svg);
+    svg.addEventListener('mousemove', (e) => {
+        var box = svg.getBoundingClientRect();
+        var py = (e.clientY - box.top) * H / box.height;
+        var level = sorted.reduce((a, b) => (Math.abs(y(b[0]) - py) < Math.abs(y(a[0]) - py) ? b : a));
+        guide.setAttribute('y1', y(level[0]));
+        guide.setAttribute('y2', y(level[0]));
+        guide.setAttribute('visibility', 'visible');
+        readout.textContent = [
+            `${formatPressure(level[0])} hPa`,
+            level[1] !== null ? `${Math.round(level[1]).toLocaleString()} m` : null,
+            level[2] !== null ? `T ${level[2].toFixed(1)}°` : null,
+            level[3] !== null ? `Td ${level[3].toFixed(1)}°` : null,
+            level[5] !== null ? `${level[5].toFixed(0)} m/s ${level[4] !== null ? level[4] + '°' : ''}` : null,
+        ].filter(Boolean).join(' · ');
+    });
+    svg.addEventListener('mouseleave', () => {
+        guide.setAttribute('visibility', 'hidden');
+        readout.textContent = '';
+    });
+
+    container.replaceChildren(svg);
+}
+
+// Launch time from the report's year/month/day/hour/minute, or null
+function soundingTime(values) {
+    var time = [4001, 4002, 4003, 4004, 4005].map((id) => values.get(id) && values.get(id)[0]);
+    return time[0] ? new Date(Date.UTC(time[0], time[1] - 1, time[2], time[3] || 0, time[4] || 0)) : null;
+}
+
+// Larger view in a dialog, with a table of the standard levels
+function openSounding(profile, label, values) {
+    var dialog = document.querySelector('.sounding-dialog');
+    if (!dialog) {
+        dialog = document.createElement('dialog');
+        dialog.className = 'sounding-dialog';
+        dialog.addEventListener('click', (e) => { if (e.target === dialog) dialog.close(); });
+        document.body.appendChild(dialog);
+    }
+    var nearest = (p) => profile.reduce((a, b) => (Math.abs(b[0] - p) < Math.abs(a[0] - p) ? b : a));
+    var rows = STANDARD_LEVELS
+        .map((p) => nearest(p))
+        .filter((l, i, all) => Math.abs(l[0] - STANDARD_LEVELS[i]) / STANDARD_LEVELS[i] < 0.03 && all.indexOf(l) === i);
+    var cell = (v, digits) => (v === null || v === undefined ? '–' : Number(v).toFixed(digits));
+    var launched = soundingTime(values);
+
+    dialog.innerHTML = `
+        <div class="sounding-head">
+            <div>
+                <strong></strong>
+                <div class="pp-status">${launched ? `Launched ${esc(launched.toUTCString().replace(':00 GMT', ' UTC'))} · ` : ''}${profile.length.toLocaleString()} levels</div>
+            </div>
+            <button type="button" class="btn-close" aria-label="Close"></button>
+        </div>
+        <div class="sounding-body">
+            <div class="sounding-chart"></div>
+            ${rows.length ? `
+            <table class="table table-sm sounding-table">
+                <thead><tr><th>hPa</th><th>Height m</th><th>T °C</th><th>Td °C</th><th>Wind</th></tr></thead>
+                <tbody>${rows.map((l) => `
+                    <tr><td>${formatPressure(l[0])}</td><td>${cell(l[1], 0)}</td><td>${cell(l[2], 1)}</td><td>${cell(l[3], 1)}</td>
+                    <td>${l[5] === null ? '–' : `${cell(l[5], 0)} m/s${l[4] === null ? '' : ` ${l[4]}°`}`}</td></tr>`).join('')}
+                </tbody>
+            </table>` : ''}
+        </div>`;
+    dialog.querySelector('strong').textContent = label;
+    dialog.querySelector('.btn-close').addEventListener('click', () => dialog.close());
+    var width = Math.min(480, window.innerWidth - 48);
+    renderSkewT(dialog.querySelector('.sounding-chart'), profile, { width: width, height: Math.round(width * 1.3), time: launched });
+    dialog.showModal();
 }
 
 // Returns a cleaned station name, or null when the decoded value isn't usable:
@@ -709,7 +909,8 @@ function formatBytes(n) {
 function timeAgo(time) {
     var seconds = Math.round((Date.now() - new Date(time)) / 1000);
     if (isNaN(seconds)) return '';
-    if (seconds < 60) return 'just now';
+    if (seconds < 10) return 'just now';
+    if (seconds < 60) return `${seconds} sec ago`;
     if (seconds < 3600) return `${Math.round(seconds / 60)} min ago`;
     if (seconds < 86400) return `${Math.round(seconds / 3600)} h ago`;
     return `${Math.round(seconds / 86400)} d ago`;
@@ -738,7 +939,7 @@ const recent = [];
 let pending = [];
 let queueTotal = 0;
 let queuePaused = false;
-let queueList, queueCount, queueFilter, queueMapped, queuePause, queueCentre, queueToggle;
+let queueList, queueCount, queueFilter, queueMapped, queuePause, queueToggle;
 
 // Filters shared by the map and the sidebar
 const DISCIPLINES = {
@@ -762,7 +963,7 @@ const FORMATS = {
     'hdf': 'HDF / NetCDF',
     'other': 'Other',
 };
-const filters = { text: '', channel: '', centre: '', format: '', disciplines: new Set() };
+const filters = { text: '', channel: '', centres: new Set(), format: '', disciplines: new Set() };
 
 // File type of a notification's data, from the canonical link's media type,
 // falling back to the file extension for generic types
@@ -782,9 +983,15 @@ function formatOf(feature) {
     if (/^text\//.test(type) || ext === 'txt') return 'text';
     return 'other';
 }
-const centres = new Set();
+const centres = new Map();  // centre-id -> its item in the picker
+let centreList, centreSearch, centreToggle, centreChips;
 
 // centre/data/core/<discipline>/...; GTS bulletin topics have none
+// WIS2 space-based-observations topics, and GTS satellite bulletins (T1T2 = IN, IE)
+function isSpaceBased(topic) {
+    return /\/space-based-observations\//.test(topic) || /-gts-to-wis2\/data\/core\/I\/[NE]\//.test(topic);
+}
+
 function disciplineOf(t) {
     var parts = t.split('/');
     if (DISCIPLINES.hasOwnProperty(parts[3])) return parts[3];
@@ -798,23 +1005,25 @@ function disciplineOf(t) {
 
 function matchesFilters(item) {
     return (!filters.channel || item.channel === filters.channel)
-        && (!filters.centre || item.centre === filters.centre)
+        && (!filters.centres.size || filters.centres.has(item.centre))
         && (!filters.format || item.format === filters.format)
         && (!filters.disciplines.size || filters.disciplines.has(item.discipline))
-        && (!filters.text || item.topic.toLowerCase().includes(filters.text));
+        && (!filters.text || item.topic.toLowerCase().includes(filters.text))
+        && (showSpace || !isSpaceBased(item.topic));
 }
 
 function filtersActive() {
-    return !!(filters.text || filters.channel || filters.centre || filters.format || filters.disciplines.size);
+    return !!(filters.text || filters.channel || filters.centres.size || filters.format || filters.disciplines.size || !showSpace);
 }
 
 function applyMapFilter() {
     var expr = ['all'];
     if (filters.channel) expr.push(['==', ['get', 'channel'], filters.channel]);
-    if (filters.centre) expr.push(['==', ['get', 'centre'], filters.centre]);
+    if (filters.centres.size) expr.push(['in', ['get', 'centre'], ['literal', [...filters.centres]]]);
     if (filters.format) expr.push(['==', ['get', 'format'], filters.format]);
     if (filters.disciplines.size) expr.push(['in', ['get', 'discipline'], ['literal', [...filters.disciplines]]]);
     if (filters.text) expr.push(['in', filters.text, ['get', 'topic']]);
+    if (!showSpace) expr.push(['!', ['get', 'space']]);
     if (hiddenLayers.size) expr.push(['!', ['in', ['get', 'layer'], ['literal', [...hiddenLayers]]]]);
     if (!map.getLayer('points')) return;
     // The points source also holds altitude bars, so each layer picks its geometry
@@ -832,21 +1041,99 @@ function applyFilters() {
     document.querySelector('.queue-reset').hidden = !active;
 }
 
-function zoomToCentre(centre) {
+function zoomToCentres(selected) {
     var bounds = new maplibregl.LngLatBounds();
     for (var record of records.values()) {
-        if (record.centre === centre) bounds.extend(record.coords);
+        if (selected.has(record.centre)) bounds.extend(record.coords);
     }
     if (bounds.isEmpty()) return;
     var sidebar = document.querySelector('.queue').getBoundingClientRect().width;
     map.fitBounds(bounds, { padding: { top: 60, bottom: 60, left: sidebar + 60, right: 60 }, maxZoom: 7 });
 }
 
-function addCentreOption(centre) {
-    centres.add(centre);
-    var option = new Option(centre, centre);
-    var next = [...queueCentre.options].slice(1).find((o) => o.value > centre);
-    queueCentre.add(option, next || null);
+// Adds a centre to the picker, or names one already listed
+function addCentreOption(centre, name) {
+    var item = centres.get(centre);
+    if (!item) {
+        item = document.createElement('li');
+        item.innerHTML = '<label><input type="checkbox" class="form-check-input"><strong></strong><span></span></label>';
+        item.dataset.centre = centre;
+        item.querySelector('input').value = centre;
+        item.querySelector('input').checked = filters.centres.has(centre);
+        item.querySelector('strong').textContent = centre;
+        var next = [...centreList.children].find((li) => li.dataset.centre > centre);
+        centreList.insertBefore(item, next || null);
+        centres.set(centre, item);
+    }
+    if (name) item.querySelector('span').textContent = name;
+    item.dataset.search = `${centre} ${item.querySelector('span').textContent}`.toLowerCase();
+    item.hidden = !item.dataset.search.includes(centreSearch.value.trim().toLowerCase());
+}
+
+function searchCentres() {
+    var query = centreSearch.value.trim().toLowerCase();
+    for (var item of centres.values()) {
+        item.hidden = !item.dataset.search.includes(query);
+    }
+}
+
+function toggleCentre(centre, on) {
+    on ? filters.centres.add(centre) : filters.centres.delete(centre);
+    var item = centres.get(centre);
+    if (item) item.querySelector('input').checked = on;
+    showSelectedCentres();
+    applyFilters();
+    if (on) zoomToCentres(filters.centres);
+}
+
+// Summarises the selection on the picker button and lists it as removable chips
+function showSelectedCentres() {
+    var selected = [...filters.centres].sort();
+    centreToggle.textContent = !selected.length ? 'All centres'
+        : selected.length === 1 ? selected[0] : `${selected.length} centres`;
+    centreChips.replaceChildren(...selected.map((centre) => {
+        var chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'queue-chip';
+        chip.setAttribute('aria-pressed', 'true');
+        chip.title = `Remove ${centre}`;
+        chip.textContent = `${centre} ×`;
+        chip.addEventListener('click', () => toggleCentre(centre, false));
+        return chip;
+    }));
+}
+
+// The picker lists every centre in the WMO register; centres seen in messages
+// but not registered are still added as they arrive. The register's CORS
+// headers are unreliable, so fall back to a bundled snapshot.
+const CENTRE_REGISTER = 'https://codes.wmo.int/wis/topic-hierarchy/centre-id?_format=jsonld';
+const CENTRE_SNAPSHOT = 'assets/data/centre-id.json';
+
+async function loadCentres() {
+    var list;
+    try {
+        list = parseCentreRegister(await fetchJson(CENTRE_REGISTER));
+    } catch (err) {
+        console.debug('Could not load the centre-id register, using the snapshot');
+        list = await fetchJson(CENTRE_SNAPSHOT).catch(() => []);
+    }
+    list.forEach(([centre, name]) => addCentreOption(centre, name));
+}
+
+// Returns [[centre-id, description], ...] for the centres not retired
+function parseCentreRegister(register) {
+    var list = (register['@graph'] || [])
+        .filter((item) => item['@type'] === 'skos:Concept' && item['skos:notation'])
+        .filter((item) => (item['reg:status'] || {})['@id'] !== 'reg:statusRetired')
+        .map((item) => [item['skos:notation'], (item['dct:description'] || {})['@value'] || '']);
+    if (!list.length) throw new Error('empty centre-id register');
+    return list;
+}
+
+async function fetchJson(url) {
+    var response = await fetch(url);
+    if (!response.ok) throw new Error(`${url}: ${response.status}`);
+    return response.json();
 }
 
 class QueueControl {
@@ -877,20 +1164,26 @@ class QueueControl {
                         <option value="cache">Cache</option>
                         <option value="origin">Origin</option>
                     </select>
-                    <select class="form-select form-select-sm queue-centre" aria-label="Centre">
-                        <option value="">All centres</option>
-                    </select>
+                    <div class="centre-picker">
+                        <button type="button" class="form-select form-select-sm centre-toggle" aria-label="Centres" aria-expanded="false">All centres</button>
+                        <div class="centre-menu" hidden>
+                            <input type="search" class="form-control form-control-sm" placeholder="Search centres" aria-label="Search centres">
+                            <ul class="centre-list" aria-label="Centres"></ul>
+                        </div>
+                    </div>
                     <select class="form-select form-select-sm queue-format" aria-label="File type">
                         <option value="">All file types</option>
                         ${Object.entries(FORMATS).map(([key, label]) => `<option value="${key}">${label}</option>`).join('')}
                     </select>
                 </div>
+                <div class="queue-chips centre-chips" aria-label="Selected centres"></div>
                 <div class="queue-chips" role="group" aria-label="Earth system discipline">
                     ${Object.entries(DISCIPLINES).map(([key, label]) =>
                         `<button type="button" class="queue-chip" data-discipline="${key}" aria-pressed="false">${label}</button>`).join('')}
                 </div>
+                <label class="form-check-label queue-space-row" title="Satellite products, on the map and in this list"><input type="checkbox" class="form-check-input queue-space" checked> Include space-based observations</label>
                 <div class="queue-controls">
-                    <label class="form-check-label"><input type="checkbox" class="form-check-input"> On map only</label>
+                    <label class="form-check-label"><input type="checkbox" class="form-check-input queue-mapped"> On map only</label>
                     <span>
                         <button type="button" class="btn btn-sm btn-link queue-reset" hidden>Reset filters</button>
                         <button type="button" class="btn btn-sm btn-outline-secondary queue-pause">Pause</button>
@@ -902,9 +1195,20 @@ class QueueControl {
         queueList = sidebar.querySelector('.queue-list');
         queueCount = sidebar.querySelector('.queue-count');
         queueFilter = sidebar.querySelector('input[type=search]');
-        queueMapped = sidebar.querySelector('input[type=checkbox]');
+        queueMapped = sidebar.querySelector('.queue-mapped');
+        var queueSpace = sidebar.querySelector('.queue-space');
+        queueSpace.addEventListener('change', function(){
+            showSpace = queueSpace.checked;
+            if (!showSpace) decodeQueue = decodeQueue.filter((job) => !isSpaceBased(job.topic));
+            applyFilters();
+        });
         queuePause = sidebar.querySelector('.queue-pause');
-        queueCentre = sidebar.querySelector('.queue-centre');
+        centreList = sidebar.querySelector('.centre-list');
+        centreSearch = sidebar.querySelector('.centre-menu input');
+        centreToggle = sidebar.querySelector('.centre-toggle');
+        centreChips = sidebar.querySelector('.centre-chips');
+        var centreMenu = sidebar.querySelector('.centre-menu');
+        loadCentres();
         var queueChannel = sidebar.querySelector('.queue-channel');
         var queueFormat = sidebar.querySelector('.queue-format');
         queueFormat.addEventListener('change', function(){
@@ -921,10 +1225,26 @@ class QueueControl {
             filters.channel = queueChannel.value;
             applyFilters();
         });
-        queueCentre.addEventListener('change', function(){
-            filters.centre = queueCentre.value;
-            applyFilters();
-            if (filters.centre) zoomToCentre(filters.centre);
+        var openCentreMenu = (open) => {
+            centreMenu.hidden = !open;
+            centreToggle.setAttribute('aria-expanded', open);
+            if (open) centreSearch.focus();
+        };
+        centreToggle.addEventListener('click', () => openCentreMenu(centreMenu.hidden));
+        centreSearch.addEventListener('input', searchCentres);
+        centreSearch.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                openCentreMenu(false);
+                centreToggle.focus();
+            } else if (e.key === 'Enter') {
+                // Toggle the only match, or the first one
+                var match = [...centreList.children].find((li) => !li.hidden);
+                if (match) toggleCentre(match.dataset.centre, !filters.centres.has(match.dataset.centre));
+            }
+        });
+        centreList.addEventListener('change', (e) => toggleCentre(e.target.value, e.target.checked));
+        document.addEventListener('click', (e) => {
+            if (!centreMenu.hidden && !e.target.closest('.centre-picker')) openCentreMenu(false);
         });
         chips.forEach((chip) => chip.addEventListener('click', function(){
             var key = chip.dataset.discipline;
@@ -933,10 +1253,15 @@ class QueueControl {
             applyFilters();
         }));
         sidebar.querySelector('.queue-reset').addEventListener('click', function(){
-            filters.text = filters.channel = filters.centre = filters.format = '';
+            filters.text = filters.channel = filters.format = '';
             filters.disciplines.clear();
-            queueFilter.value = queueChannel.value = queueCentre.value = queueFormat.value = '';
+            filters.centres.clear();
+            showSpace = queueSpace.checked = true;
+            queueFilter.value = queueChannel.value = queueFormat.value = centreSearch.value = '';
             chips.forEach((chip) => chip.setAttribute('aria-pressed', 'false'));
+            centreList.querySelectorAll('input').forEach((input) => { input.checked = false; });
+            searchCentres();
+            showSelectedCentres();
             applyFilters();
         });
         queueMapped.addEventListener('change', rebuildQueue);
@@ -968,7 +1293,7 @@ function queueMessage(topic, message, record, feature) {
         record: record,
     };
     queueTotal++;
-    if (queueCentre && !centres.has(entry.centre)) addCentreOption(entry.centre);
+    if (centreList && !centres.has(entry.centre)) addCentreOption(entry.centre);
     recent.push(entry);
     if (recent.length > RECENT_MAX) recent.shift();
     if (matchesQueueFilter(entry)) {
@@ -1196,8 +1521,9 @@ function parseMessage(topic, message) {
 function onMessage(topic, feature) {
     // Kept for every message so the sidebar can find a downloadable copy
     rememberLinks((feature.properties || {}).data_id, feature.links || []);
-    if (gtsEnabled && topic.startsWith('cache/') && GTS_TOPIC.test(topic)) {
-        queueGts(topic, feature);
+    if (topic.startsWith('cache/')) {
+        var kind = Object.keys(DECODE_LAYERS).find((key) => DECODE_LAYERS[key](topic, feature));
+        if (kind && decodeEnabled.has(kind)) queueDecode(kind, topic, feature);
     }
 
     if (ignoredTopics.some((t) => topic.includes(t))) {
@@ -1320,11 +1646,36 @@ def _decode(data):
         subsets.append(rows)
     return subsets
 
+# Soundings (TEMP) repeat a block per level: time offset and significance,
+# then pressure, height, drift, temperature, dewpoint and wind. Rather than
+# thousands of rows, return the header rows plus one compact entry per level:
+# [pressure hPa, height gpm, temperature C, dewpoint C, wind dir, wind m/s, dlat, dlon]
+_LEVEL = {10009: 1, 12101: 2, 12103: 3, 11001: 4, 11002: 5, 5015: 6, 6015: 7}
+
+def _profile(rows):
+    if sum(1 for r in rows if r[0] == 7004) < 3:
+        return rows, None
+    header, levels, level = [], [], None
+    for d, name, v, unit in rows:
+        if d == 7004:
+            level = [v / 100, None, None, None, None, None, None, None]
+            levels.append(level)
+        elif level is None:
+            if d not in (4086, 8042):
+                header.append((d, name, v, unit))
+        elif d in _LEVEL and level[_LEVEL[d]] is None and isinstance(v, (int, float)):
+            level[_LEVEL[d]] = round(v - 273.15, 2) if d in (12101, 12103) else v
+    return header, levels
+
 def ready():
     return 'ok'
 
-def decode_subsets(data):
-    return json.dumps(_decode(data))
+def decode_subsets(data, limit=0):
+    subsets = _decode(data)
+    if limit and len(subsets) > limit:
+        # Spread the reports kept across the whole file, e.g. a satellite swath
+        subsets = subsets[::-(-len(subsets) // limit)]
+    return json.dumps([_profile(rows) for rows in subsets])
 
 def decode_bufr(data, wsi, key, index=-1):
     if key not in _cache:
@@ -1336,10 +1687,12 @@ def decode_bufr(data, wsi, key, index=-1):
     subsets = _cache[key]
     if not 0 <= index < len(subsets):
         index = next((i for i, rows in enumerate(subsets) if _wsi(rows) == wsi), 0)
+    rows, profile = _profile(subsets[index])
     return json.dumps({
         'subsets': len(subsets),
         'index': index,
-        'rows': subsets[index],
+        'rows': rows,
+        'profile': profile,
     })
 `;
 
@@ -1413,48 +1766,59 @@ function callDecoder(fn, ...args) {
     });
 }
 
-// Optional layer: GTS BUFR bulletins carry no geometry in the notification,
-// but the reports inside do, so decode them in the background and plot each one.
-// Surface (IS), upper-air (IU) and ocean (IO) series; satellite series are skipped.
+// Optional layers decoded in the background: some notifications carry no
+// geometry, but the reports inside the BUFR file do, so download and decode the
+// file and plot each report.
+// GTS: surface (IS), upper-air (IU) and ocean (IO) bulletins; satellite series are skipped.
 const GTS_TOPIC = /\/a\/wis2\/[^/]+-gts-to-wis2\/data\/core\/I\/([SUO])\//;
-const GTS_QUEUE_MAX = 100;  // Oldest bulletins are dropped when decoding falls behind
-let gtsEnabled = false;
-let gtsQueue = [];
-let gtsBusy = false;
-let gtsPlotted = 0;
-const gtsSeen = new Set();
+// Files: any other small cached file without geometry that may be BUFR
+const DECODE_FILE_MAX_BYTES = 200 * 1024;
+const DECODE_FILE_MAX_REPORTS = 300;  // Per file, so a satellite swath can't flood the map
+const NOT_BUFR = ['grib', 'xml', 'csv', 'json', 'image', 'hdf', 'text'];
+const DECODE_LAYERS = {
+    gts: (topic, feature) => GTS_TOPIC.test(topic),
+    files: (topic, feature) => !feature.geometry && !NOT_BUFR.includes(formatOf(feature))
+        && (feature.links || []).some((l) => l.rel == 'canonical' && l.length > 0 && l.length <= DECODE_FILE_MAX_BYTES),
+};
+const DECODE_QUEUE_MAX = 100;  // Oldest files are dropped when decoding falls behind
+const decodeEnabled = new Set();
+const decodePlotted = { gts: 0, files: 0 };
+let decodeQueue = [];
+let decodeBusy = false;
+const decodeSeen = new Set();
 
-function queueGts(topic, feature) {
+function queueDecode(kind, topic, feature) {
     var props = feature.properties || {};
-    var link = (feature.links || []).find((l) => l.rel == 'canonical');
-    // Each cache republishes the bulletin; take the first copy a browser can download
-    if (!link || !corsFriendly(link.href) || gtsSeen.has(props.data_id)) return;
-    gtsSeen.add(props.data_id);
-    if (gtsSeen.size > DATA_LINKS_MAX) gtsSeen.delete(gtsSeen.values().next().value);
-    gtsQueue.push({ topic, feature, href: link.href });
-    if (gtsQueue.length > GTS_QUEUE_MAX) gtsQueue.shift();
-    pumpGts();
+    var link = (feature.links || []).find((l) => l.rel == 'canonical' && corsFriendly(l.href));
+    // Each cache republishes the file; take the first copy a browser can download
+    if (!link || decodeSeen.has(props.data_id) || (!showSpace && isSpaceBased(topic))) return;
+    decodeSeen.add(props.data_id);
+    if (decodeSeen.size > DATA_LINKS_MAX) decodeSeen.delete(decodeSeen.values().next().value);
+    decodeQueue.push({ kind, topic, feature, href: link.href });
+    if (decodeQueue.length > DECODE_QUEUE_MAX) decodeQueue.shift();
+    pumpDecode();
 }
 
-async function pumpGts() {
-    if (gtsBusy || !gtsEnabled || !gtsQueue.length) return;
-    gtsBusy = true;
-    var job = gtsQueue.pop();  // Newest first, to stay close to real time
+async function pumpDecode() {
+    if (decodeBusy || !decodeQueue.length) return;
+    decodeBusy = true;
+    var job = decodeQueue.pop();  // Newest first, to stay close to real time
     try {
         var response = await fetch(job.href);
         var bytes = response.ok ? bufrPart(new Uint8Array(await response.arrayBuffer())) : null;
         if (bytes) {
-            var subsets = JSON.parse(await callDecoder('decode_subsets', bytes));
-            subsets.forEach((rows, i) => plotGtsReport(job, rows, i));
+            var limit = job.kind === 'files' ? DECODE_FILE_MAX_REPORTS : 0;
+            var subsets = JSON.parse(await callDecoder('decode_subsets', bytes, limit));
+            subsets.forEach(([rows, profile], i) => plotDecodedReport(job, rows, profile, i));
         }
     } catch (err) {
-        console.debug(`Could not decode GTS bulletin ${job.href}: ${err.message}`);
+        console.debug(`Could not decode ${job.href}: ${err.message}`);
     }
-    gtsBusy = false;
-    pumpGts();
+    decodeBusy = false;
+    pumpDecode();
 }
 
-function plotGtsReport(job, rows, index) {
+function plotDecodedReport(job, rows, profile, index) {
     var values = new Map();
     for (var [id, name, value] of rows) {
         if (!values.has(id)) values.set(id, value);
@@ -1474,7 +1838,7 @@ function plotGtsReport(job, rows, index) {
         path: t.slice(t.indexOf('/') + 1),
         discipline: disciplineOf(t),
         webcam: false,
-        gts: true,
+        decodedLayer: job.kind,
         props: {
             data_id: `${props.data_id}#${index}`,
             pubtime: props.pubtime,
@@ -1483,14 +1847,14 @@ function plotGtsReport(job, rows, index) {
         links: job.feature.links || [],
         wsi: reportId(values),
         format: 'bufr',
-        color: COLORS.gts,
+        color: COLORS[job.kind],
         source: null,
-        decoded: { subsets: 1, index: 0, rows: rows },
+        decoded: { subsets: 1, index: 0, rows: rows, profile: profile },
         alt: aircraftAltitude(values, t),
         born: Date.now(),
     };
     addPoint(record);
-    gtsPlotted++;
+    decodePlotted[job.kind]++;
 }
 
 // Altitude in metres for aircraft reports (AMDAR and similar), else null:
@@ -1521,11 +1885,11 @@ function reportTime(values) {
     return new Date(Date.UTC(y, mo - 1, d, h, mi || 0)).toISOString();
 }
 
-function setGtsEnabled(enabled) {
-    gtsEnabled = enabled;
-    if (!enabled) gtsQueue = [];
+function setDecodeEnabled(kind, enabled) {
+    enabled ? decodeEnabled.add(kind) : decodeEnabled.delete(kind);
+    if (!enabled) decodeQueue = decodeQueue.filter((job) => job.kind !== kind);
     applyMapFilter();
-    pumpGts();
+    pumpDecode();
 }
 
 function rememberLinks(dataId, links) {

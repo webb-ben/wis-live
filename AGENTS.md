@@ -20,6 +20,7 @@ index.html                 Page shell: meta tags, analytics, CDN scripts, #map
 assets/js/wis.js           All application logic (no modules, no build)
 assets/css/style.css       All custom styles
 assets/py/pybufrkit-*.whl  Pure-Python wheel of pybufrkit loaded by Pyodide
+assets/data/centre-id.json Snapshot of the WMO centre-id register (fallback)
 assets/images/             Favicons
 ```
 
