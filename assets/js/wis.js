@@ -411,7 +411,12 @@ function buildPopup(record) {
             <dt>Topic</dt><dd class="pp-mono">${esc(record.path)}</dd>
         </dl>
         <div class="pp-actions"></div>
-        <div class="pp-decoded"></div>`;
+        <div class="pp-tabs" role="tablist">
+            <button type="button" role="tab" data-tab="data" aria-selected="true">Data</button>
+            <button type="button" role="tab" data-tab="forecast" aria-selected="false">Model forecast</button>
+        </div>
+        <div class="pp-decoded" data-panel="data"></div>
+        <div class="pp-forecast" data-panel="forecast" hidden></div>`;
 
     var title = div.querySelector('.pp-title');
     title.textContent = record.wsi || props.metadata_id || record.centre;
@@ -426,6 +431,18 @@ function buildPopup(record) {
         download.rel = 'noopener';
         download.textContent = `Download ${formatLabel(canonical.type)}${canonical.length ? ` (${formatBytes(canonical.length)})` : ''}`;
         actions.appendChild(download);
+    }
+    // Data and model forecast tabs; the forecast is only fetched once its tab is opened
+    var forecastOut = div.querySelector('.pp-forecast');
+    div.querySelectorAll('.pp-tabs button').forEach((button) => button.addEventListener('click', () => {
+        var key = button.dataset.tab;
+        div.querySelectorAll('.pp-tabs button').forEach((b) => b.setAttribute('aria-selected', b === button));
+        div.querySelectorAll('[data-panel]').forEach((panel) => { panel.hidden = panel.dataset.panel !== key; });
+        if (key === 'forecast' && !forecastOut.hasChildNodes()) showForecast(forecastOut, record);
+        keepPopupInView();
+    }));
+    if (!record.source && !record.decoded) {
+        out.innerHTML = '<div class="pp-status">No data to decode for this message.</div>';
     }
     // Opening a popup means wanting the data, so decode straight away
     if (record.decoded) {
@@ -1176,6 +1193,269 @@ function marineCompass(windFrom, swellFrom, heading) {
             </svg>
             <figcaption>${key}</figcaption>
         </figure>`;
+}
+
+// ---------- Model forecasts at a point, from the dynamical.org point API
+// GFS and ECMWF's AIFS (its AI model) are both deterministic runs; an ensemble
+// model would be drawn as its median with the 10th-90th percentile spread.
+// Fetched only when asked for, one batch for all models.
+const FORECAST_API = 'https://api.dynamical.org/v1/forecasts';
+const FORECAST_HOURS = 168;
+const FORECAST_VARIABLES = ['temperature_2m', 'wind_u_10m', 'wind_v_10m', 'precipitation_surface'];
+const FORECAST_MODELS = [
+    // GFS precipitation is averaged since the last 6-hourly reset rather than over each step
+    { id: 'noaa-gfs-forecast', label: 'GFS', cls: 'gfs', source: 'NOAA GFS', precipReset: 6 },
+    { id: 'ecmwf-aifs-single-forecast', label: 'ECMWF AIFS', cls: 'ecmwf', source: 'ECMWF AIFS Single' },
+];
+const FORECAST_CACHE_MS = 15 * 60 * 1000;
+const forecastCache = new Map();  // rounded "lat,lon" -> { time, promise }
+
+async function showForecast(out, record) {
+    out.innerHTML = `<div class="pp-status">Loading ${FORECAST_MODELS.map((m) => m.label).join(' and ')} forecasts…</div>`;
+    keepPopupInView();
+    try {
+        var models = await fetchForecast(record.coords);
+        renderForecast(out, models, observedNow(record));
+    } catch (err) {
+        out.innerHTML = `<div class="pp-status pp-error">${esc(err.message)}</div>`;
+        var retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'btn btn-sm btn-outline-primary pp-retry';
+        retry.textContent = 'Retry';
+        retry.addEventListener('click', () => showForecast(out, record));
+        out.appendChild(retry);
+    }
+    keepPopupInView();
+}
+
+// Nearby points share a grid cell, so reuse a recent answer rather than asking again
+function fetchForecast([lon, lat]) {
+    var key = `${(Math.round(lat * 4) / 4).toFixed(2)},${(Math.round(lon * 4) / 4).toFixed(2)}`;
+    var hit = forecastCache.get(key);
+    if (hit && Date.now() - hit.time < FORECAST_CACHE_MS) return hit.promise;
+    var promise = (async () => {
+        var response = await fetch(FORECAST_API, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ queries: FORECAST_MODELS.map((m) => ({
+                dataProductId: m.id,
+                location: { latitude: lat, longitude: lon },
+                variables: FORECAST_VARIABLES,
+                maxLeadTimeHours: FORECAST_HOURS,
+            })) }),
+        });
+        if (response.status === 429) throw new Error('The forecast service is busy; try again in a few seconds.');
+        if (!response.ok) throw new Error(`The forecast service answered ${response.status}.`);
+        var body = await response.json();
+        return FORECAST_MODELS.map((m, i) => parseForecast(m, body.results[i])).filter(Boolean);
+    })();
+    promise.catch(() => forecastCache.delete(key));
+    forecastCache.set(key, { time: Date.now(), promise });
+    if (forecastCache.size > 50) forecastCache.delete(forecastCache.keys().next().value);
+    return promise;
+}
+
+// One series per variable: { t (ms), temp, wind, precip (mm/h) }, plus ensemble
+// percentiles when the model has members
+function parseForecast(model, result) {
+    var run = result && result.forecasts && result.forecasts[0];
+    if (!run) return null;
+    var times = run.validTimes.map((t) => Date.parse(t));
+    var members = run.ensembleMembers ? run.ensembleMembers.map((m) => m.data) : [run.data];
+    var series = (data) => times.map((t, i) => {
+        var u = data.wind_u_10m[i], v = data.wind_v_10m[i], p = data.precipitation_surface[i];
+        return {
+            temp: data.temperature_2m[i],
+            wind: u === null || v === null ? null : Math.hypot(u, v),
+            precip: p === null ? null : p * 3600,  // kg m-2 s-1 to mm/h
+        };
+    });
+    var all = members.map(series);
+    var pick = (key, q) => times.map((t, i) => quantile(all.map((m) => m[i][key]).filter((v) => v !== null && isFinite(v)), q));
+    var steps = times.map((t, i) => ({
+        t,
+        temp: pick('temp', 0.5)[i], tempLo: pick('temp', 0.1)[i], tempHi: pick('temp', 0.9)[i],
+        wind: pick('wind', 0.5)[i], windLo: pick('wind', 0.1)[i], windHi: pick('wind', 0.9)[i],
+        precip: mean(all.map((m) => m[i].precip).filter((v) => v !== null && isFinite(v))),
+    }));
+    return { ...model, init: run.initTime, ensemble: members.length > 1, members: members.length, steps,
+        point: result.point && result.point.selected };
+}
+
+function quantile(values, q) {
+    if (!values.length) return null;
+    var sorted = values.slice().sort((a, b) => a - b);
+    var pos = (sorted.length - 1) * q, lo = Math.floor(pos);
+    return sorted[lo] + (sorted[Math.min(lo + 1, sorted.length - 1)] - sorted[lo]) * (pos - lo);
+}
+
+function mean(values) {
+    return values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
+}
+
+// The station's own latest temperature and wind, once its data is decoded
+function observedNow(record) {
+    var rows = record.decoded && record.decoded.rows;
+    if (!rows) return null;
+    var values = new Map();
+    for (var [id, , value] of rows) {
+        if (!values.has(id) && typeof value === 'number') values.set(id, value);
+    }
+    var t = values.get(12101) !== undefined ? values.get(12101) : values.get(12001);
+    var time = Date.parse(record.props.datetime || reportTime(values) || '');
+    if (!isFinite(time)) return null;
+    return { t: time, temp: t !== undefined ? t - 273.15 : null, wind: values.has(11002) ? values.get(11002) : null };
+}
+
+// Precipitation as 6-hour totals, so hourly and 3-hourly steps compare. Each
+// step's rate covers the time back to the step before it, except where the
+// model averages since a 6-hourly reset: then the step at each reset holds
+// the average of the whole 6 hours.
+function sixHourly(steps, model) {
+    var bins = new Map();
+    if (model && model.precipReset) {
+        var init = Date.parse(model.init), every = model.precipReset * 3600e3;
+        steps.forEach((s) => {
+            if (s.t > init && (s.t - init) % every === 0 && s.precip !== null) bins.set(s.t - every, s.precip * model.precipReset);
+        });
+        return [...bins].map(([t, mm]) => ({ t, mm }));
+    }
+    steps.forEach((s, i) => {
+        if (!i || s.precip === null) return;
+        var hours = (s.t - steps[i - 1].t) / 3600e3;
+        var bin = Math.floor((s.t - 1) / 21600e3) * 21600e3;
+        bins.set(bin, (bins.get(bin) || 0) + s.precip * hours);
+    });
+    return [...bins].map(([t, mm]) => ({ t, mm }));
+}
+
+function renderForecast(out, models, observed) {
+    if (!models.length) {
+        out.innerHTML = '<div class="pp-status">No forecast for this location.</div>';
+        return;
+    }
+    var runs = models.map((m) => `${m.label} ${m.init.slice(11, 13)}Z ${m.init.slice(5, 10)}`).join(' · ');
+    out.innerHTML = `
+        <div class="pp-status">Next 7 days at this location</div>
+        <div class="forecast-chart"></div>
+        <div class="forecast-key">
+            ${models.map((m) => `<span><i class="forecast-key-${m.cls}"></i>${esc(m.label)}${m.ensemble ? ` median, 10–90% of ${m.members} members` : ''}</span>`).join('')}
+            ${observed ? '<span><i class="forecast-key-obs"></i>Observed</span>' : ''}
+        </div>
+        <div class="pp-status forecast-credit">Runs: ${esc(runs)} UTC. Data: ${esc(models.map((m) => m.source).join(' and '))} via
+            <a href="https://dynamical.org/" target="_blank" rel="noopener">dynamical.org</a>, CC BY 4.0.</div>`;
+    renderForecastChart(out.querySelector('.forecast-chart'), models, observed, { width: 300, height: 250 });
+}
+
+// Temperature, wind and 6-hour precipitation panels on one time axis
+function renderForecastChart(container, models, observed, opts) {
+    var W = opts.width, H = opts.height;
+    var m = { top: 6, right: 8, bottom: 18, left: 30 };
+    var w = W - m.left - m.right;
+    var gap = 8, panelH = (H - m.top - m.bottom - 2 * gap) / 3;
+    var panels = [0, 1, 2].map((i) => ({ top: m.top + i * (panelH + gap), bottom: m.top + i * (panelH + gap) + panelH }));
+    var t0 = Math.min(...models.map((mo) => mo.steps[0].t), observed ? observed.t : Infinity);
+    var t1 = Math.min(Date.now() + FORECAST_HOURS * 3600e3, Math.max(...models.map((mo) => mo.steps[mo.steps.length - 1].t)));
+    var x = (t) => m.left + w * (t - t0) / (t1 - t0);
+    var inRange = (s) => s.t >= t0 && s.t <= t1;
+
+    var svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: 'forecast', role: 'img',
+        'aria-label': 'Forecast temperature, wind speed and precipitation from GFS and ECMWF AIFS' });
+    svgEl('rect', { x: 0, y: 0, width: W, height: H, class: 'skewt-bg' }, svg);
+
+    // Day boundaries (UTC) with labels along the bottom
+    var day = new Date(t0);
+    day.setUTCHours(24, 0, 0, 0);
+    for (var d = day.getTime(); d < t1; d += 86400e3) {
+        svgEl('line', { x1: x(d), x2: x(d), y1: m.top, y2: H - m.bottom, class: 'skewt-isobar' }, svg);
+        if (x(d) < m.left + w - 12) {
+            svgEl('text', { x: x(d) + 2, y: H - 5, class: 'skewt-label' }, svg)
+                .textContent = new Date(d).toLocaleDateString(undefined, { weekday: 'short', timeZone: 'UTC' });
+        }
+    }
+    if (Date.now() > t0 && Date.now() < t1) {
+        svgEl('line', { x1: x(Date.now()), x2: x(Date.now()), y1: m.top, y2: H - m.bottom, class: 'forecast-now' }, svg);
+    }
+
+    var panel = (i, key, unit, floor) => {
+        var { top, bottom } = panels[i];
+        var vals = [];
+        models.forEach((mo) => mo.steps.filter(inRange).forEach((s) => vals.push(s[key], s[key + 'Lo'], s[key + 'Hi'])));
+        if (observed && observed[key] !== null && observed[key] !== undefined) vals.push(observed[key]);
+        vals = vals.filter((v) => v !== null && v !== undefined && isFinite(v));
+        if (!vals.length) return null;
+        var lo = floor !== undefined ? floor : Math.floor(Math.min(...vals)), hi = Math.ceil(Math.max(...vals));
+        if (hi - lo < 4) { hi = lo + 4; }
+        var y = (v) => bottom - (bottom - top) * (v - lo) / (hi - lo);
+        svgEl('rect', { x: m.left, y: top, width: w, height: bottom - top, class: 'skewt-frame' }, svg);
+        [lo, hi].forEach((v) => {
+            svgEl('text', { x: m.left - 3, y: y(v) + 3.5, class: 'skewt-label', 'text-anchor': 'end' }, svg).textContent = v;
+        });
+        svgEl('text', { x: m.left + 3, y: top + 9, class: 'skewt-label forecast-unit' }, svg).textContent = unit;
+        return y;
+    };
+    var line = (steps, key, y, cls) => {
+        var pts = steps.filter((s) => inRange(s) && s[key] !== null).map((s) => `${x(s.t).toFixed(1)},${y(s[key]).toFixed(1)}`);
+        if (pts.length > 1) svgEl('polyline', { points: pts.join(' '), class: cls }, svg);
+    };
+    var band = (steps, key, y, cls) => {
+        var ok = steps.filter((s) => inRange(s) && s[key + 'Lo'] !== null && s[key + 'Hi'] !== null);
+        if (ok.length < 2) return;
+        var pts = ok.map((s) => `${x(s.t).toFixed(1)},${y(s[key + 'Hi']).toFixed(1)}`)
+            .concat(ok.slice().reverse().map((s) => `${x(s.t).toFixed(1)},${y(s[key + 'Lo']).toFixed(1)}`));
+        svgEl('polygon', { points: pts.join(' '), class: cls }, svg);
+    };
+
+    [['temp', '°C'], ['wind', 'wind m/s', 0]].forEach(([key, unit, floor], i) => {
+        var y = panel(i, key, unit, floor);
+        if (!y) return;
+        models.filter((mo) => mo.ensemble).forEach((mo) => band(mo.steps, key, y, `forecast-band forecast-${mo.cls}`));
+        models.forEach((mo) => line(mo.steps, key, y, `forecast-line forecast-${mo.cls}`));
+        if (observed && observed[key] !== null && observed[key] !== undefined && observed.t >= t0) {
+            svgEl('circle', { cx: x(observed.t), cy: y(observed[key]), r: 3, class: 'forecast-obs' }, svg);
+        }
+    });
+
+    // Precipitation: 6-hour totals, one narrow bar per model side by side
+    var totals = models.map((mo) => sixHourly(mo.steps, mo).filter((b) => b.t + 21600e3 > t0 && b.t < t1));
+    var maxMm = Math.max(1, ...totals.flat().map((b) => b.mm));
+    var { top, bottom } = panels[2];
+    var yP = (v) => bottom - (bottom - top) * v / maxMm;
+    svgEl('rect', { x: m.left, y: top, width: w, height: bottom - top, class: 'skewt-frame' }, svg);
+    svgEl('text', { x: m.left - 3, y: top + 6, class: 'skewt-label', 'text-anchor': 'end' }, svg).textContent = Number(maxMm.toFixed(maxMm < 10 ? 1 : 0));
+    svgEl('text', { x: m.left - 3, y: bottom + 3, class: 'skewt-label', 'text-anchor': 'end' }, svg).textContent = 0;
+    svgEl('text', { x: m.left + 3, y: top + 9, class: 'skewt-label forecast-unit' }, svg).textContent = 'mm / 6 h';
+    var barW = Math.max(1, (x(t0 + 21600e3) - x(t0)) / models.length - 0.5);
+    totals.forEach((bins, k) => bins.forEach((b) => {
+        if (b.mm < 0.05) return;
+        var left = Math.max(m.left, x(b.t) + k * barW);
+        svgEl('rect', { x: left, y: yP(b.mm), width: barW, height: bottom - yP(b.mm), class: `forecast-bar forecast-${models[k].cls}` }, svg);
+    }));
+
+    // Hover readout
+    var readout = svgEl('text', { x: W - m.right - 3, y: m.top + 9, class: 'skewt-readout', 'text-anchor': 'end' }, svg);
+    var guide = svgEl('line', { y1: m.top, y2: H - m.bottom, class: 'skewt-guide', visibility: 'hidden' }, svg);
+    svg.addEventListener('mousemove', (e) => {
+        var box = svg.getBoundingClientRect();
+        var t = t0 + ((e.clientX - box.left) * W / box.width - m.left) / w * (t1 - t0);
+        if (t < t0 || t > t1) return;
+        guide.setAttribute('x1', x(t));
+        guide.setAttribute('x2', x(t));
+        guide.setAttribute('visibility', 'visible');
+        var at = (mo) => mo.steps.reduce((a, b) => (Math.abs(b.t - t) < Math.abs(a.t - t) ? b : a));
+        readout.textContent = [
+            new Date(t).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', timeZone: 'UTC' }) + ' UTC',
+            ...models.map((mo) => {
+                var s = at(mo);
+                return `${mo.label} ${s.temp !== null ? s.temp.toFixed(0) + '°' : '–'} ${s.wind !== null ? s.wind.toFixed(0) + ' m/s' : ''}`.trim();
+            }),
+        ].join(' · ');
+    });
+    svg.addEventListener('mouseleave', () => {
+        guide.setAttribute('visibility', 'hidden');
+        readout.textContent = '';
+    });
+    container.replaceChildren(svg);
 }
 
 // ---------- Upper-air sounding (TEMP) viewer: Skew-T log-P diagram

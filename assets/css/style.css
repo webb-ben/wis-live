@@ -841,12 +841,14 @@
   color: #495057;
   font-size: 12px;
 }
+.pp-tabs,
 .citypage-tabs {
   display: flex;
   gap: 2px;
   margin: 8px 0 6px;
   border-bottom: 1px solid #dee2e6;
 }
+.pp-tabs button,
 .citypage-tabs button {
   margin-bottom: -1px;
   padding: 3px 8px;
@@ -856,6 +858,7 @@
   color: #6c757d;
   font-size: 12px;
 }
+.pp-tabs button[aria-selected="true"],
 .citypage-tabs button[aria-selected="true"] {
   border-color: #dee2e6 #dee2e6 #ffffff;
   background-color: #ffffff;
@@ -879,4 +882,64 @@
 .citypage-text {
   max-height: 180px;
   overflow-y: auto;
+}
+
+.forecast {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  font-family: system-ui, sans-serif;
+}
+.forecast-line {
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+}
+.forecast-line.forecast-gfs { stroke: #e8590c; }
+.forecast-line.forecast-ecmwf { stroke: #1864ab; }
+.forecast-band.forecast-ecmwf { fill: #1864ab; fill-opacity: 0.15; }
+.forecast-bar.forecast-gfs { fill: #e8590c; fill-opacity: 0.7; }
+.forecast-bar.forecast-ecmwf { fill: #1864ab; fill-opacity: 0.7; }
+.forecast-obs {
+  fill: #212529;
+  stroke: #ffffff;
+  stroke-width: 1;
+}
+.forecast-now {
+  stroke: #212529;
+  stroke-dasharray: 2 2;
+}
+.forecast-unit {
+  fill: #868e96;
+  paint-order: stroke;
+  stroke: #ffffff;
+  stroke-width: 3px;
+}
+.forecast-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  margin-top: 2px;
+  color: #495057;
+  font-size: 11px;
+}
+.forecast-key i {
+  display: inline-block;
+  width: 12px;
+  height: 3px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.forecast-key-gfs { background-color: #e8590c; }
+.forecast-key-ecmwf { background-color: #1864ab; }
+.forecast-key-obs { width: 7px !important; height: 7px !important; border-radius: 50%; background-color: #212529; }
+.forecast-credit {
+  margin-top: 4px;
+  font-size: 10px;
+}
+.pp-tabs {
+  margin-top: 4px;
+}
+.pp-tabs button {
+  font-size: 13px;
 }
