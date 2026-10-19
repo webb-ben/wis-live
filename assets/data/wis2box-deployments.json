@@ -311,6 +311,42 @@
    "country": "Belarus",
    "url": "https://wis2box.belgidromet.by",
    "manual": true
+  },
+  {
+   "centre": "ir-irimo",
+   "country": "Iran",
+   "url": "https://wis2.irimo.ir",
+   "manual": true
+  },
+  {
+   "centre": "at-geosphere",
+   "country": "Austria",
+   "url": "https://wis2.geosphere.at",
+   "manual": true
+  },
+  {
+   "centre": "hk-hko",
+   "country": "Hong Kong",
+   "url": "https://20.239.90.71",
+   "manual": true
+  },
+  {
+   "centre": "ua-hmc",
+   "country": "Ukraine",
+   "url": "https://wis2.meteo.gov.ua",
+   "manual": true
+  },
+  {
+   "centre": "bd-bmd",
+   "country": "Bangladesh",
+   "url": "https://wis2node.bmd.gov.bd",
+   "manual": true
+  },
+  {
+   "centre": "et-ethiomet",
+   "country": "Ethiopia",
+   "url": "https://wis2.ethiomet.gov.et",
+   "manual": true
   }
  ]
 }
