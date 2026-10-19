@@ -1056,6 +1056,16 @@
 .info-open .infobar {
   transform: none;
 }
+/* The panel's content scrolls inside it (the close button stays put); on a
+   phone, scrolling stops at the panel instead of moving the page */
+.infobar-body {
+  flex: 1;
+  min-height: 0;
+  padding: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
 .infobar-close {
   position: absolute;
   top: 10px;
@@ -1322,8 +1332,11 @@
   padding-top: 2px;
   border-top: 1px solid #e9ecef;
 }
-.key-shapes .legend-dot:not(:first-child) {
-  margin-left: 8px;
+.key-shape {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 8px;
+  white-space: nowrap;
 }
 .map-key-edit {
   margin-left: auto;
@@ -1528,4 +1541,160 @@
 .infobar-close:hover {
   background-color: #e9ecef;
   opacity: 1;
+}
+
+/* Other sources (NOAA): their own section colour, and squares for symbols */
+.legend-section-other {
+  --accent: #495057;
+  --tint: #f8f9fa;
+}
+.legend-section-other .legend-sample {
+  --outline: #6c757d;
+  box-shadow: none;
+}
+.legend-section-other .legend-dot,
+.legend-dot.key-square,
+.pp-dot.is-ext {
+  border-radius: 2px;
+}
+
+/* The wind arrow in the map key */
+.key-arrow {
+  display: inline-block;
+  width: 14px;
+  margin-right: 4px;
+  color: #495057;
+  text-align: center;
+  transform: rotate(-45deg);
+}
+.key-note .key-arrow {
+  vertical-align: top;
+}
+
+/* Phones: the sidebar covers the map, the info panel is a sheet across the
+   bottom (the map above keeps the selected point in view), and the key shows
+   only its scale until tapped */
+@media (max-width: 600px) {
+  .queue {
+    width: 100vw;
+    max-width: 100vw;
+    border-right: 0;
+  }
+  .queue-open .maplibregl-ctrl-top-left,
+  .queue-open .maplibregl-ctrl-bottom-left {
+    left: 0;
+  }
+  .infobar {
+    top: auto;
+    left: 0;
+    width: auto;
+    max-width: none;
+    height: 55vh;
+    height: 55dvh;
+    border-left: 0;
+    border-top: 1px solid #dee2e6;
+    border-radius: 14px 14px 0 0;
+    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.15);
+    transform: translateY(100%);
+    transition: transform 0.2s, height 0.2s, border-radius 0.2s;
+  }
+  .info-open .infobar {
+    transform: none;
+  }
+  .infobar.infobar-full {
+    height: 100vh;
+    height: 100dvh;
+    border-radius: 0;
+  }
+  /* A grab bar, so the sheet reads as one */
+  .infobar::before {
+    content: '';
+    flex: none;
+    width: 36px;
+    height: 4px;
+    margin: 6px auto 0;
+    border-radius: 2px;
+    background-color: #ced4da;
+  }
+  .infobar-close {
+    top: 12px;
+  }
+  .infobar-body {
+    padding: 4px 12px 12px;
+  }
+  .info-open .maplibregl-ctrl-top-right {
+    right: 0;
+  }
+  .info-open .maplibregl-ctrl-bottom-right {
+    right: 0;
+    bottom: 55dvh;
+  }
+  .map-key {
+    max-width: 170px;
+    padding: 4px 8px;
+    font-size: 11px;
+    line-height: 1.5;
+    cursor: pointer;
+  }
+  .map-key:not(.map-key-open) .key-note,
+  .map-key:not(.map-key-open) .key-shapes {
+    display: none;
+  }
+  .map-key:not(.map-key-open) .key-title::after {
+    content: ' ▾';
+    color: #868e96;
+  }
+}
+
+/* New messages held while the list is being read */
+.queue-pane-messages {
+  position: relative;
+}
+.queue-new {
+  position: absolute;
+  top: 44px;
+  left: 50%;
+  z-index: 2;
+  transform: translateX(-50%);
+  padding: 3px 12px;
+  border: 0;
+  border-radius: 999px;
+  background-color: #1c7ed6;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.queue-new[hidden] {
+  display: none;
+}
+/* Rows just added are briefly highlighted, so a batch reads as new */
+.queue-list > li {
+  animation: queue-arrive 2s ease-out;
+}
+@keyframes queue-arrive {
+  from { background-color: #e7f5ff; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .queue-list > li {
+    animation: none;
+  }
+}
+
+/* The wis2box version a message was published with */
+.queue-wis2box {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background-color: #f1f3f5;
+  color: #495057;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* Messages from the Global Replay service */
+.pp-badge.pp-replay {
+  background-color: #edf2ff;
+  color: #3b5bdb;
 }
