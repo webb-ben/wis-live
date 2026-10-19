@@ -347,6 +347,36 @@
    "country": "Ethiopia",
    "url": "https://wis2.ethiomet.gov.et",
    "manual": true
+  },
+  {
+   "centre": "cv-inmg",
+   "country": "Cabo Verde",
+   "url": "http://197.255.136.212:8080",
+   "manual": true
+  },
+  {
+   "centre": "ci-sodexam",
+   "country": "Côte d'Ivoire",
+   "url": "https://wis2.sodexam.ci",
+   "manual": true
+  },
+  {
+   "centre": "gy-hydromet",
+   "country": "Guyana",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "pa-imhpa",
+   "country": "Panama",
+   "url": "https://sensored.imhpa.gob.pa",
+   "manual": true
+  },
+  {
+   "centre": "sl-slmet",
+   "country": "Sierra Leone",
+   "url": "https://wis2.slmet.gov.sl",
+   "manual": true
   }
  ]
 }

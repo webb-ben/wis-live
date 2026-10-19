@@ -707,6 +707,14 @@ map.on('load', () => {
 // Adds a point, or returns the record already drawn for the same observation.
 // The origin and every global cache each republish an observation, so a cache
 // copy replaces an origin one but later copies are skipped.
+// The latest report on the map from each station, so a replayed report that is
+// older than one already here can be left out (bounded by the points on the map)
+const latestByStation = new Map();  // station id -> record
+
+function observedAt(record) {
+    return Date.parse(record.props.datetime || '') || record.born;
+}
+
 function addPoint(record) {
     var existing = byDataId.get(record.props.data_id);
     if (existing && records.has(existing.id)) {
@@ -716,6 +724,10 @@ function addPoint(record) {
     if (record.props.data_id) byDataId.set(record.props.data_id, record);
 
     records.set(record.id, record);
+    if (record.wsi) {
+        var latest = latestByStation.get(record.wsi);
+        if (!latest || !records.has(latest.id) || observedAt(record) >= observedAt(latest)) latestByStation.set(record.wsi, record);
+    }
     var feature = {
         type: 'Feature',
         id: record.id,
@@ -814,6 +826,7 @@ function removePoint(record) {
     pools[record.decodedLayer ? 'decoded' : 'wis2'].delete(record.id);
     if (byDataId.get(record.props.data_id) === record) byDataId.delete(record.props.data_id);
     if (record.track && latestOnTrack.get(record.track) === record) latestOnTrack.delete(record.track);
+    if (record.wsi && latestByStation.get(record.wsi) === record) latestByStation.delete(record.wsi);
     var queued = toAdd.length;
     toAdd = toAdd.filter((f) => f.id !== record.id);
     if (toAdd.length === queued) toRemove.push(record.id);
@@ -1050,7 +1063,7 @@ function updateMapKey() {
         rows.push(`<div class="key-title">${esc(m.label)} (${esc(m.unit)})</div>`);
         rows.push(`<div class="legend-scale"><span>${scaleLabel(m.stops[0][0])}</span><i style="background: linear-gradient(90deg, ${m.stops.map(([, c]) => c).join(', ')})"></i><span>${scaleLabel(m.stops[m.stops.length - 1][0])}</span></div>`);
         // With "Require value" on, points without one aren't drawn, so there's nothing to explain
-        if (!colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}No value yet</div>`);
+        if (!colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}No value, or not measured</div>`);
     } else {
         for (var [key, c] of Object.entries(OBS_CLASSES)) {
             var shapes = [drawn(`cache-${key}`) && 'circle', drawn(`gts-${key}`) && 'diamond'].filter(Boolean);
@@ -3670,6 +3683,15 @@ function onMessage(topic, feature, replay) {
 
     var props = feature.properties || {};
     var links = feature.links || [];
+    // A replayed report the map already has a report as recent from the same station
+    // for is neither drawn nor decoded
+    if (replay) {
+        var station = stationId(props), latest = station && latestByStation.get(station);
+        if (latest && records.has(latest.id) && observedAt(latest) >= (Date.parse(props.datetime || '') || 0)) return null;
+        // Replays come newest published first, so a late-published older report may be
+        // here already; the newer one takes its place
+        if (latest && records.has(latest.id) && latest.replay) removePoint(latest);
+    }
 
     var [channel, t] = topic.split('/a/wis2/');
     var webcam = t.includes('webcam');
@@ -4232,18 +4254,26 @@ function setColourBy(key, legend) {
     colourBy = key;
     var m = METRICS[key];
     var color = ['get', 'color'];
+    var swathColor = color;
+    var originRing = ['get', 'color'];
     if (m) {
         var value = ['get', `m_${key}`];
         var target = isColourTarget();
+        var scaled = ['interpolate', ['linear'], value, ...m.stops.flat()];
+        // Everything the measure doesn't colour is grey, so no kind's colour reads as a
+        // value on the scale; aircraft keep theirs under surface measures (never coloured)
+        var kept = m.targets === 'satellite' ? false : IS_AIRCRAFT;
         color = ['case',
-            ['all', target, ['has', `m_${key}`]], ['interpolate', ['linear'], value, ...m.stops.flat()],
-            target, NO_VALUE_COLOR,
-            ['get', 'color']];
+            ['all', target, ['has', `m_${key}`]], scaled,
+            kept, ['get', 'color'],
+            NO_VALUE_COLOR];
+        swathColor = ['case', ['all', target, ['has', `m_${key}`]], scaled, ['get', 'color']];
+        originRing = ['case', kept, ['get', 'color'], NO_VALUE_COLOR];
         // Outlines follow the same scale, darkened
         var outline = ['case',
             ['all', target, ['has', `m_${key}`]], ['interpolate', ['linear'], value, ...m.stops.flatMap(([v, c]) => [v, darken(c)])],
-            target, darken(NO_VALUE_COLOR),
-            ['get', 'outline']];
+            kept, ['get', 'outline'],
+            darken(NO_VALUE_COLOR)];
     }
     // Calm reports under a wind measure are empty: an outline with no fill
     var pointColor = windArrows()
@@ -4251,7 +4281,7 @@ function setColourBy(key, legend) {
         : color;
     map.setPaintProperty('points', 'circle-color', pointColor);
     map.setPaintProperty('points-gts', 'icon-halo-color', m ? outline : ['get', 'outline']);
-    map.setPaintProperty('points', 'circle-stroke-color', ['case', ['get', 'origin'], ['get', 'color'], m ? outline : ['get', 'outline']]);
+    map.setPaintProperty('points', 'circle-stroke-color', ['case', ['get', 'origin'], originRing, m ? outline : ['get', 'outline']]);
     map.setPaintProperty('points-gts', 'icon-color', pointColor);
     map.setPaintProperty('points-ext', 'icon-color', pointColor);
     map.setPaintProperty('points-ext', 'icon-halo-color', m ? outline : ['get', 'outline']);
@@ -4264,7 +4294,7 @@ function setColourBy(key, legend) {
             1, ['*', 0.6, length], 6, ['*', 0.9, length], 10, ['*', 1.2, length]]);
         map.setLayoutProperty('points-arrow', 'symbol-sort-key', ['-', 0, speed]);
     }
-    map.setPaintProperty('swaths-fill', 'fill-color', color);
+    map.setPaintProperty('swaths-fill', 'fill-color', swathColor);
     paintAge();
     // The sidebar's scale is optional (the map key always has one), so only fill it in if it has its parts
     var scale = legend.querySelector('.legend-scale');
