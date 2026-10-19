@@ -1,0 +1,472 @@
+{
+ "source": "https://demo.wis2box.wis.wmo.int/deployments.geojson",
+ "retrieved": "2026-10-19",
+ "deployments": [
+  {
+   "centre": "dz-meteoalgerie",
+   "country": "Algeria",
+   "url": "http://ametwis2box.meteo.dz"
+  },
+  {
+   "centre": "ar-smn",
+   "country": "Argentina",
+   "url": "http://w2b.smn.gov.ar"
+  },
+  {
+   "centre": "bz-nms",
+   "country": "Belize",
+   "url": "https://wis.nms.gov.bz"
+  },
+  {
+   "centre": "bj-meteobenin",
+   "country": "Benin",
+   "url": "https://wis2.meteobenin.bj"
+  },
+  {
+   "centre": "bn-bdmd",
+   "country": "Brunei",
+   "url": "http://202.160.11.207"
+  },
+  {
+   "centre": "br-inmet",
+   "country": "Brazil",
+   "url": "http://wis2bra.inmet.gov.br"
+  },
+  {
+   "centre": "bg-nimh",
+   "country": "Bulgaria",
+   "url": "https://demo.wis2box.wis.wmo.int"
+  },
+  {
+   "centre": "bi-igebu",
+   "country": "Burundi",
+   "url": "https://wis2.igebu.bi"
+  },
+  {
+   "centre": "bf-anam",
+   "country": "Burkino Faso",
+   "url": "https://wis2.meteoburkina.bf"
+  },
+  {
+   "centre": "cm-meteocameroon",
+   "country": "Cameroon",
+   "url": "http://wis2africa.marocmeteo.ma/urn:x-wmo:md:cm-meteocameroon:surface-based-observations.synop"
+  },
+  {
+   "centre": "td-anam",
+   "country": "Chad",
+   "url": "https://wis2.meteotchad.org"
+  },
+  {
+   "centre": "cl-meteochile",
+   "country": "Chile",
+   "url": "http://wischile.meteochile.gob.cl"
+  },
+  {
+   "centre": "cn-cma",
+   "country": "China",
+   "url": "http://wis2node.wis.cma.cn"
+  },
+  {
+   "centre": "co-ideam",
+   "country": "Colombia",
+   "url": "https://wis.ideam.gov.co"
+  },
+  {
+   "centre": "cr-imn",
+   "country": "Costa Rica",
+   "url": "http://wis2box.imn.ac.cr"
+  },
+  {
+   "centre": "cu-insmet",
+   "country": "Cuba",
+   "url": "http://wis.insmet.cu"
+  },
+  {
+   "centre": "ec-inamhi",
+   "country": "Ecuador",
+   "url": "http://wis.inamhi.gob.ec"
+  },
+  {
+   "centre": "sz-swazimet",
+   "country": "Eswatini",
+   "url": "http://136.156.134.190"
+  },
+  {
+   "centre": "fr-meteofrance",
+   "country": "France",
+   "url": "https://wis2nc.meteo.fr"
+  },
+  {
+   "centre": "gn-anm",
+   "country": "Guinea",
+   "url": "https://wis2.anmeteo.gov.gn"
+  },
+  {
+   "centre": "gh-gmet",
+   "country": "Ghana",
+   "url": "https://wis2.meteo.gov.gh"
+  },
+  {
+   "centre": "hn-cenaos",
+   "country": "Honduras",
+   "url": "http://wiscenaos.copeco.gob.hn"
+  },
+  {
+   "centre": "in-imd",
+   "country": "India",
+   "url": "http://wis2box.imd.gov.in"
+  },
+  {
+   "centre": "id-bmkg",
+   "country": "Indonesia",
+   "url": "https://wis2node.bmkg.go.id"
+  },
+  {
+   "centre": "kz-kazhydromet",
+   "country": "Kazakhstan",
+   "url": "https://wis2box.kazhydromet.kz",
+   "manual": true
+  },
+  {
+   "centre": "ke-meteo",
+   "country": "Kenya",
+   "url": "http://wis.meteo.go.ke"
+  },
+  {
+   "centre": "kg-kyrgyzhydromet",
+   "country": "Kyrgyzstan",
+   "url": "http://wis2box.meteo.kg"
+  },
+  {
+   "centre": "ly-lnmc",
+   "country": "Libya",
+   "url": "http://102.221.8.94"
+  },
+  {
+   "centre": "my-metmalaysia",
+   "country": "Malaysia",
+   "url": "http://wis2node.met.gov.my"
+  },
+  {
+   "centre": "mw-dccms",
+   "country": "Malawi",
+   "url": "https://wis2.metmalawi.gov.mw"
+  },
+  {
+   "centre": "ml-malimeteo",
+   "country": "Mali",
+   "url": "http://wis2.malimeteo.ml"
+  },
+  {
+   "centre": "ma-marocmeteo",
+   "country": "Morocco",
+   "url": "http://wis2box.marocmeteo.ma"
+  },
+  {
+   "centre": "mz-inam",
+   "country": "Mozambique",
+   "url": "https://wis2.inam.gov.mz"
+  },
+  {
+   "centre": "na-meteona",
+   "country": "Namibia",
+   "url": "http://wis2box.meteona.com"
+  },
+  {
+   "centre": "ng-nimet",
+   "country": "Nigeria",
+   "url": "http://wis2.nimet.gov.ng"
+  },
+  {
+   "centre": "nz-metservice",
+   "country": "New Zealand",
+   "url": "https://wis2.metservice.com"
+  },
+  {
+   "centre": "pg-pngnws",
+   "country": "Papua New Guinea",
+   "url": "https://wis2.pngmet.gov.pg"
+  },
+  {
+   "centre": "py-dinac-dmh",
+   "country": "Paraguay",
+   "url": "http://wis2py.meteorologia.gov.py"
+  },
+  {
+   "centre": "pe-senamhi",
+   "country": "Peru",
+   "url": "https://wis.senamhi.gob.pe"
+  },
+  {
+   "centre": "pl-imgw",
+   "country": "Poland",
+   "url": "https://wis2-pilot.imgw.pl"
+  },
+  {
+   "centre": "cg-met",
+   "country": "Republic of Congo",
+   "url": "http://wis.dirmet.cg"
+  },
+  {
+   "centre": "kr-kma",
+   "country": "Republic of Korea",
+   "url": "https://wis2box.kma.go.kr"
+  },
+  {
+   "centre": "ru-roshydromet",
+   "country": "Russian Federation",
+   "url": "http://wis2box.mecom.ru"
+  },
+  {
+   "centre": "rw-rma",
+   "country": "Rwanda",
+   "url": "http://wis2.meteorwanda.gov.rw"
+  },
+  {
+   "centre": "rs-rhmz",
+   "country": "Serbia",
+   "url": "https://wis2.hidmet.gov.rs"
+  },
+  {
+   "centre": "sc-seychelles-met",
+   "country": "Seychelles",
+   "url": "https://wis2.meteo.sc"
+  },
+  {
+   "centre": "za-weathersa",
+   "country": "South Africa",
+   "url": "http://wis.weathersa.co.za"
+  },
+  {
+   "centre": "ss-ssms",
+   "country": "South Sudan",
+   "url": "https://wis2.meteosouthsudan.com.ss"
+  },
+  {
+   "centre": "tz-tma",
+   "country": "Tanzania",
+   "url": "http://wis2node.meteo.go.tz"
+  },
+  {
+   "centre": "th-tmd",
+   "country": "Thailand",
+   "url": "http://203.155.200.119"
+  },
+  {
+   "centre": "tg-anamet",
+   "country": "Togo",
+   "url": "https://wis2.meteotogo.tg"
+  },
+  {
+   "centre": "tt-trin-met",
+   "country": "Trinidad and Tobago",
+   "url": "https://wis.metoffice.gov.tt"
+  },
+  {
+   "centre": "us-noaa-synoptic",
+   "country": "United States of America",
+   "url": "https://wis2box.synopticdata.com"
+  },
+  {
+   "centre": "uy-inumet",
+   "country": "Uruguay",
+   "url": "https://w2b.inumet.gub.uy"
+  },
+  {
+   "centre": "ve-inameh",
+   "country": "Venezuela",
+   "url": "http://wis2ven.inameh.gob.ve"
+  },
+  {
+   "centre": "zm-zmd",
+   "country": "Zambia",
+   "url": "https://zmdwis2box.mgee.gov.zm"
+  },
+  {
+   "centre": "zw-msd",
+   "country": "Zimbabwe",
+   "url": "https://wis2.weatherzw.org.zw"
+  },
+  {
+   "centre": "be-rmib",
+   "country": "Belgium",
+   "url": "https://wis2node.meteo.be",
+   "manual": true
+  },
+  {
+   "centre": "mx-smn",
+   "country": "Mexico",
+   "url": "https://wis-smn.conagua.gob.mx",
+   "manual": true
+  },
+  {
+   "centre": "sn-anacim",
+   "country": "Senegal",
+   "url": "http://213.154.77.59:8002",
+   "manual": true
+  },
+  {
+   "centre": "by-belgidromet",
+   "country": "Belarus",
+   "url": "https://wis2box.belgidromet.by",
+   "manual": true
+  },
+  {
+   "centre": "ir-irimo",
+   "country": "Iran",
+   "url": "https://wis2.irimo.ir",
+   "manual": true
+  },
+  {
+   "centre": "at-geosphere",
+   "country": "Austria",
+   "url": "https://wis2.geosphere.at",
+   "manual": true
+  },
+  {
+   "centre": "hk-hko",
+   "country": "Hong Kong",
+   "url": "https://20.239.90.71",
+   "manual": true
+  },
+  {
+   "centre": "ua-hmc",
+   "country": "Ukraine",
+   "url": "https://wis2.meteo.gov.ua",
+   "manual": true
+  },
+  {
+   "centre": "bd-bmd",
+   "country": "Bangladesh",
+   "url": "https://wis2node.bmd.gov.bd",
+   "manual": true
+  },
+  {
+   "centre": "et-ethiomet",
+   "country": "Ethiopia",
+   "url": "https://wis2.ethiomet.gov.et",
+   "manual": true
+  },
+  {
+   "centre": "cv-inmg",
+   "country": "Cabo Verde",
+   "url": "http://197.255.136.212:8080",
+   "manual": true
+  },
+  {
+   "centre": "ci-sodexam",
+   "country": "Côte d'Ivoire",
+   "url": "https://wis2.sodexam.ci",
+   "manual": true
+  },
+  {
+   "centre": "ag-antiguamet",
+   "country": "Antigua and Barbuda",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "ai-metservice",
+   "country": "Anguilla",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "bs-metservice",
+   "country": "Bahamas",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "dm-dms",
+   "country": "Dominica",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "gd-metservice",
+   "country": "Grenada",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "gy-hydromet",
+   "country": "Guyana",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "jm-msj",
+   "country": "Jamaica",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "kn-metservice",
+   "country": "Saint Kitts and Nevis",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "ky-cinws",
+   "country": "Cayman Islands",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "lc-metservice",
+   "country": "Saint Lucia",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "ms-metservice",
+   "country": "Montserrat",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "sr-metservice",
+   "country": "Suriname",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "sx-metservice",
+   "country": "Sint Maarten",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "tc-metservice",
+   "country": "Turks and Caicos Islands",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "vc-metservice",
+   "country": "Saint Vincent and the Grenadines",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "vg-metservice",
+   "country": "British Virgin Islands",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "pa-imhpa",
+   "country": "Panama",
+   "url": "https://sensored.imhpa.gob.pa",
+   "manual": true
+  },
+  {
+   "centre": "sl-slmet",
+   "country": "Sierra Leone",
+   "url": "https://wis2.slmet.gov.sl",
+   "manual": true
+  }
+ ]
+}
