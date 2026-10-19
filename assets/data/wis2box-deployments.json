@@ -361,8 +361,98 @@
    "manual": true
   },
   {
+   "centre": "ag-antiguamet",
+   "country": "Antigua and Barbuda",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "ai-metservice",
+   "country": "Anguilla",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "bs-metservice",
+   "country": "Bahamas",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "dm-dms",
+   "country": "Dominica",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "gd-metservice",
+   "country": "Grenada",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
    "centre": "gy-hydromet",
    "country": "Guyana",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "jm-msj",
+   "country": "Jamaica",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "kn-metservice",
+   "country": "Saint Kitts and Nevis",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "ky-cinws",
+   "country": "Cayman Islands",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "lc-metservice",
+   "country": "Saint Lucia",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "ms-metservice",
+   "country": "Montserrat",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "sr-metservice",
+   "country": "Suriname",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "sx-metservice",
+   "country": "Sint Maarten",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "tc-metservice",
+   "country": "Turks and Caicos Islands",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "vc-metservice",
+   "country": "Saint Vincent and the Grenadines",
+   "url": "https://wiscaribbeancmo.org",
+   "manual": true
+  },
+  {
+   "centre": "vg-metservice",
+   "country": "British Virgin Islands",
    "url": "https://wiscaribbeancmo.org",
    "manual": true
   },
