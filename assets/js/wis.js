@@ -1094,6 +1094,7 @@ function selectQueueTab(tab) {
     document.querySelectorAll('.queue-tabs button').forEach((b) => b.setAttribute('aria-selected', b.dataset.tab === tab));
     document.querySelectorAll('.queue-pane').forEach((pane) => { pane.hidden = pane.dataset.pane !== tab; });
     if (tab === 'messages') flushQueue();
+    if (tab === 'datasets' && !gdcSearched) searchCatalogue();
 }
 
 // The key on the map. On top, how points are styled: what they're coloured by,
@@ -1312,11 +1313,15 @@ function buildPopup(record) {
         </div>
         <div class="pp-decoded" data-panel="data"></div>
         <div class="pp-forecast" data-panel="forecast" hidden></div>
-        <div class="pp-message" data-panel="message" hidden></div>`;
+        <div class="pp-message" data-panel="message" hidden></div>
+        <div class="pp-dataset" hidden></div>`;
 
     var title = div.querySelector('.pp-title');
     title.textContent = record.wsi || props.metadata_id || record.centre;
     var twin = div.querySelector('.pp-twin');
+    // What the dataset is, from the Global Discovery Catalogue
+    var dataset = datasetId(record);
+    if (dataset) showDatasetInPopup(div.querySelector('.pp-dataset'), dataset);
     if (twin) twin.addEventListener('click', (e) => {
         e.preventDefault();
         openPopup(twinAirport);
@@ -3159,6 +3164,7 @@ function applyFilters() {
     document.querySelector('.queue-reset').hidden = !active;
     document.querySelector('.queue-share').hidden = !active;
     writeFiltersToUrl();
+    filterDatasetRows();
 }
 
 // ---------- Filters in the address bar, so a filtered view can be shared:
@@ -3337,9 +3343,18 @@ class QueueControl {
             </div>
             <div class="queue-tabs" role="tablist">
                 <button type="button" role="tab" data-tab="layers" aria-selected="true">Layers</button>
+                <button type="button" role="tab" data-tab="datasets" aria-selected="false">Datasets</button>
                 <button type="button" role="tab" data-tab="messages" aria-selected="false">Messages</button>
             </div>
             <div class="queue-pane queue-pane-layers" data-pane="layers"></div>
+            <div class="queue-pane queue-pane-datasets" data-pane="datasets" hidden>
+                <div class="gdc-controls">
+                    <input type="search" class="form-control form-control-sm gdc-query" placeholder="Search the WIS2 catalogue" aria-label="Search the WIS2 Global Discovery Catalogue">
+                </div>
+                <div class="gdc-status legend-note"></div>
+                <ol class="gdc-list"></ol>
+                <button type="button" class="btn btn-sm btn-outline-secondary gdc-more" hidden>More</button>
+            </div>
             <div class="queue-pane queue-pane-messages" data-pane="messages" hidden>
                 <div class="queue-controls">
                     <select class="form-select form-select-sm queue-mapped" aria-label="Messages to list">
@@ -3445,6 +3460,8 @@ class QueueControl {
             }
             setTimeout(() => { share.textContent = 'Copy link'; }, 2000);
         });
+        // The catalogue's code comes later in the script, so wire it up once that has run
+        setTimeout(() => initCatalogue(sidebar));
         queueMapped.addEventListener('change', rebuildQueue);
         queuePause.addEventListener('click', function(){
             queuePaused = !queuePaused;
@@ -3928,6 +3945,7 @@ function parseMessage(topic, message) {
 function onMessage(topic, feature, replay) {
     // Kept for every message so the sidebar can find a downloadable copy
     rememberLinks((feature.properties || {}).data_id, feature.links || []);
+    noteDataset(feature);
     revealGatewayRows(topic, feature);
     // Replayed messages are only drawn: decoding a past hour of files would swamp the decoder
     var kind = !replay && Object.keys(DECODE_LAYERS).find((key) => DECODE_LAYERS[key](topic, feature));
@@ -5516,6 +5534,291 @@ async function loadReplay() {
             console.debug(`Could not load the Global Replay: ${err.message}`);
         }
     }
+}
+
+// ---------- WIS2 Global Discovery Catalogue (OGC API - Records): what each dataset
+// is, shown in a point's popup (looked up by its notification's metadata_id), and a
+// search over every dataset in the sidebar's Datasets tab
+// The three Global Discovery Catalogues hold the same records. Searches, lookups and links
+// go to the one nearest the visitor (going by their time zone, see guessCentre), and on
+// to the next if it can't be reached.
+const GDCS = [
+    { name: 'ECCC, Canada', api: 'https://wis2-gdc.weather.gc.ca/collections/wis2-discovery-metadata/items', at: [-75.7, 45.4] },
+    { name: 'CMA, China', api: 'https://gdc.wis.cma.cn/collections/wis2-discovery-metadata/items', at: [116.4, 39.9] },
+    { name: 'DWD, Germany', api: 'https://wis2.dwd.de/gdc/collections/wis2-discovery-metadata/items', at: [8.8, 50.1] },
+].sort((a, b) => distanceKm(guessCentre(), a.at) - distanceKm(guessCentre(), b.at));
+
+// A catalogue request (a path under the records), from the nearest catalogue that answers
+async function gdcFetch(path, options) {
+    var lastError = null;
+    for (var gdc of GDCS) {
+        try {
+            var response = await fetch(gdc.api + path, options);
+            if (response.ok || response.status === 404) return response;
+            lastError = new Error(`${gdc.name} answered ${response.status}`);
+        } catch (err) {
+            if (err.name === 'AbortError') throw err;
+            lastError = err;
+        }
+    }
+    throw lastError;
+}
+
+// What a dataset's "Show on map" fetches from the Global Replay
+const DATASET_HOURS = 6;
+const DATASET_MAX = 500;
+const GDC_CACHE_MAX = 500;  // Records kept, so a popup doesn't ask again
+// The whole catalogue (about 600 datasets) fits in one page, so the ones seen arriving can be
+// listed first; a search with no text or view filter is about 5 MB
+const GDC_PAGE = 1000;
+const DATASETS_SEEN_MAX = 5000;
+const gdcRecords = new Map();  // metadata_id -> Promise of its record, or null when the catalogue has none
+const datasetSeen = new Map();  // metadata_id -> when a notification for it was last published
+let gdcSearched = false;
+let gdcNext = null;
+let gdcAbort = null;
+let gdcEls = null;
+
+// WIS2 datasets are urn:wmo:md:...; GTS relays still carry urn:x-wmo:md:..., which the catalogue doesn't hold
+function datasetId(record) {
+    var id = record.props.metadata_id || ((record.notification || {}).properties || {}).metadata_id;
+    return /^urn:wmo:md:/.test(id || '') ? id : null;
+}
+
+function noteDataset(feature) {
+    var props = feature.properties || {}, id = props.metadata_id;
+    if (!/^urn:wmo:md:/.test(id || '')) return;
+    var when = Date.parse(props.pubtime || '') || Date.now();
+    if ((datasetSeen.get(id) || 0) >= when) return;
+    datasetSeen.delete(id);  // Re-insert to keep recent ones
+    datasetSeen.set(id, when);
+    if (datasetSeen.size > DATASETS_SEEN_MAX) datasetSeen.delete(datasetSeen.keys().next().value);
+}
+
+function gdcRecord(id) {
+    if (!gdcRecords.has(id)) {
+        gdcRecords.set(id, gdcFetch(`/${encodeURIComponent(id)}?f=json`)
+            .then((response) => (response.ok ? response.json() : null))
+            .catch(() => null));
+        if (gdcRecords.size > GDC_CACHE_MAX) gdcRecords.delete(gdcRecords.keys().next().value);
+    }
+    return gdcRecords.get(id);
+}
+
+function gdcPage(id) {
+    return `${GDCS[0].api}/${encodeURIComponent(id)}?f=html`;
+}
+
+// Links from the catalogue are the publishers' own, so only web links are followed
+function webLink(href) {
+    return /^https?:\/\//i.test(href || '') ? href : null;
+}
+
+// What a catalogue record says about its dataset
+function describeDataset(rec) {
+    var p = rec.properties || {}, links = rec.links || [];
+    var contacts = p.contacts || [];
+    var host = contacts.find((c) => (c.roles || []).includes('host')) || contacts[0] || {};
+    var licence = links.find((l) => l.rel === 'license' && webLink(l.href));
+    return {
+        id: rec.id,
+        title: (p.title || rec.id || '').trim(),
+        description: (p.description || '').trim(),
+        policy: p['wmo:dataPolicy'] || '',
+        centre: p['centre-id'] || '',
+        publisher: host.organization || host.name || '',
+        licence: licence ? { href: licence.href, title: licence.title || 'Licence' } : null,
+        channel: (links.find((l) => l.channel) || {}).channel || '',
+        geometry: rec.geometry,
+    };
+}
+
+function policyBadge(policy) {
+    return /^(core|recommended)$/.test(policy) ? `<span class="pp-badge pp-policy-${policy}" title="WIS2 data policy">${policy}</span>` : '';
+}
+
+// The Dataset section of a popup, filled once the record has come back
+function showDatasetInPopup(el, id) {
+    gdcRecord(id).then((rec) => {
+        if (!rec || !el.isConnected) return;
+        var d = describeDataset(rec);
+        el.innerHTML = `
+            <div class="pp-section">Dataset</div>
+            <div class="pp-dataset-head"><a target="_blank" rel="noopener" title="Open the dataset's record in the WIS2 Global Discovery Catalogue"></a>${policyBadge(d.policy)}</div>
+            <div class="pp-dataset-by"></div>
+            <p class="pp-dataset-text"></p>
+            <div class="pp-dataset-actions">
+                ${d.channel ? '<button type="button" class="btn btn-sm btn-outline-secondary pp-dataset-show" title="Fetch what this dataset published recently and show it on the map">Show on map</button>' : ''}
+                ${d.licence ? '<a class="pp-dataset-licence" target="_blank" rel="noopener"></a>' : ''}
+            </div>
+            <div class="legend-note pp-dataset-note" hidden></div>`;
+        var title = el.querySelector('.pp-dataset-head a');
+        title.href = gdcPage(d.id);
+        title.textContent = d.title;
+        el.querySelector('.pp-dataset-by').textContent = d.publisher;
+        el.querySelector('.pp-dataset-text').textContent = d.description;
+        if (d.licence) {
+            var licence = el.querySelector('.pp-dataset-licence');
+            licence.href = d.licence.href;
+            licence.textContent = d.licence.title;
+        }
+        var show = el.querySelector('.pp-dataset-show'), note = el.querySelector('.pp-dataset-note');
+        if (show) show.addEventListener('click', () => showDatasetOnMap(d, (text) => {
+            note.hidden = false;
+            note.textContent = text;
+        }));
+        el.hidden = false;
+    });
+}
+
+// Puts a dataset on the map, filtered to its topic: many datasets publish rarely or
+// without a location, so what it published in the past DATASET_HOURS is fetched from
+// the Global Replay (switched on for it) and plotted, `report` says what was found, and
+// the map goes to the dataset's points, if there are any, rather than to its declared
+// area.
+let datasetAbort = null;
+
+async function showDatasetOnMap(d, report) {
+    // Filtered to the dataset's topic (the catalogue gives the cache channel; origin copies
+    // match too).
+    var topic = d.channel.replace(/^(cache|origin)\//, '').replace(/\/#$/, '').toLowerCase();
+    filters.text = topic;
+    filterModes.text = 'only';
+    queueFilter.value = topic;
+    document.querySelectorAll('.filter-mode[data-filter="text"]').forEach(paintFilterMode);
+    applyFilters();
+    var replayBox = document.querySelector('.legend-toggle[data-layer="replay"] input');
+    if (replayBox && !replayBox.checked) {
+        replayBox.checked = true;
+        replayBox.dispatchEvent(new Event('change'));
+    }
+    if (datasetAbort) datasetAbort.abort();
+    var abort = datasetAbort = new AbortController();
+    report(`Fetching what it published in the past ${DATASET_HOURS} hours…`);
+    var since = new Date(Date.now() - DATASET_HOURS * 3600 * 1000).toISOString().replace(/\.\d+Z$/, 'Z');
+    // The replay keeps a copy per global cache, so cached (core) data is asked of one;
+    // recommended data isn't cached, so its origin notifications are asked for
+    var params = new URLSearchParams({ f: 'json', sortby: '-pubtime', limit: DATASET_MAX, datetime: `${since}/..`, topic: d.channel.replace(/\/#$/, '') });
+    if (d.channel.startsWith('cache/')) params.set('global-cache', REPLAY_CACHE);
+    try {
+        var response = await fetch(`${REPLAY_API}?${params}`, { signal: abort.signal });
+        if (!response.ok) throw new Error(`the Global Replay answered ${response.status}`);
+        var page = await response.json();
+        var features = (page.features || []).filter((f) => f.properties && f.properties.topic);
+        features.forEach((f) => onMessage(f.properties.topic, f, true));
+        var located = features.filter((f) => f.geometry && f.geometry.type && pointFor(f.geometry)).length;
+        var total = page.numberMatched !== undefined ? page.numberMatched : features.length;
+        var hours = `in the past ${DATASET_HOURS} hours`;
+        report(!total ? `Nothing published ${hours}.`
+            : !located ? `${total.toLocaleString()} notifications ${hours}, none with a location to put on the map.`
+            : `${total.toLocaleString()} notifications ${hours}${total > features.length ? ` (the latest ${features.length.toLocaleString()} fetched)` : ''}, ${located.toLocaleString()} with a location.`);
+        // To the dataset's points, live and replayed, if any
+        var points = [...records.values()].filter((r) => r.topic.toLowerCase().includes(topic) && r.coords);
+        if (points.length) {
+            var lons = points.map((r) => r.coords[0]), lats = points.map((r) => r.coords[1]);
+            map.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], { padding: 60, maxZoom: 7 });
+        }
+    } catch (err) {
+        if (err.name !== 'AbortError') report(`Could not fetch its recent messages: ${err.message}`);
+    }
+}
+
+// The Datasets tab: a search box over the whole catalogue, narrowed by the sidebar's filters
+function initCatalogue(sidebar) {
+    var pane = sidebar.querySelector('.queue-pane-datasets');
+    gdcEls = {
+        pane,
+        query: pane.querySelector('.gdc-query'),
+        status: pane.querySelector('.gdc-status'),
+        list: pane.querySelector('.gdc-list'),
+        more: pane.querySelector('.gdc-more'),
+    };
+    var typing = null;
+    gdcEls.query.addEventListener('input', () => {
+        clearTimeout(typing);
+        typing = setTimeout(() => searchCatalogue(), 400);
+    });
+    gdcEls.more.addEventListener('click', () => searchCatalogue(gdcNext));
+}
+
+async function searchCatalogue(next) {
+    if (!gdcEls) return;
+    gdcSearched = true;
+    if (gdcAbort) gdcAbort.abort();
+    var abort = gdcAbort = new AbortController();
+    var url = next;
+    if (!url) {
+        var params = new URLSearchParams({ f: 'json', limit: GDC_PAGE });
+        var q = gdcEls.query.value.trim();
+        if (q) params.set('q', q);
+        gdcEls.list.replaceChildren();
+    }
+    gdcEls.status.textContent = 'Searching the catalogue…';
+    gdcEls.more.hidden = true;
+    try {
+        // A next page is a full link from the catalogue that answered; a new search goes to the nearest
+        var response = url ? await fetch(url, { signal: abort.signal }) : await gdcFetch(`?${params}`, { signal: abort.signal });
+        if (!response.ok) throw new Error(`it answered ${response.status}`);
+        var page = await response.json();
+        // Datasets seen arriving first, most recent first; the rest in the catalogue's order
+        var seen = (d) => datasetSeen.get(d.id) || 0;
+        (page.features || []).map(describeDataset)
+            .map((d, i) => [d, i]).sort(([a, i], [b, j]) => seen(b) - seen(a) || i - j)
+            .forEach(([d]) => gdcEls.list.appendChild(datasetRow(d)));
+        var shown = gdcEls.list.children.length, total = page.numberMatched;
+        gdcEls.baseStatus = (!shown ? 'No datasets match'
+            : `${shown.toLocaleString()}${total !== undefined ? ` of ${total.toLocaleString()}` : ''} datasets`)
+            + ` · catalogue: ${new URL(response.url).host}`;
+        filterDatasetRows();
+        gdcNext = ((page.links || []).find((l) => l.rel === 'next') || {}).href || null;
+        gdcEls.more.hidden = !gdcNext || (total !== undefined && shown >= total);
+    } catch (err) {
+        if (err.name !== 'AbortError') gdcEls.status.textContent = `Could not search the catalogue: ${err.message}`;
+    }
+}
+
+// The sidebar's filters, applied to a dataset: centres by its centre-id, the topic text and
+// the discipline chips by its topic (Space also takes satellite topics). File type isn't
+// applied: catalogue records don't say what format their files come in.
+function datasetMatchesFilters(d) {
+    var test = (key, active, matches) => !active || (filterModes[key] === 'hide' ? !matches : matches);
+    var topic = d.channel.toLowerCase();
+    var item = { topic, discipline: disciplineOf(d.channel.split('/a/wis2/')[1] || '') };
+    return test('centres', filters.centres.size, filters.centres.has(d.centre))
+        && test('disciplines', filters.disciplines.size, matchesDiscipline(item))
+        && test('text', filters.text, topic.includes(filters.text));
+}
+
+// Hides the rows the filters leave out (rather than rebuilding the list, so notes stay)
+function filterDatasetRows() {
+    if (!gdcEls || !gdcEls.baseStatus) return;
+    var rows = [...gdcEls.list.children];
+    rows.forEach((row) => { row.hidden = !datasetMatchesFilters(row.gdc); });
+    var hidden = rows.filter((row) => row.hidden).length;
+    gdcEls.status.textContent = gdcEls.baseStatus + (hidden ? ` · ${hidden.toLocaleString()} hidden by the filters` : '');
+}
+
+function datasetRow(d) {
+    var row = document.createElement('li');
+    row.className = 'gdc-row';
+    row.gdc = d;
+    var seen = datasetSeen.get(d.id);
+    row.innerHTML = `
+        <a class="gdc-title" target="_blank" rel="noopener" title="Open the dataset's record in the catalogue"></a>
+        <div class="gdc-meta"><strong></strong>${policyBadge(d.policy)}<span class="gdc-seen"></span>${d.channel
+            ? '<button type="button" class="btn btn-sm btn-link gdc-show" title="Filter the map and messages to this dataset, with what it published recently">Show on map</button>' : ''}</div>
+        <div class="legend-note gdc-note" hidden></div>`;
+    var title = row.querySelector('.gdc-title');
+    title.href = gdcPage(d.id);
+    title.textContent = d.title;
+    row.querySelector('.gdc-meta strong').textContent = d.centre;
+    row.querySelector('.gdc-seen').textContent = seen ? `seen ${timeAgo(new Date(seen).toISOString())}` : 'not seen yet';
+    var show = row.querySelector('.gdc-show'), note = row.querySelector('.gdc-note');
+    if (show) show.addEventListener('click', () => showDatasetOnMap(d, (text) => {
+        note.hidden = false;
+        note.textContent = text;
+    }));
+    return row;
 }
 
 // ---------- Airports worldwide: the latest METAR from each airport, from the Iowa
