@@ -11,7 +11,9 @@ String.prototype.hexDecode = function(){
 
 // Map
 const MAX_POINTS = 100000;        // Oldest points are dropped beyond this...
-const MAX_DECODED_POINTS = 30000;  // ...with reports decoded from files capped separately so they can't crowd out the rest
+const MAX_DECODED_POINTS = 30000;  // ...with reports decoded from files capped separately so they can't crowd out the rest,
+const MAX_SATELLITE_POINTS = 100000;  // ...and satellites apart again, so passes stay up long enough to build coverage
+const SATELLITE_ROWS_MAX = 200;  // Decoded values kept per satellite report (IASI has thousands of channels)
 const FADE_MS = 4 * 60 * 60 * 1000;  // Points fade over four hours
 const PULSE_MS = 1600;           // Length of the ripple on new arrivals
 const COLORS = {
@@ -19,6 +21,10 @@ const COLORS = {
     gts: '#9b6cd1',
     wis2gts: '#c2255c',
     files: '#83C95D',
+    radar: '#0ca678',
+    'cache-satellite': '#9c36b5',  // OBS_CLASSES.satellite
+    'gts-satellite': '#9c36b5',
+    'gts-text': '#9b6cd1',  // COLORS.gts
     replay: '#4c6ef5',
 };
 // Kinds of observation, shared by the Cache and GTS-to-WIS2 groups so each kind
@@ -34,8 +40,9 @@ const OBS_CLASSES = {
     buoy: { label: 'Buoys and floats', color: '#f76707', title: 'Ocean observations from buoys, floats and moorings' },
     gnss: { label: 'Ground-based GNSS', color: '#a5662b', title: 'Atmospheric path delays and water vapour from GNSS receivers (e.g. E-GVAP), not weather observations' },
     satellite: { label: 'Space-based (satellites)', color: '#9c36b5', title: 'Observations from satellites (winds, radiances, occultations)' },
+    lightning: { label: 'Lightning', color: '#e64980', cacheOnly: true, title: 'Lightning flashes located by detection networks (e.g. the Met Office LEELA network)' },
     webcam: { label: 'Webcam images', color: '#fcc419', cacheOnly: true, title: 'Camera images' },
-    warning: { label: 'Warnings and alerts', color: '#e03131', cacheOnly: true, title: 'Weather warnings, alerts and advisories, including CAP messages' },
+    warning: { label: 'Warnings and alerts', color: '#e03131', cacheOnly: true, title: 'Weather warnings, alerts and advisories, including CAP messages and Environment Canada city forecasts' },
     other: { label: 'Other', color: '#868e96', title: 'Anything not in the groups above' },
 };
 // ---------- Model fields from ECCC GeoMet (WMS). GeoMet serves its default time,
@@ -49,29 +56,32 @@ function modelFieldUrl(key) {
         + `&bbox={bbox-epsg-3857}&width=256&height=256&format=image/png&transparent=true&_h=${hour}`;
 }
 
-// Shows the model field for the selected measure, if asked for, with its legend
+// Shows the model base layer for the selected measure, if asked for, with its legend.
+// The switch is only offered while colouring by a measure, and says when that measure has no model field.
 function updateModelField(legend) {
-    var m = METRICS[colourBy], on = modelFieldOn && !!m && !!m.wms;
-    var toggle = legend.querySelector('.legend-model input');
-    toggle.disabled = !m || !m.wms;
-    legend.querySelector('.legend-model').classList.toggle('legend-disabled', !m || !m.wms);
+    var m = METRICS[colourBy], available = !!m && !!m.wms, on = modelFieldOn && available;
+    var row = legend.querySelector('.legend-model');
+    row.hidden = !m;
+    row.querySelector('input').disabled = !available;
+    // Shown off where there's nothing to draw; the choice comes back with a measure that has one
+    row.querySelector('input').checked = on;
+    row.classList.toggle('legend-disabled', !available);
+    row.querySelector('.legend-model-note').textContent = !m ? ''
+        : !available ? `No model field for ${m.label.toLowerCase()}`
+        : `ECCC ${m.wms.split('_')[0]} ${m.label.toLowerCase()}, ${new Date().toISOString().slice(11, 13)}:00 UTC, under the points`;
     var info = legend.querySelector('.legend-model-info');
     info.hidden = !on;
     if (map.getLayer('model-field')) {
         if (on) map.getSource('model-field').setTiles([modelFieldUrl(colourBy)]);
         map.setLayoutProperty('model-field', 'visibility', on ? 'visible' : 'none');
     }
-    if (on) {
-        info.querySelector('span').textContent = `ECCC ${m.wms.split('_')[0]} model, ${new Date().toISOString().slice(11, 13)}:00 UTC`;
-        info.querySelector('img').src = `${GEOMET}?version=1.3.0&service=WMS&request=GetLegendGraphic&sld_version=1.1.0&layer=${m.wms}&format=image/png`;
-    }
+    if (on) info.querySelector('img').src = `${GEOMET}?version=1.3.0&service=WMS&request=GetLegendGraphic&sld_version=1.1.0&layer=${m.wms}&format=image/png`;
     updateMapKey();
 }
 
 // Keeps the model field on the current hour
 setInterval(() => {
-    var legend = document.querySelector('.legend');
-    if (legend && modelFieldOn) updateModelField(legend);
+    if (stylePanel && modelFieldOn) updateModelField(stylePanel);
 }, 10 * 60 * 1000);
 
 // Measures stations, ships and buoys can be coloured by (see setColourBy)
@@ -192,7 +202,9 @@ let metricBusy = false;
 // GTS sublayers that start off. Their bulletins aren't downloaded until they're
 // switched on, so their rows appear when the first such notification arrives
 // (see revealGatewayRows) rather than when a report is plotted.
-const GTS_OPT_IN = ['satellite', 'aircraft'];
+const GTS_OPT_IN = ['aircraft'];
+// Satellites from every source share one row (and one row per satellite) in their
+// own section. Each report keeps its source's layer (SATELLITE_LAYERS), which sits under that row.
 
 // Legend rows, grouped by source; each can be switched on and off. Rows other
 // than opt-in ones stay hidden until a point of that kind has arrived. Opt-in
@@ -201,21 +213,20 @@ const LAYER_GROUPS = [
     { key: 'wis2', label: 'WIS2', subtitle: 'Published directly through the WMO Information System', layers: [
         { key: 'obs', label: 'Cache', color: OBS_CLASSES.station.color, optIn: true },  // Always listed
         // Sublayers sit under their parent and are off whenever it is off
-        ...Object.entries(OBS_CLASSES).map(([key, c]) => ({ key: `cache-${key}`, parent: 'obs', label: c.label, color: c.color, title: c.title })),
-        // An option rather than a layer: decoded reports join the groups above
-        { key: 'files', parent: 'obs', option: true, label: 'Decode files without a location',
-            title: 'Download and decode small cached files whose notification has no location; the reports inside join the groups above' },
+        ...Object.entries(OBS_CLASSES).filter(([key]) => key !== 'satellite').map(([key, c]) => ({ key: `cache-${key}`, parent: 'obs', label: c.label, color: c.color, title: c.title })),
+        { key: 'radar', parent: 'obs', label: 'Weather radar', color: COLORS.radar,
+            title: 'Reflectivity from the lowest scan of each radar volume (ODIM HDF5) in the cache, drawn around the radar; downloaded only while this is on' },
         { key: 'origin', label: 'Origin', color: COLORS.origin, ring: true },
-        { key: 'replay', label: 'Global Replay (past 90 minutes)', color: COLORS.replay, optIn: true,
-            title: 'Fill the view with the past 90 minutes of WIS2 core-data notifications from the Global Replay service (wis2-grep.weather.gc.ca). Older points are fainter.' },
+        { key: 'replay', label: 'Global Replay', color: COLORS.replay, optIn: true,
+            title: 'Fill the view with past WIS2 core-data notifications from the Global Replay service (wis2-grep.weather.gc.ca); how far back is set by the slider below. Older points are fainter.' },
         // Replayed messages sorted like the cache's, each row shown once something arrives in it
-        ...Object.entries(OBS_CLASSES).map(([key, c]) => ({ key: `replay-${key}`, parent: 'replay', label: c.label, color: c.color, title: c.title })),
+        ...Object.entries(OBS_CLASSES).filter(([key]) => key !== 'satellite').map(([key, c]) => ({ key: `replay-${key}`, parent: 'replay', label: c.label, color: c.color, title: c.title })),
     ] },
     { key: 'gts', label: 'GTS gateways', subtitle: 'Bulletins relayed with the GTS', layers: [
         { key: 'gts', label: 'GTS-to-WIS2 (decode required)', color: COLORS.gts, optIn: true,
             title: 'Download and decode the BUFR bulletins republished from the GTS into WIS2 (centres ending -gts-to-wis2), and plot the reports inside' },
         // Each decoded report is sorted by the identifiers it carries (see reportClass)
-        ...Object.entries(OBS_CLASSES).filter(([key, c]) => !c.cacheOnly).flatMap(([key, c]) => [
+        ...Object.entries(OBS_CLASSES).filter(([key, c]) => !c.cacheOnly && key !== 'satellite').flatMap(([key, c]) => [
             { key: `gts-${key}`, parent: 'gts', label: c.label, color: c.color,
                 title: c.title + (GTS_OPT_IN.includes(key) ? '; downloaded only while this is on' : '') },
             // Aircraft can be drawn as flight paths; shown once the Aircraft row is
@@ -226,14 +237,53 @@ const LAYER_GROUPS = [
         { key: 'wis2gts', label: 'WIS2-to-GTS (decode required)', color: COLORS.wis2gts, optIn: true,
             title: 'Download and decode the BUFR that WIS2 centres pass on to the GTS (centres ending -wis2-to-gts), and plot the reports inside' },
     ] },
+    { key: 'space', label: 'Satellites', subtitle: 'Space-based observations from WIS2 and the GTS', layers: [
+        { key: 'satellite', label: OBS_CLASSES.satellite.label, color: OBS_CLASSES.satellite.color,
+            title: OBS_CLASSES.satellite.title + ', from the WIS2 cache, the GTS gateways and the Global Replay. Files without a location are downloaded and decoded only while this is on.' },
+        // Off: every report is its own point, e.g. to read cloud-motion winds one by one
+        { key: 'sat-coverage', parent: 'satellite', option: true, label: 'Draw as coverage areas',
+            title: 'Draw files with many reports as shaded coverage, and satellites as tracks. Off: every report is a point, coloured by the selected measure.' },
+    ] },
     { key: 'other', label: 'Other sources', subtitle: 'Not from WIS2: fetched directly from the provider', layers: [
         { key: 'airports', label: 'Airports worldwide (METAR)', color: OBS_CLASSES.station.color, optIn: true,
             title: 'The latest METAR from every airport the Iowa Environmental Mesonet collects, refreshed every 20 minutes. The airports nearest the view load first.' },
     ] },
 ];
-// Off at first: the Global Replay, airports, WIS2-to-GTS, satellites, aircraft and ground-based GNSS (cache, GTS and replay), and aircraft tracks
-const hiddenLayers = new Set(['cache-gnss', 'gts-gnss', 'replay-gnss', 'replay', 'airports', 'wis2gts', 'cache-satellite', 'gts-satellite', 'replay-satellite', 'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks']);
-const LAYER_PARENTS = Object.fromEntries(LAYER_GROUPS.flatMap((g) => g.layers).filter((l) => l.parent).map((l) => [l.key, l.parent]));
+// Off at first: radar, airports, WIS2-to-GTS, satellites, aircraft and ground-based GNSS (cache, GTS and replay), and aircraft tracks.
+// The Global Replay is on, reaching back REPLAY_DEFAULT_MINUTES, so the map isn't empty at first
+const hiddenLayers = new Set(['radar', 'cache-gnss', 'gts-gnss', 'replay-gnss', 'airports', 'wis2gts', 'satellite', 'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks']);
+// How far back the Global Replay reaches, set by a continuous slider on a log scale:
+// 12 hours ago at the left, 5 minutes at the right, so time runs left to right and
+// recent windows get most of the track. Long windows over a busy view stop at
+// REPLAY_MAX, newest first, so they reach back less far there
+const REPLAY_RANGE_MINUTES = [720, 5];
+const REPLAY_TICKS = [720, 360, 180, 60, 30, 15, 5];
+const REPLAY_DEFAULT_MINUTES = 5;
+let replayWindowMs = REPLAY_DEFAULT_MINUTES * 60 * 1000;
+
+// Slider position (0 to 1) for a window in minutes, and back, rounded to whole
+// minutes under an hour and to 5 minutes above
+function replayPosition(minutes) {
+    var [far, near] = REPLAY_RANGE_MINUTES.map(Math.log);
+    return (Math.log(minutes) - far) / (near - far);
+}
+
+function replayMinutesAt(position) {
+    var [far, near] = REPLAY_RANGE_MINUTES.map(Math.log);
+    var minutes = Math.exp(far + (near - far) * position);
+    return minutes < 60 ? Math.round(minutes) : Math.round(minutes / 5) * 5;
+}
+const LAYER_PARENTS = Object.fromEntries([
+    ...LAYER_GROUPS.flatMap((g) => g.layers).filter((l) => l.parent).map((l) => [l.key, l.parent]),
+    // Replayed satellites also go when the Global Replay is off (see applyMapFilter)
+    ...SATELLITE_LAYERS.map((k) => [k, 'satellite']),
+    // Files without a location are always decoded while Cache is on; the reports inside join its groups
+    ['files', 'obs'],
+    // Text SYNOPs join GTS-to-WIS2's groups, so they're decoded while it is on
+    ['gts-text', 'gts'],
+    // The replay window slider is greyed out with its row
+    ['replay-window', 'replay'],
+]);
 
 function ancestors(key) {
     var out = [];
@@ -326,7 +376,19 @@ const attribution = new maplibregl.AttributionControl({
 });
 
 const records = new Map();  // id -> record for every point on the map
-const pools = { wis2: new Map(), decoded: new Map() };  // Same records, in arrival order per cap
+const pools = { wis2: new Map(), decoded: new Map(), satellite: new Map() };  // Same records, in arrival order per cap
+const POOL_CAPS = { wis2: MAX_POINTS, decoded: MAX_DECODED_POINTS, satellite: MAX_SATELLITE_POINTS };
+
+// Weather radar images, one per radar (drawn in the radar section; the map key reads them)
+// dBZ thresholds and colours, light rain to hail; below 5 dBZ isn't drawn
+const RADAR_COLORS = [[5, '#9be1ff'], [10, '#4fc3f7'], [15, '#2196f3'], [20, '#00c853'], [25, '#64dd17'], [30, '#ffeb3b'],
+    [35, '#ffc107'], [40, '#ff9800'], [45, '#f44336'], [50, '#c62828'], [55, '#e91e63'], [60, '#9c27b0'], [65, '#ffffff']];
+const radars = new Map();  // site -> { id, time, quantity, updated }
+
+function poolOf(record) {
+    if (!record.decodedLayer) return 'wis2';
+    return record.subLayer && record.subLayer.endsWith('-satellite') ? 'satellite' : 'decoded';
+}
 const byDataId = new Map(); // data_id -> record, so each observation is drawn once
 let nextId = 1;
 let toAdd = [];
@@ -343,7 +405,7 @@ function darken(hex, amount = 0.45) {
 }
 
 function isGateway(record) {
-    return record.decodedLayer === 'gts' || record.decodedLayer === 'wis2gts';
+    return ['gts', 'gts-satellite', 'gts-text', 'wis2gts'].includes(record.decodedLayer);
 }
 
 // The two sources' accent colours, as in the legend sections (style.css)
@@ -592,6 +654,7 @@ map.on('load', () => {
     // Wind arrows point the way the wind blows (reports give where it comes from)
     map.addImage('arrow', arrowSdf(), { sdf: true, pixelRatio: 2 });
     map.on('moveend', () => scheduleReplay());
+    scheduleReplay(0);  // On at first
     // Points from other sources (airports) are squares
     map.addImage('square', squareSdf(), { sdf: true, pixelRatio: 2 });
     map.addLayer({
@@ -641,10 +704,9 @@ map.on('load', () => {
     setInterval(paintAge, 30 * 1000);
     applyMapFilter();
     // Open coloured by temperature, near the visitor
-    var legend = document.querySelector('.legend');
-    if (legend) {
-        legend.querySelector('.legend-colour select').value = 'temp';
-        setColourBy('temp', legend);
+    if (stylePanel) {
+        stylePanel.querySelector('.legend-colour select').value = 'temp';
+        setColourBy('temp', stylePanel);
     }
     centreOnVisitor();
     preloadDecoder();
@@ -718,12 +780,16 @@ function observedAt(record) {
 function addPoint(record) {
     var existing = byDataId.get(record.props.data_id);
     if (existing && records.has(existing.id)) {
-        if (existing.channel === 'cache' || record.channel !== 'cache') return existing;
+        // An update replaces the data published earlier under its data_id; the caches'
+        // copies of the same update (same pubtime) are skipped like any other copy
+        var newer = record.update && Date.parse(record.props.pubtime || '') > Date.parse(existing.props.pubtime || '');
+        if (!newer && (existing.channel === 'cache' || record.channel !== 'cache')) return existing;
         removePoint(existing);
     }
     if (record.props.data_id) byDataId.set(record.props.data_id, record);
 
     records.set(record.id, record);
+    rememberStation(record);
     if (record.wsi) {
         var latest = latestByStation.get(record.wsi);
         if (!latest || !records.has(latest.id) || observedAt(record) >= observedAt(latest)) latestByStation.set(record.wsi, record);
@@ -742,6 +808,7 @@ function addPoint(record) {
             channel: record.channel,
             centre: record.centre,
             discipline: record.discipline,
+            space: isSpaceRecord(record),
             via: record.decodedLayer || '',
             gateway: isGateway(record),
             sat: satelliteKey(record),
@@ -765,9 +832,9 @@ function addPoint(record) {
     // Other sources are bounded by their own station lists, and stay put
     if (record.external) return record;
 
-    var pool = record.decodedLayer ? pools.decoded : pools.wis2;
+    var pool = pools[poolOf(record)];
     pool.set(record.id, record);
-    if (pool.size > (record.decodedLayer ? MAX_DECODED_POINTS : MAX_POINTS)) {
+    if (pool.size > POOL_CAPS[poolOf(record)]) {
         removePoint(pool.values().next().value);
     }
     return record;
@@ -810,6 +877,8 @@ function topicClass(record) {
     if (record.webcam) return 'webcam';
     if (record.props.cap_info || /warning|alert|advisor|\/cap(\/|$)/.test(t)) return 'warning';
     if (/space-based-observations/.test(t)) return 'satellite';
+    // Before upper air: the Met Office publishes under upper-air-observations/lightning
+    if (/lightning/.test(t)) return 'lightning';
     if (/aircraft|amdar|aviation/.test(t)) return 'aircraft';
     if (/upper-air|radiosonde|\/temp(\/|$)|\/pilot(\/|$)|profil/.test(t)) return 'upperair';
     if (/gnss|gpsmet|\/ztd(\/|$)/.test(t)) return 'gnss';
@@ -823,7 +892,7 @@ function removePoint(record) {
     if (record.track) tracksDirty = true;
     if (record.fileKey) swathsDirty = true;
     records.delete(record.id);
-    pools[record.decodedLayer ? 'decoded' : 'wis2'].delete(record.id);
+    pools[poolOf(record)].delete(record.id);
     if (byDataId.get(record.props.data_id) === record) byDataId.delete(record.props.data_id);
     if (record.track && latestOnTrack.get(record.track) === record) latestOnTrack.delete(record.track);
     if (record.wsi && latestByStation.get(record.wsi) === record) latestByStation.delete(record.wsi);
@@ -889,9 +958,10 @@ function paintAge() {
     map.setPaintProperty('points-gts', 'icon-opacity', opacity);
     map.setPaintProperty('points-ext', 'icon-opacity', opacity);
     map.setPaintProperty('points-arrow', 'icon-opacity', opacity);
-    // Satellite coverage: opacity is the cloud amount (clear 0.05, overcast 0.8; 0.3 where
-    // the product has none), fading with age like the points
-    var cloud = ['case', ['has', 'm_cloudAmount'], ['interpolate', ['linear'], ['get', 'm_cloudAmount'], 0, 0.05, 100, 0.8], 0.3];
+    // Satellite coverage: even shading, fading with age like the points. Only while
+    // colouring by cloud amount does opacity follow it (clear 0.05, overcast 0.8).
+    var cloud = colourBy !== 'cloudAmount' ? 0.3
+        : ['case', ['has', 'm_cloudAmount'], ['interpolate', ['linear'], ['get', 'm_cloudAmount'], 0, 0.05, 100, 0.8], 0.3];
     map.setPaintProperty('swaths-fill', 'fill-opacity', ['*', cloud, ['interpolate', ['linear'], ['-', Date.now(), ['get', 'born']], 0, 1, FADE_MS, 0.4]]);
     map.setPaintProperty('tracks', 'line-opacity', ['interpolate', ['linear'], ['-', Date.now(), ['get', 'born']], 0, 0.9, FADE_MS, 0.35]);
 }
@@ -936,7 +1006,7 @@ class LegendControl {
             ${LAYER_GROUPS.map((g) => `
             <section class="legend-section legend-section-${g.key}">
             <div class="legend-group">${g.label}<small>${g.subtitle}</small></div>
-            <div class="legend-style"><span class="legend-dot legend-sample"></span>${g.key === 'gts' ? 'Diamonds on the map' : g.key === 'other' ? 'Squares on the map' : 'Circles on the map'}</div>
+            <div class="legend-style"><span class="legend-dot legend-sample"></span>${g.key === 'gts' ? 'Diamonds on the map' : g.key === 'other' ? 'Squares on the map' : g.key === 'space' ? 'Coverage on the map: circles from WIS2, diamonds from the GTS' : 'Circles on the map'}</div>
             ${g.layers.map((l) => `
             ${l.option ? `
             <label class="legend-toggle legend-option form-switch" data-layer="${l.key}"${l.title ? ` title="${l.title}"` : ''}>
@@ -947,32 +1017,30 @@ class LegendControl {
                 <input type="checkbox" class="form-check-input"${hiddenLayers.has(l.key) ? '' : ' checked'}>
                 ${isGroupRow(g, l) ? '' : `<span class="legend-dot${l.ring ? ' legend-ring' : ''}${l.track ? ' legend-line' : ''}" style="--color: ${l.color}${l.track ? '' : `; --outline: ${darken(l.color)}`}"></span>`}${l.label}
             </label>`}`).join('')}
-            </section>`).join('')}
-            <div class="legend-colour">
-                <label>Color by
-                    <select class="form-select form-select-sm">
-                        <option value="kind">Observation Type</option>
-                        ${[...new Set(Object.values(METRICS).map((m) => m.group))].map((group) => `
-                        <optgroup label="${group}">
-                            ${Object.entries(METRICS).filter(([, m]) => m.group === group).map(([key, m]) => `<option value="${key}">${m.label}</option>`).join('')}
-                        </optgroup>`).join('')}
-                    </select>
-                </label>
-                <label class="legend-coloured-only" hidden><input type="checkbox" class="form-check-input"> Require value 
-                <div class="legend-note legend-colour-status" hidden></div></label>
-                <div class="legend-scale" hidden></div>
-                <label class="legend-model" title="The matching field from Environment and Climate Change Canada's global models, for the current hour, behind the points">
-                    <input type="checkbox" class="form-check-input"> Show model field (gridded value)
-                </label>
-                <div class="legend-model-info" hidden><span class="legend-note"></span><img alt="Model field legend"></div>
-            </div>`;
+            </section>`).join('')}`;
 
-        container.querySelector('.legend-colour select').addEventListener('change', (e) => setColourBy(e.target.value, container));
-        container.querySelector('.legend-coloured-only input').addEventListener('change', (e) => {
-            colouredOnly = e.target.checked;
-            applyMapFilter();
-        });
-        setInterval(() => showColourStatus(container), 1000);
+        // How far back the Global Replay reaches, under its row: earlier on the left, now on the right
+        container.querySelector('.legend-toggle[data-layer="replay"]').insertAdjacentHTML('afterend', `
+            <label class="legend-option legend-range" data-layer="replay-window">
+                <span class="legend-range-value">Since <output></output></span>
+                <input type="range" min="0" max="1000" step="1" value="${Math.round(replayPosition(replayWindowMs / 60000) * 1000)}"
+                    aria-label="How far back the Global Replay reaches">
+                <span class="legend-range-ticks" aria-hidden="true">${REPLAY_TICKS.map((m) =>
+                    `<span style="--at: ${replayPosition(m)}">${m < 60 ? `${m}m` : `${m / 60}h`}</span>`).join('')}</span>
+            </label>`);
+        var range = container.querySelector('.legend-range input');
+        var minutesShown = () => replayMinutesAt(range.value / 1000);
+        var showWindow = () => {
+            var minutes = minutesShown();
+            var since = new Date(Date.now() - minutes * 60000).toISOString().slice(11, 16);
+            container.querySelector('.legend-range output').textContent = `${since} UTC (${replayWindowLabel(minutes)} ago)`;
+            range.setAttribute('aria-valuetext', `${replayWindowLabel(minutes)}, since ${since} UTC`);
+        };
+        showWindow();
+        setInterval(showWindow, 30 * 1000);  // The start time moves with the clock
+        range.addEventListener('input', showWindow);
+        range.addEventListener('change', () => setReplayWindow(minutesShown()));
+
         container.querySelectorAll('.legend-toggle[data-layer]').forEach((row) => {
             var key = row.dataset.layer;
             row.querySelector('input').addEventListener('change', (e) => {
@@ -1002,10 +1070,6 @@ class LegendControl {
         syncSublayers();
         // The decode layers are defined further down the script, so start once it has run
         setTimeout(syncDecoding);
-        container.querySelector('.legend-model input').addEventListener('change', (e) => {
-            modelFieldOn = e.target.checked;
-            updateModelField(container);
-        });
         return container;
     }
 
@@ -1026,22 +1090,23 @@ function selectQueueTab(tab) {
     if (tab === 'messages') flushQueue();
 }
 
-// Read-only key on the map: only what is drawn now, with the colour scale
-// while colouring by a measure
+// The key on the map. On top, how points are styled: what they're coloured by,
+// its scale, and the options that go with it. Below, only what is drawn now.
 class MapKey {
     onAdd() {
         this.container = document.createElement('div');
         this.container.className = 'maplibregl-ctrl map-key';
+        this.container.append(buildStylePanel());
+        mapKeyBody = this.container.appendChild(document.createElement('div'));
         this.container.addEventListener('click', (e) => {
-            if (!e.target.closest('.map-key-edit')) {
-                // On phones the key opens to its notes and shapes on a tap
-                if (PHONE.matches) this.container.classList.toggle('map-key-open');
+            if (e.target.closest('.map-key-edit')) {
+                document.body.classList.add('queue-open');
+                selectQueueTab('layers');
                 return;
             }
-            document.body.classList.add('queue-open');
-            selectQueueTab('layers');
+            // On phones the key opens to its options, notes and shapes on a tap anywhere but a control
+            if (PHONE.matches && !e.target.closest('select, input, label')) this.container.classList.toggle('map-key-open');
         });
-        mapKey = this.container;
         updateMapKey();
         return this.container;
     }
@@ -1050,18 +1115,57 @@ class MapKey {
         // Nothing to do here
     }
 }
-let mapKey = null;
+let mapKeyBody = null;
+let stylePanel = null;
+
+// Color by and the options that go with it, at the top of the map key
+function buildStylePanel() {
+    stylePanel = document.createElement('div');
+    stylePanel.className = 'map-key-style';
+    stylePanel.innerHTML = `
+        <div class="legend-colour">
+            <label class="key-colour-by">Style by
+                <select class="form-select form-select-sm" aria-label="Color points by">
+                    <option value="kind">Observation type</option>
+                    ${[...new Set(Object.values(METRICS).map((m) => m.group))].map((group) => `
+                    <optgroup label="${group}">
+                        ${Object.entries(METRICS).filter(([, m]) => m.group === group).map(([key, m]) => `<option value="${key}">${m.label}</option>`).join('')}
+                    </optgroup>`).join('')}
+                </select>
+            </label>
+            <div class="legend-scale" hidden><span></span><i></i><span></span></div>
+            <div class="key-options">
+                <label class="legend-coloured-only" hidden title="Only points with a value for the measure are drawn"><input type="checkbox" class="form-check-input"> Require value</label>
+            </div>
+            <div class="legend-note legend-colour-status" hidden></div>
+            <label class="legend-model form-switch" hidden title="Draw Environment and Climate Change Canada's global model field for the same measure, at the current hour, under the points, so observations can be compared with the model">
+                <input type="checkbox" class="form-check-input" role="switch">
+                <span>Model base layer<small class="legend-model-note"></small></span>
+            </label>
+            <div class="legend-model-info" hidden><img alt="Model field legend"></div>
+        </div>`;
+    stylePanel.querySelector('select').addEventListener('change', (e) => setColourBy(e.target.value, stylePanel));
+    stylePanel.querySelector('.legend-coloured-only input').addEventListener('change', (e) => {
+        colouredOnly = e.target.checked;
+        applyMapFilter();
+    });
+    stylePanel.querySelector('.legend-model input').addEventListener('change', (e) => {
+        modelFieldOn = e.target.checked;
+        updateModelField(stylePanel);
+    });
+    setInterval(() => showColourStatus(stylePanel), 1000);
+    return stylePanel;
+}
 
 function updateMapKey() {
-    if (!mapKey) return;
+    if (!mapKeyBody) return;
     var hidden = effectiveHidden();
     var drawn = (key) => seenLayers.has(key) && !hidden.includes(key);
     var symbol = (shape, color) => `<span class="legend-dot${shape === 'diamond' ? ' key-diamond' : ''}${shape === 'square' ? ' key-square' : ''}${shape === 'ring' ? ' legend-ring' : ''}" style="--color: ${color}; --outline: ${darken(color)}"></span>`;
     var rows = [];
     var m = METRICS[colourBy];
     if (m) {
-        rows.push(`<div class="key-title">${esc(m.label)} (${esc(m.unit)})</div>`);
-        rows.push(`<div class="legend-scale"><span>${scaleLabel(m.stops[0][0])}</span><i style="background: linear-gradient(90deg, ${m.stops.map(([, c]) => c).join(', ')})"></i><span>${scaleLabel(m.stops[m.stops.length - 1][0])}</span></div>`);
+        // The measure and its scale are in the style panel above
         // With "Require value" on, points without one aren't drawn, so there's nothing to explain
         if (!colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}No value, or not measured</div>`);
     } else {
@@ -1070,14 +1174,18 @@ function updateMapKey() {
             if (shapes.length) rows.push(`<div class="key-row">${shapes.map((shape) => symbol(shape, c.color)).join('')}${esc(c.label)}</div>`);
         }
     }
-    if ((drawn('cache-satellite') || drawn('gts-satellite')) && swathMembers.size) {
-        rows.push(`<div class="key-row"><span class="legend-dot key-swath"></span>Satellite coverage, darker = cloudier</div>`);
+    if (drawn('satellite') && !hidden.includes('sat-coverage') && swathMembers.size) {
+        rows.push(`<div class="key-row"><span class="legend-dot key-swath"></span>Satellite coverage${colourBy === 'cloudAmount' ? ', darker = cloudier' : ''}</div>`);
     }
     if (drawn('wis2gts')) rows.push(`<div class="key-row">${symbol('diamond', COLORS.wis2gts)}WIS2-to-GTS</div>`);
+    if (!hidden.includes('radar') && radars.size) {
+        rows.push(`<div class="key-title">Radar reflectivity (dBZ)</div>`);
+        rows.push(`<div class="legend-scale"><span>5</span><i style="background: linear-gradient(90deg, ${RADAR_COLORS.map(([, c]) => c).join(', ')})"></i><span>65</span></div>`);
+    }
     if (!hidden.includes('gts-tracks') && seenLayers.has('gts-aircraft')) {
         rows.push(`<div class="key-row"><span class="legend-dot legend-line" style="--color: linear-gradient(90deg, #99e9f2, #22b8cf, #1971c2, #5f3dc4)"></span>Aircraft tracks by altitude</div>`);
     }
-    if (modelFieldOn && m && m.wms) rows.push(`<div class="key-note">Background: ECCC model ${esc(m.label.toLowerCase())}</div>`);
+    if (modelFieldOn && m && m.wms) rows.push(`<div class="key-note">Base layer: ECCC model ${esc(m.label.toLowerCase())}</div>`);
     if (windArrows()) {
         rows.push('<div class="key-note"><span class="key-arrow">➜</span>Arrows point the way the wind blows; longer is stronger. Zoom in for more.</div>');
         rows.push(`<div class="key-note">${symbol('ring', m.stops[0][1])}Calm</div>`);
@@ -1087,10 +1195,11 @@ function updateMapKey() {
     // Each symbol stays on one line with its label
     var shape = (kind, color, label) => `<span class="key-shape">${symbol(kind, color)}${label}</span>`;
     rows.push(`<div class="key-shapes">${shape('circle', '#adb5bd', 'WIS2')}${drawn('origin') ? shape('ring', COLORS.origin, 'WIS2 origin') : ''}${shape('diamond', '#adb5bd', 'GTS')}${drawn('airports') ? shape('square', '#adb5bd', 'Airports') : ''}<button type="button" class="btn btn-link btn-sm map-key-edit">Edit layers</button></div>`);
-    mapKey.innerHTML = rows.join('');
+    mapKeyBody.innerHTML = rows.join('');
 }
 
 function showLegendRow(key) {
+    if (SATELLITE_LAYERS.includes(key) && !seenLayers.has('satellite')) showLegendRow('satellite');
     seenLayers.add(key);
     updateMapKey();
     var row = document.querySelector(`.legend-toggle[data-layer="${key}"]`);
@@ -1153,7 +1262,7 @@ function closeInfo() {
 
 function buildPopup(record) {
     var props = record.props;
-    var canonical = record.links.find((l) => l.rel == 'canonical');
+    var canonical = record.links.find((l) => isDataLink(l));
     var oscar = record.links.find((l) => l.rel == 'via' && /oscar/.test(l.href));
     var image = record.webcam && canonical;
     var wis2box = record.external ? null : wis2boxOf(record);
@@ -1811,8 +1920,8 @@ function renderDecoded(out, title, result) {
     var profile = result.profile && result.profile.filter((l) => l[0] > 0);
     // Satellite profiles (e.g. radio occultations) aren't radiosonde soundings, so no Skew-T for them
     var sounding = profile && profile.length >= 2 && !values.has(1007);
-    var marine = sounding ? null : marineDetails(result.rows);
     var satellite = values.has(1007);
+    var marine = sounding ? null : marineDetails(result.rows, satellite);
     var tiles = sounding ? soundingTiles(profile) : satellite ? satelliteTiles(result.rows, values) : [];
     for (var key of sounding || satellite ? [] : KEY_VALUES) {
         var id = key.ids.find((i) => values.has(i));
@@ -1843,7 +1952,7 @@ function renderDecoded(out, title, result) {
         <button type="button" class="btn btn-sm btn-outline-secondary sounding-expand">Expand sounding</button>` : ''}
         ${tiles.length ? `<div class="pp-tiles">${tiles.join('')}</div>` : ''}
         ${marine ? `
-        <div class="pp-section">${marine.ship ? 'Sea state and ship' : 'Sea state'}</div>
+        <div class="pp-section">${satellite ? 'Sea state from space' : marine.ship ? 'Sea state and ship' : 'Sea state'}</div>
         <div class="pp-marine">
             ${marine.compass}
             <div class="pp-tiles">${marine.tiles.join('')}</div>
@@ -1856,7 +1965,12 @@ function renderDecoded(out, title, result) {
             <table class="table table-sm">${result.rows.map(([id, name, value, unit]) => `
                 <tr><td>${esc(titleCase(name))}</td><td>${esc(formatValue(value, unit).join(' ').trim())}</td></tr>`).join('')}
             </table>
-        </details>`;
+        </details>
+        ${result.tac ? `
+        <details class="pp-more" open>
+            <summary>Report as sent (SYNOP code)</summary>
+            <pre class="pp-text">${esc(result.tac)}</pre>
+        </details>` : ''}`;
     out.querySelectorAll('.pp-pager button').forEach((button) => button.addEventListener('click', () => {
         showReport(out, title, result.key, result.index + Number(button.dataset.step));
     }));
@@ -1874,7 +1988,8 @@ function renderDecoded(out, title, result) {
 // the platform's own motion. Wave and swell groups can repeat (e.g. a first and
 // second swell system), so every occurrence is kept. Returns null when the
 // report has none of these.
-function marineDetails(rows) {
+// From a satellite, the platform's motion (001012/001013) is the satellite's, not a ship's
+function marineDetails(rows, satellite) {
     var all = new Map();
     for (var [id, , value] of rows) {
         if (typeof value !== 'number') continue;
@@ -1918,7 +2033,7 @@ function marineDetails(rows) {
     }
     var course = first(1012), speed = first(1013);
     if (course !== undefined || speed !== undefined) {
-        tiles.push(tile('Ship heading', speed === 0 ? 'Stopped'
+        tiles.push(tile(satellite ? 'Satellite heading' : 'Ship heading', speed === 0 ? 'Stopped'
             : [course !== undefined ? `${course}°` : null, speed !== undefined ? `${speed} m/s (${knots(speed)} kn)` : null].filter(Boolean).join(' at ')));
     }
     var ice = first(20031);
@@ -2837,7 +2952,7 @@ const DISCIPLINES = {
     'ocean': 'Ocean',
     'atmospheric-composition': 'Atmosphere',
     'cryosphere': 'Cryosphere',
-    'space-weather': 'Space weather',
+    'space-weather': 'Space',  // Also matches satellite data (see matchesDiscipline)
     'other': 'Other',
 };
 const FORMATS = {
@@ -2855,10 +2970,20 @@ const filters = { text: '', centres: new Set(), format: '', disciplines: new Set
 // Each filter either keeps only what matches ('only') or hides what matches ('hide')
 const filterModes = { text: 'only', centres: 'only', format: 'only', disciplines: 'only' };
 
+// The link to a notification's data: canonical, or update when it replaces data
+// published earlier under the same data_id (WIS2 Notification Message, 9.x)
+function isDataLink(link) {
+    return link.rel == 'canonical' || link.rel == 'update';
+}
+
+function isUpdate(feature) {
+    return (feature.links || []).some((l) => l.rel == 'update');
+}
+
 // File type of a notification's data, from the canonical link's media type,
 // falling back to the file extension for generic types
 function formatOf(feature) {
-    var link = (feature.links || []).find((l) => l.rel == 'canonical');
+    var link = (feature.links || []).find((l) => isDataLink(l));
     if (!link) return 'other';
     var type = (link.type || '').toLowerCase();
     var ext = ((link.href || '').split(/[?#]/)[0].match(/\.([a-z0-9]+)$/i) || [])[1] || '';
@@ -2871,7 +2996,22 @@ function formatOf(feature) {
     if (/^image\//.test(type) || /^(jpe?g|png|gif|webp)$/.test(ext)) return 'image';
     if (/hdf|netcdf/.test(type) || /^(h5|hdf5?|nc)$/.test(ext)) return 'hdf';
     if (/^text\//.test(type) || ext === 'txt') return 'text';
+    // GTS bulletins often come with a generic type and no extension (DWD's relays, NCM's
+    // numbered copies), but the heading's T1 says what they are (WMO-No. 386, table A)
+    var t1 = (gtsHeading(feature) || '')[0];
+    if (/[IJ]/.test(t1)) return 'bufr';
+    if (/[DGHOY]/.test(t1)) return 'grib';
+    if (/[LX]/.test(t1)) return 'xml';
+    if (/[ABCFKNSTUVW]/.test(t1)) return 'text';
     return 'other';
+}
+
+// TTAAii of a GTS bulletin, from the notification or its data_id (…/INCX50EUMP191659_C_EDZW…)
+function gtsHeading(feature) {
+    var props = feature.properties || {};
+    if (props.gts && props.gts.ttaaii) return props.gts.ttaaii;
+    var match = /(?:^|[/_])([A-Z]{4}\d{2})[A-Z]{4}\d{6}/.exec(props.data_id || '');
+    return match ? match[1] : null;
 }
 const centres = new Map();  // centre-id -> its item in the picker
 let centreList, centreSearch, centreToggle, centreChips;
@@ -2893,9 +3033,11 @@ function isSpaceBased(topic) {
 function disciplineOf(t) {
     var parts = t.split('/');
     if (DISCIPLINES.hasOwnProperty(parts[3])) return parts[3];
-    // GTS bulletins: T1 = I (BUFR observations), T2 = S/U (weather) or O (ocean)
+    // GTS bulletins: T1 = I (BUFR observations), T2 = S/U (weather) or O (ocean).
+    // Satellites (N, E) go with weather too, as WIS2 files them under weather/space-based-observations,
+    // so both sources answer the discipline chips the same way (and Space matches both)
     if (GATEWAY_CENTRE.test(parts[0]) && parts[3] === 'I') {
-        if (parts[4] === 'S' || parts[4] === 'U') return 'weather';
+        if (parts[4] === 'S' || parts[4] === 'U' || parts[4] === 'N' || parts[4] === 'E') return 'weather';
         if (parts[4] === 'O') return 'ocean';
     }
     return 'other';
@@ -2921,8 +3063,21 @@ function matchesFilters(item) {
     return !(item.channel === 'cache' ? hidden.includes('obs') : hidden.includes('origin'))
         && test('centres', filters.centres.size, filters.centres.has(item.centre))
         && test('format', filters.format, item.format === filters.format)
-        && test('disciplines', filters.disciplines.size, filters.disciplines.has(item.discipline))
+        && test('disciplines', filters.disciplines.size, matchesDiscipline(item))
         && test('text', filters.text, item.topic.toLowerCase().includes(filters.text));
+}
+
+// The Space chip covers space weather and satellite observations, whatever discipline
+// their topic gives (WIS2 space-based-observations, GTS IN and IE bulletins)
+function matchesDiscipline(item) {
+    return filters.disciplines.has(item.discipline) || (filters.disciplines.has('space-weather')
+        && (isSpaceBased(item.topic) || (item.record && isSpaceRecord(item.record))));
+}
+
+// Satellite data by its topic, or by what it decoded to: GTS bulletins under other
+// headings can carry satellite reports (identified by 001007)
+function isSpaceRecord(record) {
+    return isSpaceBased(record.topic) || /-satellite$/.test(layerOf(record));
 }
 
 function filtersActive() {
@@ -2934,7 +3089,8 @@ function applyMapFilter() {
     var add = (key, condition) => expr.push(filterModes[key] === 'hide' ? ['!', condition] : condition);
     if (filters.centres.size) add('centres', ['in', ['get', 'centre'], ['literal', [...filters.centres]]]);
     if (filters.format) add('format', ['==', ['get', 'format'], filters.format]);
-    if (filters.disciplines.size) add('disciplines', ['in', ['get', 'discipline'], ['literal', [...filters.disciplines]]]);
+    if (filters.disciplines.size) add('disciplines', ['any', ['in', ['get', 'discipline'], ['literal', [...filters.disciplines]]],
+        filters.disciplines.has('space-weather') && ['==', ['get', 'space'], true]]);
     if (filters.text) add('text', ['in', filters.text, ['get', 'topic']]);
     if (hiddenLayers.size) {
         var hidden = effectiveHidden();
@@ -2952,19 +3108,25 @@ function applyMapFilter() {
     // With aircraft tracks on, tracked aircraft are drawn in the air instead of on the ground
     // Optionally only the points coloured by the selected measure
     if (colouredOnly && METRICS[colourBy]) expr.push(['all', isColourTarget(), ['has', `m_${colourBy}`]]);
-    // Satellite reports drawn as part of a swath aren't drawn as points as well
-    var shown = [...(tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr), ['!=', ['get', 'inSwath'], true]];
+    // Satellite reports drawn as part of a swath aren't drawn as points as well,
+    // unless coverage is switched off and every report is a point
+    var coverage = !effectiveHidden().includes('sat-coverage');
+    var notInSwath = coverage ? [['!=', ['get', 'inSwath'], true]] : [];
+    var shown = [...(tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr), ...notInSwath];
     var arrows = windArrows();
     map.setFilter('points-arrow', arrows ? [...shown, isArrow()] : ['boolean', false]);
     if (arrows) shown = [...shown, ['!', isArrow()]];
     map.setFilter('points', [...shown, ['!=', ['get', 'gateway'], true], ['!=', ['get', 'ext'], true]]);
     map.setFilter('points-gts', [...shown, ['==', ['get', 'gateway'], true]]);
     map.setFilter('points-ext', [...shown, ['==', ['get', 'ext'], true]]);
-    map.setFilter('pulses', [...(tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr), ['!=', ['get', 'inSwath'], true]]);
-    map.setFilter('swaths-fill', expr.length > 1 ? expr : null);
-    map.setFilter('tracks', [...expr, ['==', ['geometry-type'], 'LineString']]);
+    map.setFilter('pulses', [...(tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr), ...notInSwath]);
+    map.setFilter('swaths-fill', !coverage ? ['boolean', false] : expr.length > 1 ? expr : null);
+    var trackExpr = coverage ? expr : [...expr, ['!=', ['get', 'kind'], 'satellite']];
+    map.setFilter('tracks', [...trackExpr, ['==', ['geometry-type'], 'LineString']]);
     updateMapKey();
-    map.setFilter('track-ribbons', [...expr, ['==', ['geometry-type'], 'Polygon']]);
+    map.setFilter('track-ribbons', [...trackExpr, ['==', ['geometry-type'], 'Polygon']]);
+    var radarShown = effectiveHidden().includes('radar') ? 'none' : 'visible';
+    radars.forEach((r) => map.getLayer(r.id) && map.setLayoutProperty(r.id, 'visibility', radarShown));
 }
 
 function applyFilters() {
@@ -2974,6 +3136,41 @@ function applyFilters() {
     queueToggle.classList.toggle('filtered', active);
     queueToggle.title = active ? 'Layers and messages (filters on)' : 'Layers and messages';
     document.querySelector('.queue-reset').hidden = !active;
+    document.querySelector('.queue-share').hidden = !active;
+    writeFiltersToUrl();
+}
+
+// ---------- Filters in the address bar, so a filtered view can be shared:
+// ?topic=synop&centre=de-dwd,jp-jma&format=bufr&discipline=ocean&hide=centres
+// (hide lists the filters set to Hide rather than Only). Other parameters are kept.
+const FILTER_PARAMS = { text: 'topic', centres: 'centre', format: 'format', disciplines: 'discipline' };
+
+function readFiltersFromUrl() {
+    var params = new URLSearchParams(location.search);
+    var list = (name) => (params.get(name) || '').split(',').map((s) => s.trim()).filter(Boolean);
+    filters.text = (params.get(FILTER_PARAMS.text) || '').trim().toLowerCase();
+    list(FILTER_PARAMS.centres).forEach((c) => filters.centres.add(c));
+    filters.format = FORMATS.hasOwnProperty(params.get(FILTER_PARAMS.format)) ? params.get(FILTER_PARAMS.format) : '';
+    list(FILTER_PARAMS.disciplines).filter((d) => DISCIPLINES.hasOwnProperty(d)).forEach((d) => filters.disciplines.add(d));
+    list('hide').filter((key) => filterModes.hasOwnProperty(key)).forEach((key) => { filterModes[key] = 'hide'; });
+}
+
+function writeFiltersToUrl() {
+    var params = new URLSearchParams(location.search);
+    var set = (name, value) => (value ? params.set(name, value) : params.delete(name));
+    set(FILTER_PARAMS.text, filters.text);
+    set(FILTER_PARAMS.centres, [...filters.centres].sort().join(','));
+    set(FILTER_PARAMS.format, filters.format);
+    set(FILTER_PARAMS.disciplines, [...filters.disciplines].join(','));
+    // A mode only matters while its filter is set
+    set('hide', Object.keys(filterModes).filter((key) => filterModes[key] === 'hide' && (key === 'text' ? filters.text
+        : key === 'format' ? filters.format : filters[key].size)).join(','));
+    var query = params.toString().replace(/%2C/gi, ',');  // Commas read better unescaped
+    try {
+        history.replaceState(history.state, '', `${location.pathname}${query ? `?${query}` : ''}${location.hash}`);
+    } catch (err) {
+        // Some embedded views don't allow it; the filters still apply
+    }
 }
 
 function zoomToCentres(selected) {
@@ -3094,6 +3291,7 @@ class QueueControl {
             <div class="queue-header queue-filters">
                 <div class="queue-title"><strong>Filters</strong>
                     <button type="button" class="btn btn-sm btn-link queue-reset" hidden>Reset filters</button>
+                    <button type="button" class="btn btn-sm btn-link queue-share" hidden title="Copy a link that opens the map with these filters">Copy link</button>
                 </div>
                 <div class="filter-row">${filterModeButton('text')}<input type="search" class="form-control form-control-sm" placeholder="Filter topics"></div>
                 <div class="queue-selects">
@@ -3123,7 +3321,11 @@ class QueueControl {
             <div class="queue-pane queue-pane-layers" data-pane="layers"></div>
             <div class="queue-pane queue-pane-messages" data-pane="messages" hidden>
                 <div class="queue-controls">
-                    <label class="form-check-label"><input type="checkbox" class="form-check-input queue-mapped"> On map only</label>
+                    <select class="form-select form-select-sm queue-mapped" aria-label="Messages to list">
+                        <option value="">All messages</option>
+                        <option value="on">On map</option>
+                        <option value="off">Not on map</option>
+                    </select>
                     <span class="queue-count"></span>
                     <button type="button" class="btn btn-sm btn-outline-secondary queue-pause">Pause</button>
                 </div>
@@ -3203,6 +3405,25 @@ class QueueControl {
             showSelectedCentres();
             applyFilters();
         });
+        // Filters given in the link this page was opened with
+        queueFilter.value = filters.text;
+        queueFormat.value = filters.format;
+        chips.forEach((chip) => chip.dataset.discipline && chip.setAttribute('aria-pressed', filters.disciplines.has(chip.dataset.discipline)));
+        sidebar.querySelectorAll('.filter-mode').forEach(paintFilterMode);
+        showSelectedCentres();
+        // The map's filter needs the rest of the script, so apply once it has run
+        if (filtersActive()) setTimeout(applyFilters);
+        var share = sidebar.querySelector('.queue-share');
+        share.addEventListener('click', async () => {
+            writeFiltersToUrl();
+            try {
+                await navigator.clipboard.writeText(location.href);
+                share.textContent = 'Copied';
+            } catch (err) {
+                share.textContent = 'Copy from the address bar';
+            }
+            setTimeout(() => { share.textContent = 'Copy link'; }, 2000);
+        });
         queueMapped.addEventListener('change', rebuildQueue);
         queuePause.addEventListener('click', function(){
             queuePaused = !queuePaused;
@@ -3238,15 +3459,23 @@ function queueMessage(topic, message, record, feature) {
         discipline: disciplineOf(t),
         format: feature ? formatOf(feature) : 'other',
         dataId: feature && feature.properties ? feature.properties.data_id : null,
-        // The decode layer this message goes to, when that layer is on
-        decodeKind: feature && !record ? Object.keys(DECODE_LAYERS).find((k) => decodeEnabled.has(k) && DECODE_LAYERS[k](topic, feature) && !satelliteSkipped(k, topic)) : null,
+        decodeKey: feature ? decodeKey(topic, feature) : null,
+        // The decode layer this message goes to, when that layer is on. Origin copies
+        // aren't downloaded, but are linked to what their cache copy decodes to.
+        decodeKind: feature && !record ? Object.keys(DECODE_LAYERS).find((k) => decodeEnabled.has(k)
+            && DECODE_LAYERS[k](topic.replace(/^origin\//, 'cache/'), feature) && !satelliteSkipped(k, topic)) : null,
         message: message,
         wis2box: wis2boxVersion(feature),
         record: record,
         row: null,
     };
     queueTotal++;
-    if (entry.decodeKind && entry.dataId) awaitDecode(entry);
+    if (entry.decodeKind && entry.decodeKey) {
+        // A cache that announces the file after it has been decoded links straight away
+        var decoded = decodedFirst.get(entry.decodeKey);
+        if (decoded && records.has(decoded.id)) entry.record = decoded;
+        else awaitDecode(entry);
+    }
     if (centreList && !centres.has(entry.centre)) addCentreOption(entry.centre);
     recent.push(entry);
     if (recent.length > RECENT_MAX) recent.shift();
@@ -3257,7 +3486,7 @@ function queueMessage(topic, message, record, feature) {
 }
 
 function matchesQueueFilter(entry) {
-    if (queueMapped && queueMapped.checked && !entry.record) return false;
+    if (queueMapped && queueMapped.value && (queueMapped.value === 'on') !== !!entry.record) return false;
     return matchesFilters(entry);
 }
 
@@ -3423,7 +3652,7 @@ function paintQueueDot(dot, entry) {
         if (isGateway(entry.record)) dot.classList.add('is-gts');
     } else if (entry.decodeKind) {
         dot.classList.add('queue-dot-pending');
-        if (entry.decodeKind === 'gts' || entry.decodeKind === 'wis2gts') dot.classList.add('is-gts');
+        if (['gts', 'gts-satellite', 'gts-text', 'wis2gts'].includes(entry.decodeKind)) dot.classList.add('is-gts');
         dot.style.borderColor = COLORS[entry.decodeKind];
     } else {
         dot.classList.add('queue-dot-none');  // Not on the map
@@ -3439,25 +3668,40 @@ function currentRecord(entry) {
     return latest && records.has(latest.id) ? latest : null;
 }
 
-// Entries waiting for their file to be decoded, by data_id. Kept apart from
+// Entries waiting for their file to be decoded, by decodeKey. Kept apart from
 // the recent list, which busy brokers cycle through in seconds, so a row still
 // on screen can be linked however long decoding takes.
 const DECODE_WAITING_MAX = 5000;
 const decodeWaiting = new Map();
+const decodedFirst = new Map();  // decodeKey -> first report plotted from that file
+
+// The same GTS bulletin is relayed by more than one gateway (DWD and JMA) under
+// different data_ids, so gateway files are known by their abbreviated heading
+// (TTAAii CCCC YYGGgg, plus BBB for amendments) and decoded once
+function decodeKey(topic, feature) {
+    var props = feature.properties || {}, dataId = props.data_id;
+    var heading = GATEWAY_TOPIC.test(topic) && /([A-Z]{4}\d{2}[A-Z]{4}\d{6}(?:[A-Z]{3})?)(?=[_/]|$)/.exec(dataId || '');
+    var key = heading ? `gts:${heading[1]}` : dataId;
+    // An update reuses its data_id, but is a new file to decode
+    return key && isUpdate(feature) ? `${key}@${props.pubtime}` : key;
+}
 
 function awaitDecode(entry) {
-    var list = decodeWaiting.get(entry.dataId) || [];
+    var list = decodeWaiting.get(entry.decodeKey) || [];
     list.push(entry);
-    decodeWaiting.set(entry.dataId, list);
+    decodeWaiting.set(entry.decodeKey, list);
     if (decodeWaiting.size > DECODE_WAITING_MAX) decodeWaiting.delete(decodeWaiting.keys().next().value);
 }
 
 // Once reports decoded from a message are plotted, link its sidebar entries
 // to the first of them and repaint their rows
-function linkDecoded(dataId, record) {
-    var waiting = dataId && decodeWaiting.get(dataId);
+function linkDecoded(key, record) {
+    if (!key) return;
+    decodedFirst.set(key, record);
+    if (decodedFirst.size > DECODE_WAITING_MAX) decodedFirst.delete(decodedFirst.keys().next().value);
+    var waiting = decodeWaiting.get(key);
     if (!waiting) return;
-    decodeWaiting.delete(dataId);
+    decodeWaiting.delete(key);
     for (var entry of waiting) {
         if (entry.record) continue;
         entry.record = record;
@@ -3585,6 +3829,7 @@ function connectFastest() {
     });
 }
 
+readFiltersFromUrl();  // Before the sidebar is built, so its controls start set
 map.addControl(new QueueControl(), 'top-left');
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-left');
 map.addControl(new ProjectionControl(), 'top-left');
@@ -3662,7 +3907,7 @@ function parseMessage(topic, message) {
 function onMessage(topic, feature, replay) {
     // Kept for every message so the sidebar can find a downloadable copy
     rememberLinks((feature.properties || {}).data_id, feature.links || []);
-    revealGatewayRows(topic);
+    revealGatewayRows(topic, feature);
     // Replayed messages are only drawn: decoding a past hour of files would swamp the decoder
     var kind = !replay && Object.keys(DECODE_LAYERS).find((key) => DECODE_LAYERS[key](topic, feature));
     if (kind && decodeEnabled.has(kind)) queueDecode(kind, topic, feature);
@@ -3710,6 +3955,7 @@ function onMessage(topic, feature, replay) {
         format: formatOf(feature),
         color: COLORS.origin,
         source: webcam ? null : bufrSource(feature, props),
+        update: isUpdate(feature),
         notification: feature,
         decoded: null,
         replay: !!replay,
@@ -3814,9 +4060,36 @@ def _wsi(rows):
 
 _cache = {}  # key -> decoded subsets, so reports can be paged without re-decoding
 
+# Some files hold many BUFR messages back to back (e.g. a 60-message IASI pass),
+# so each is found by the length in its section 0. Big files are sampled: up to
+# _MAX_MESSAGES spread across the file, so one pass can't hold up the decoder.
+_MAX_MESSAGES = 8
+
+def _messages(b):
+    out, start = [], b.find(b'BUFR')
+    while start >= 0:
+        length = int.from_bytes(b[start + 4:start + 7], 'big')
+        if length < 8 or start + length > len(b):
+            out.append(b[start:])
+            break
+        out.append(b[start:start + length])
+        start = b.find(b'BUFR', start + length)
+    if len(out) > _MAX_MESSAGES:
+        out = [out[i * len(out) // _MAX_MESSAGES] for i in range(_MAX_MESSAGES)]
+    return out
+
 def _decode(data):
-    msg = Decoder().process(bytes(data.to_py()))
-    td = msg.template_data.value
+    subsets = []
+    for i, b in enumerate(_messages(bytes(data.to_py()))):
+        try:
+            subsets.extend(_decode_message(b))
+        except Exception:
+            if i == 0:
+                raise  # Later messages that fail are skipped
+    return subsets
+
+def _decode_message(b):
+    td = Decoder().process(b).template_data.value
     subsets = []
     for descs, vals in zip(td.decoded_descriptors_all_subsets, td.decoded_values_all_subsets):
         rows = []
@@ -3855,6 +4128,117 @@ def _profile(rows):
 def ready():
     return 'ok'
 
+# ---- Weather radar (ODIM HDF5 polar volumes). Returns the lowest-elevation
+# reflectivity scan, DBZH before TH, as bytes of (dBZ + 32) * 2, 0 for no echo.
+def _attr(groups, name, default=None):
+    for g in groups:
+        if g is not None and name in g.attrs:
+            v = g.attrs[name]
+            if isinstance(v, bytes):
+                return v.decode()
+            return v.item() if hasattr(v, 'item') else v
+    return default
+
+# GAMIC volumes (scan0, scan1, ... each with moment_N datasets) instead of ODIM's
+# dataset1/data1: values span dyn_range_min..max over 1..2^bits-1 (0 is no data),
+# and each ray's azimuth is in ray_header, so rays are put back on whole degrees
+def _gamic_scan(f, np, base64):
+    best = None
+    for name, s in f.items():
+        if not name.startswith('scan') or 'how' not in s:
+            continue
+        el = _attr([s['how']], 'elevation')
+        for m in s:
+            q = _attr([s[m]], 'moment') if m.startswith('moment_') else None
+            if q in ('Zh', 'UZh') and el is not None:
+                rank = (q != 'Zh', float(el))
+                if best is None or rank < best[0]:
+                    best = (rank, s, s[m], q)
+    if best is None:
+        return None
+    _, s, m, q = best
+    raw = m[()]
+    bits = 16 if raw.dtype == np.uint16 else 8
+    lo, hi = float(_attr([m], 'dyn_range_min')), float(_attr([m], 'dyn_range_max'))
+    dbz = lo + (raw.astype('float32') - 1) * (hi - lo) / (2 ** bits - 2)
+    q8 = np.clip(np.round((dbz + 32) * 2), 1, 254).astype('uint8')
+    q8[raw == 0] = 0
+    rays = s['ray_header'][()]
+    start, stop = rays['azimuth_start'], rays['azimuth_stop']
+    azimuth = (start + ((stop - start) % 360) / 2) % 360
+    out = np.zeros((360, raw.shape[1]), 'uint8')
+    out[azimuth.astype(int) % 360] = q8
+    # Fine range gates (100 m out to 250 km) are thinned to at most 1250 bins
+    step = max(1, -(-raw.shape[1] // 1250))
+    out = np.ascontiguousarray(out[:, ::step])
+    when = str(_attr([f['what']], 'date', ''))
+    how = s['how']
+    return json.dumps({
+        'quantity': 'DBZH' if q == 'Zh' else 'TH',
+        'source': {'NOD': _attr([f.get('how')], 'site_name') or _attr([f.get('how')], 'host_name') or ''},
+        'lat': float(_attr([f['where']], 'lat')),
+        'lon': float(_attr([f['where']], 'lon')),
+        'elangle': float(_attr([how], 'elevation')),
+        'rscale': float(_attr([how], 'range_step')) * step,     # m
+        'rstart': float(_attr([how], 'range_start', 0.0)) / 1000,  # km
+        'nrays': 360,
+        'nbins': int(out.shape[1]),
+        'date': when[:10].replace('-', ''),
+        'time': when[11:19].replace(':', ''),
+        'data': base64.b64encode(out.tobytes()).decode(),
+    })
+
+def radar_scan(data):
+    import io, base64
+    import h5py
+    import numpy as np
+    f = h5py.File(io.BytesIO(bytes(data.to_py())), 'r')
+    if any(k.startswith('scan') for k in f):
+        return _gamic_scan(f, np, base64) or json.dumps(None)
+    best = None
+    for name, ds in f.items():
+        if not name.startswith('dataset') or 'where' not in ds:
+            continue
+        el = _attr([ds['where']], 'elangle')
+        if el is None:
+            continue
+        for dname, d in ds.items():
+            if not dname.startswith('data') or 'data' not in d:
+                continue
+            q = _attr([d.get('what'), ds.get('what')], 'quantity')
+            if q not in ('DBZH', 'TH'):
+                continue
+            rank = (q != 'DBZH', float(el))
+            if best is None or rank < best[0]:
+                best = (rank, ds, d, q)
+    if best is None:
+        return json.dumps(None)
+    _, ds, d, q = best
+    whats = [d.get('what'), ds.get('what'), f.get('what')]
+    raw = d['data'][()]
+    dbz = raw.astype('float32') * float(_attr(whats, 'gain', 1.0)) + float(_attr(whats, 'offset', 0.0))
+    out = np.clip(np.round((dbz + 32) * 2), 1, 254).astype('uint8')
+    for flag in ('nodata', 'undetect'):
+        v = _attr(whats, flag)
+        if v is not None:
+            out[raw == v] = 0
+    where = [ds['where'], f.get('where')]
+    source = _attr([f.get('what')], 'source', '')
+    return json.dumps({
+        'quantity': q,
+        'source': dict(p.split(':', 1) for p in source.split(',') if ':' in p),
+        'lat': float(_attr([f.get('where')], 'lat')),
+        'lon': float(_attr([f.get('where')], 'lon')),
+        'elangle': float(_attr([ds['where']], 'elangle')),
+        'rscale': float(_attr(where, 'rscale')),        # m
+        'rstart': float(_attr(where, 'rstart', 0.0)),   # km
+        'nrays': int(raw.shape[0]),
+        'nbins': int(raw.shape[1]),
+        'date': _attr([ds.get('what'), f.get('what')], 'startdate') or _attr([f.get('what')], 'date'),
+        'time': _attr([ds.get('what'), f.get('what')], 'starttime') or _attr([f.get('what')], 'time'),
+        'data': base64.b64encode(out.tobytes()).decode(),
+    })
+
 def decode_subsets(data, limit=0):
     subsets = _decode(data)
     if limit and len(subsets) > limit:
@@ -3886,6 +4270,7 @@ def decode_bufr(data, wsi, key, index=-1):
 const DECODER_WORKER = `
 importScripts('${PYODIDE_URL}pyodide.js');
 let ready = null;
+let h5py = null;  // Loaded on the first radar file
 
 async function init(wheelUrls) {
     const py = await loadPyodide({ indexURL: '${PYODIDE_URL}' });
@@ -3911,6 +4296,7 @@ onmessage = async (e) => {
     try {
         if (!ready) ready = init(wheelUrls);
         const py = await ready;
+        if (fn === 'radar_scan') await (h5py = h5py || py.loadPackage('h5py'));
         postMessage({ id, result: py.globals.get(fn)(...args) });
     } catch (err) {
         ready = null;  // Allow a retry after a failed start
@@ -3946,7 +4332,7 @@ function roomyForTwoDecoders() {
 }
 
 function decoderLane(fn) {
-    return fn === 'decode_subsets' && filesDecoderReady ? 'files' : 'main';
+    return (fn === 'decode_subsets' || fn === 'radar_scan') && filesDecoderReady ? 'files' : 'main';
 }
 
 function startFilesDecoder() {
@@ -3995,61 +4381,103 @@ const WIS2_GTS_TOPIC = /\/a\/wis2\/[^/]+-wis2-to-gts\//;
 const DECODE_FILE_MAX_BYTES = 200 * 1024;
 const DECODE_FILE_MAX_REPORTS = 300;  // Per file, so a satellite swath can't flood the map
 const NOT_BUFR = ['grib', 'xml', 'csv', 'json', 'image', 'hdf', 'text'];
+// Satellite files, from the cache or the GTS, are decoded while the Satellites row
+// is on, whatever Cache and GTS-to-WIS2 say, and may be larger than other files
+const SATELLITE_FILE_MAX_BYTES = 16 * 1024 * 1024;  // Big passes (IASI runs to 15 MB) are sampled, see _messages
+const RADAR_FILE_MAX_BYTES = 50 * 1024 * 1024;
+// Volumes bigger than this (Cyprus's GAMIC files run 27-39 MB) are fetched at most every
+// RADAR_LARGE_EVERY_MS per radar, rather than every few minutes
+const RADAR_LARGE_BYTES = 5 * 1024 * 1024;
+const RADAR_LARGE_EVERY_MS = 15 * 60 * 1000;
+const radarLargeFetched = new Map();  // radar (data_id without its time) -> when last fetched
 const DECODE_LAYERS = {
-    gts: (topic, feature) => topic.startsWith('cache/') && GTS_TOPIC.test(topic),
+    gts: (topic, feature) => topic.startsWith('cache/') && GTS_TOPIC.test(topic) && !GATEWAY_SATELLITE.test(topic),
+    // Text SYNOPs, decoded here rather than by pybufrkit (see parseSynopBulletin)
+    'gts-text': (topic, feature) => topic.startsWith('cache/') && SYNOP_TOPIC.test(topic)
+        && !(feature.links || []).some((l) => isDataLink(l) && l.length > DECODE_FILE_MAX_BYTES),
+    'gts-satellite': (topic, feature) => topic.startsWith('cache/') && GTS_TOPIC.test(topic) && GATEWAY_SATELLITE.test(topic),
     wis2gts: (topic, feature) => topic.startsWith('cache/') && WIS2_GTS_TOPIC.test(topic) && !NOT_BUFR.includes(formatOf(feature))
-        && !(feature.links || []).some((l) => l.rel == 'canonical' && l.length > DECODE_FILE_MAX_BYTES),
+        && !(feature.links || []).some((l) => isDataLink(l) && l.length > DECODE_FILE_MAX_BYTES),
     // Gateway centres belong to their own layers above
-    files: (topic, feature) => topic.startsWith('cache/') && !GATEWAY_TOPIC.test(topic) && decodableFile(topic, feature),
+    files: (topic, feature) => topic.startsWith('cache/') && !GATEWAY_TOPIC.test(topic) && !isSpaceBased(topic) && decodableFile(topic, feature),
+    // ODIM HDF5 radar volumes. Velocity-only files are skipped by name, or by their
+    // GTS heading once a file under it has turned out to hold no reflectivity
+    radar: (topic, feature) => topic.startsWith('cache/') && /radar/i.test(topic) && formatOf(feature) === 'hdf'
+        && !radarNoReflectivity.has(radarHeading(feature))
+        && !(feature.links || []).some((l) => isDataLink(l) && (l.length > RADAR_FILE_MAX_BYTES || /vrad/i.test(l.href))),
+    // Any space-based file not drawn from its notification: no geometry, or a swath too large to plot
+    'cache-satellite': (topic, feature) => topic.startsWith('cache/') && !GATEWAY_TOPIC.test(topic) && isSpaceBased(topic)
+        && !(feature.geometry && feature.geometry.type && pointFor(feature.geometry)) && !NOT_BUFR.includes(formatOf(feature))
+        && !(feature.links || []).some((l) => isDataLink(l) && l.length > SATELLITE_FILE_MAX_BYTES),
 };
 
 function decodableFile(topic, feature) {
     return !feature.geometry
-        && (!NOT_BUFR.includes(formatOf(feature)) || (formatOf(feature) === 'xml' && /citypage/i.test(topic + JSON.stringify(feature.links || []))))
-        && (feature.links || []).some((l) => l.rel == 'canonical' && l.length > 0 && l.length <= DECODE_FILE_MAX_BYTES);
+        && (!NOT_BUFR.includes(formatOf(feature)) || (formatOf(feature) === 'xml' && /citypage/i.test(topic + JSON.stringify(feature.links || [])))
+            || (formatOf(feature) === 'text' && /lightning/i.test(topic)))
+        && (feature.links || []).some((l) => isDataLink(l) && l.length > 0 && l.length <= DECODE_FILE_MAX_BYTES);
 }
 
 const DECODE_FETCH_TIMEOUT_MS = 20000;
 const DECODE_QUEUE_MAX = 100;  // Oldest files are dropped when decoding falls behind
 const decodeEnabled = new Set();
-const decodePlotted = { gts: 0, wis2gts: 0, files: 0 };
+const decodePlotted = { gts: 0, 'gts-satellite': 0, 'gts-text': 0, wis2gts: 0, files: 0, 'cache-satellite': 0, radar: 0 };
 let decodeQueue = [];
 let decodeBusy = false;
 const decodeSeen = new Set();
 
-// Shows the GTS Aircraft and Satellites rows once such a bulletin has been
+// Shows the GTS Aircraft and the Satellites rows once such a file has been
 // announced, even though it isn't downloaded while the row is off
-function revealGatewayRows(topic) {
-    if (!/-gts-to-wis2\//.test(topic)) return;
+function revealGatewayRows(topic, feature) {
+    if (!seenLayers.has('satellite') && isSpaceBased(topic)) showLegendRow('satellite');
+    if (!seenLayers.has('radar') && DECODE_LAYERS.radar(topic, feature)) showLegendRow('radar');
     if (!seenLayers.has('gts-aircraft') && GATEWAY_AIRCRAFT.test(topic)) showLegendRow('gts-aircraft');
-    if (!seenLayers.has('gts-satellite') && GATEWAY_SATELLITE.test(topic)) showLegendRow('gts-satellite');
 }
 
-// Satellite and GTS aircraft files are only fetched while their group is on
+// GTS aircraft files are only fetched while their group is on (satellite files
+// have decode layers of their own, on only while Satellites is)
 function satelliteSkipped(kind, topic) {
     if (kind === 'gts' && GATEWAY_AIRCRAFT.test(topic)) return effectiveHidden().includes('gts-aircraft');
-    if (kind === 'gts') return GATEWAY_SATELLITE.test(topic) && effectiveHidden().includes('gts-satellite');
-    if (kind === 'files') return isSpaceBased(topic) && effectiveHidden().includes('cache-satellite');
     return false;
 }
 
 function queueDecode(kind, topic, feature) {
-    var props = feature.properties || {};
-    var link = (feature.links || []).find((l) => l.rel == 'canonical' && corsFriendly(l.href));
-    // Each cache republishes the file; take the first copy a browser can download
-    if (!link || decodeSeen.has(props.data_id)) return;
+    var key = decodeKey(topic, feature);
+    // Each cache republishes the file; take the first copy a browser can download,
+    // falling back on any link already seen for it (e.g. the origin's) when this
+    // cache's own server blocks browser downloads
+    var link = (feature.links || []).find((l) => isDataLink(l) && corsFriendly(l.href));
+    var href = link ? link.href : [...(dataLinks.get((feature.properties || {}).data_id) || [])].find(corsFriendly);
+    if (!href || !key || decodeSeen.has(key)) return;
     if (satelliteSkipped(kind, topic)) return;
-    decodeSeen.add(props.data_id);
+    if (kind === 'radar' && radarThrottled(feature)) return;
+    decodeSeen.add(key);
     if (decodeSeen.size > DATA_LINKS_MAX) decodeSeen.delete(decodeSeen.values().next().value);
     // XML needs no decoder, so it skips the queue rather than waiting behind BUFR
     if (formatOf(feature) === 'xml') {
-        fetch(link.href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) })
+        fetch(href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) })
             .then((response) => (response.ok ? response.text() : null))
-            .then((xml) => xml && decodeEnabled.has(kind) && plotCitypage({ kind, topic, feature, href: link.href }, xml))
-            .catch((err) => console.debug(`Could not fetch ${link.href}: ${err.message}`));
+            .then((xml) => xml && decodeEnabled.has(kind) && plotCitypage({ kind, key, topic, feature, href }, xml))
+            .catch((err) => console.debug(`Could not fetch ${href}: ${err.message}`));
         return;
     }
-    decodeQueue.push({ kind, topic, feature, href: link.href });
+    // So do text SYNOPs (JMA sends them as .txt, DWD with no extension)
+    if (kind === 'gts-text') {
+        fetch(href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) })
+            .then((response) => (response.ok ? response.text() : null))
+            .then((text) => text && decodeEnabled.has(kind) && plotSynopBulletin({ kind, key, topic, feature, href }, text))
+            .catch((err) => console.debug(`Could not fetch ${href}: ${err.message}`));
+        return;
+    }
+    // And text lightning reports, which are a short CSV
+    if (formatOf(feature) === 'text') {
+        fetch(href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) })
+            .then((response) => (response.ok ? response.text() : null))
+            .then((text) => text && decodeEnabled.has(kind) && plotLightningText({ kind, key, topic, feature, href }, text))
+            .catch((err) => console.debug(`Could not fetch ${href}: ${err.message}`));
+        return;
+    }
+    decodeQueue.push({ kind, key, topic, feature, href });
     if (decodeQueue.length > DECODE_QUEUE_MAX) decodeQueue.shift();
     pumpDecode();
 }
@@ -4070,11 +4498,14 @@ async function fetchForDecode(job) {
     decodeFetching++;
     try {
         // A stalled server would otherwise hold up the queue
-        var response = await fetch(job.href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) });
+        // Radar volumes can run to tens of MB, so they get longer
+        var response = await fetch(job.href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS * (job.kind === 'radar' ? 4 : 1)) });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        var bytes = bufrPart(new Uint8Array(await response.arrayBuffer()));
+        var raw = new Uint8Array(await response.arrayBuffer());
+        var bytes = job.kind === 'radar' ? raw : bufrPart(raw);
         if (bytes) decodeReady.push({ job, bytes });
     } catch (err) {
+        decodeSeen.delete(job.key);  // Let another cache's copy try
         console.debug(`Could not fetch ${job.href}: ${err.message}`);
     }
     decodeFetching--;
@@ -4087,8 +4518,12 @@ async function decodeNext() {
     decodeBusy = true;
     var { job, bytes } = decodeReady.shift();
     try {
-        var subsets = JSON.parse(await callDecoder('decode_subsets', bytes, DECODE_FILE_MAX_REPORTS));
-        subsets.forEach(([rows, profile], i) => plotDecodedReport(job, rows, profile, i, subsets.length));
+        if (job.kind === 'radar') {
+            plotRadar(job, JSON.parse(await callDecoder('radar_scan', bytes)));
+        } else {
+            var subsets = JSON.parse(await callDecoder('decode_subsets', bytes, DECODE_FILE_MAX_REPORTS));
+            subsets.forEach(([rows, profile], i) => plotDecodedReport(job, rows, profile, i, subsets.length));
+        }
     } catch (err) {
         console.debug(`Could not decode ${job.href}: ${err.message}`);
     }
@@ -4109,17 +4544,20 @@ function plotDecodedReport(job, rows, profile, index, total) {
     var props = job.feature.properties || {};
     var [channel, t] = job.topic.split('/a/wis2/');
     // GTS reports join GTS-to-WIS2's groups and decoded cache files join Cache's
-    var cls = GATEWAY_AIRCRAFT.test(job.topic) ? 'aircraft' : reportClass(values, profile);
+    // The bulletin header says what it holds for aircraft (IUA) and satellites (IN, IE)
+    var cls = GATEWAY_AIRCRAFT.test(job.topic) ? 'aircraft' : GATEWAY_SATELLITE.test(job.topic) ? 'satellite' : reportClass(values, profile);
     // Upper-air bulletins (IU…: TEMP, PILOT, wind profiler) carry station numbers, but aren't weather stations
     if (cls === 'station' && GATEWAY_UPPER_AIR.test(job.topic)) cls = 'upperair';
     // WIS2 topics say what they hold (…/moored-buoys-and-moorings), which beats guessing from
     // the identifiers: buoys and ships with WIGOS ids would otherwise read as weather stations
-    if (job.kind !== 'gts') {
+    if (!GATEWAY_TOPIC.test(job.topic)) {
         var fromTopic = topicClass({ topic: job.topic, webcam: false, props });
-        if (fromTopic !== 'other' && !OBS_CLASSES[fromTopic].cacheOnly) cls = fromTopic;
+        // Lightning is cache-only too, but does come as BUFR
+        if (fromTopic !== 'other' && (fromTopic === 'lightning' || !OBS_CLASSES[fromTopic].cacheOnly)) cls = fromTopic;
     }
-    var subLayer = job.kind === 'gts' ? `gts-${cls}` : job.kind === 'files' ? `cache-${cls}` : null;
-    if (subLayer === 'gts-satellite' && effectiveHidden().includes(subLayer)) return;
+    var subLayer = job.kind === 'gts' || job.kind === 'gts-satellite' ? `gts-${cls}` : job.kind === 'files' || job.kind === 'cache-satellite' ? `cache-${cls}` : null;
+    if (cls === 'lightning' && seenFlash(flashTime(values), lat, lon)) return;
+    if (subLayer && subLayer.endsWith('-satellite') && effectiveHidden().includes(subLayer)) return;
     var record = {
         id: nextId++,
         coords: [lon, lat],
@@ -4131,6 +4569,7 @@ function plotDecodedReport(job, rows, profile, index, total) {
         webcam: false,
         decodedLayer: job.kind,
         subLayer: subLayer,
+        update: isUpdate(job.feature),
         track: trackKey(subLayer, values),
         observed: Date.parse(reportTime(values) || '') || Date.now(),
         props: {
@@ -4144,7 +4583,7 @@ function plotDecodedReport(job, rows, profile, index, total) {
         format: 'bufr',
         color: subLayer ? OBS_CLASSES[cls].color : COLORS[job.kind],
         source: null,
-        decoded: { subsets: 1, index: 0, rows: rows, profile: profile },
+        decoded: { subsets: 1, index: 0, rows: subLayer && subLayer.endsWith('-satellite') ? trimRows(rows) : rows, profile: profile },
         alt: aircraftAltitude(values, t),
         born: Date.now(),
     };
@@ -4157,7 +4596,426 @@ function plotDecodedReport(job, rows, profile, index, total) {
     addPoint(record);
     if (record.track) tracksDirty = true;
     decodePlotted[job.kind]++;
-    if (!index) linkDecoded(props.data_id, record);
+    // The first report with a location stands for the file; report 0 may have none
+    if (!job.linked) {
+        job.linked = true;
+        linkDecoded(job.key, record);
+    }
+}
+
+// The first SATELLITE_ROWS_MAX values, plus the first of any value a measure colours by
+function trimRows(rows) {
+    if (rows.length <= SATELLITE_ROWS_MAX) return rows;
+    var wanted = new Set(Object.values(METRICS).flatMap((m) => m.ids || []));
+    var kept = rows.slice(0, SATELLITE_ROWS_MAX);
+    kept.forEach((r) => wanted.delete(r[0]));
+    for (var i = SATELLITE_ROWS_MAX; i < rows.length && wanted.size; i++) {
+        if (wanted.delete(rows[i][0])) kept.push(rows[i]);
+    }
+    return kept;
+}
+
+// ---------- Weather radar. Each radar's latest lowest scan is drawn as an image
+// around it, reprojected from range and azimuth onto the map's Mercator grid.
+const RADAR_MAX = 100;  // Radars drawn at once
+const RADAR_STALE_MS = 30 * 60 * 1000;  // A radar with nothing newer is taken off
+const RADAR_IMAGE_PX = 600;
+let radarIds = 0;
+let radarLookup = null;
+
+// RGBA for each byte the decoder sends: (dBZ + 32) * 2, 0 for no echo
+function radarColours() {
+    if (radarLookup) return radarLookup;
+    radarLookup = new Uint8ClampedArray(256 * 4);
+    for (var v = 1; v < 255; v++) {
+        var dbz = v / 2 - 32, step = RADAR_COLORS.filter(([t]) => dbz >= t).pop();
+        if (!step) continue;
+        var hex = step[1];
+        radarLookup.set([parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16), 255], v * 4);
+    }
+    return radarLookup;
+}
+
+function renderRadar(scan) {
+    var bytes = Uint8Array.from(atob(scan.data), (c) => c.charCodeAt(0));
+    var R = 6371008.8, rad = Math.PI / 180;
+    var start = scan.rstart * 1000, range = start + scan.nbins * scan.rscale;
+    var dLat = range / R / rad, dLon = dLat / Math.cos(scan.lat * rad);
+    var north = scan.lat + dLat, south = scan.lat - dLat, west = scan.lon - dLon, east = scan.lon + dLon;
+    var merc = (lat) => Math.log(Math.tan(Math.PI / 4 + lat * rad / 2));
+    var yN = merc(north), yS = merc(south), size = RADAR_IMAGE_PX;
+    var canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    var ctx = canvas.getContext('2d'), image = ctx.createImageData(size, size), lut = radarColours();
+    for (var py = 0; py < size; py++) {
+        // Rows are evenly spaced in Mercator y, as the map draws the image
+        var lat = (2 * Math.atan(Math.exp(yN + (py + 0.5) / size * (yS - yN))) - Math.PI / 2) / rad;
+        var dy = (lat - scan.lat) * rad * R, kx = rad * R * Math.cos(lat * rad);
+        for (var px = 0; px < size; px++) {
+            var dx = (west + (px + 0.5) / size * (east - west) - scan.lon) * kx;
+            var bin = Math.floor((Math.hypot(dx, dy) - start) / scan.rscale);
+            if (bin < 0 || bin >= scan.nbins) continue;
+            // Rays run clockwise from north
+            var ray = Math.floor(((Math.atan2(dx, dy) / rad + 360) % 360) / 360 * scan.nrays) % scan.nrays;
+            var v = bytes[ray * scan.nbins + bin];
+            if (v && lut[v * 4 + 3]) image.data.set(lut.subarray(v * 4, v * 4 + 4), (py * size + px) * 4);
+        }
+    }
+    ctx.putImageData(image, 0, 0);
+    return { url: canvas.toDataURL('image/png'), coordinates: [[west, north], [east, north], [east, south], [west, south]] };
+}
+
+// A large volume from a radar fetched less than RADAR_LARGE_EVERY_MS ago is skipped.
+// The radar is the data_id with its timestamp taken out (LONGRANGE_LCA_20261019180257_00.h5)
+function radarThrottled(feature) {
+    var link = (feature.links || []).find((l) => isDataLink(l));
+    if (!link || !(link.length > RADAR_LARGE_BYTES)) return false;
+    var radar = String((feature.properties || {}).data_id).replace(/\d{8}T?\d{4,6}/g, '');
+    if (Date.now() - (radarLargeFetched.get(radar) || 0) < RADAR_LARGE_EVERY_MS) return true;
+    radarLargeFetched.set(radar, Date.now());
+    if (radarLargeFetched.size > RADAR_MAX) radarLargeFetched.delete(radarLargeFetched.keys().next().value);
+    return false;
+}
+
+// RMI sends reflectivity and velocity under different headings (PAGW, PAGY, PAHZ):
+// a heading whose file held no reflectivity isn't downloaded again
+const radarNoReflectivity = new Set();
+
+function radarHeading(feature) {
+    var gts = (feature.properties || {}).gts;
+    return gts && gts.ttaaii ? `${gts.ttaaii} ${gts.cccc}` : null;
+}
+
+function plotRadar(job, scan) {
+    if (!scan) {
+        var heading = radarHeading(job.feature);
+        if (heading && radarNoReflectivity.size < 1000) radarNoReflectivity.add(heading);
+        return;
+    }
+    if (!map.getLayer('points') || !decodeEnabled.has('radar')) return;
+    var src = scan.source || {};
+    var site = src.NOD || src.RAD || src.WMO || `${scan.lat},${scan.lon}`;
+    var d = String(scan.date || ''), t = String(scan.time || '').padStart(6, '0');
+    var time = Date.parse(`${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}T${t.slice(0, 2)}:${t.slice(2, 4)}:${t.slice(4, 6)}Z`) || Date.now();
+    var existing = radars.get(site);
+    // Filtered reflectivity (DBZH) beats unfiltered (TH) from the same radar, unless it has gone stale
+    if (existing && (time < existing.time
+        || (scan.quantity !== 'DBZH' && existing.quantity === 'DBZH' && time - existing.time < RADAR_STALE_MS))) return;
+    var { url, coordinates } = renderRadar(scan);
+    var id = existing ? existing.id : `radar-${radarIds++}`;
+    if (existing) {
+        map.getSource(id).updateImage({ url, coordinates });
+    } else {
+        map.addSource(id, { type: 'image', url, coordinates });
+        // Under the coverage, tracks and points
+        var before = ['swaths-fill', 'tracks', 'points'].find((l) => map.getLayer(l));
+        map.addLayer({ id, type: 'raster', source: id, paint: { 'raster-opacity': 0.75, 'raster-fade-duration': 0 },
+            layout: { visibility: effectiveHidden().includes('radar') ? 'none' : 'visible' } }, before);
+    }
+    radars.delete(site);  // Re-insert so the least recently updated is first
+    radars.set(site, { id, time, quantity: scan.quantity, updated: Date.now() });
+    if (radars.size > RADAR_MAX) removeRadar(radars.keys().next().value);
+    decodePlotted.radar++;
+    updateMapKey();
+}
+
+function removeRadar(site) {
+    var r = radars.get(site);
+    radars.delete(site);
+    if (map.getLayer(r.id)) map.removeLayer(r.id);
+    if (map.getSource(r.id)) map.removeSource(r.id);
+}
+
+setInterval(() => {
+    for (var [site, r] of [...radars]) {
+        if (Date.now() - r.updated > RADAR_STALE_MS) removeRadar(site);
+    }
+    updateMapKey();
+}, 60 * 1000);
+
+// ---------- Text SYNOPs from the GTS: FM 12 (land stations, AAXX) and FM 13 (ships,
+// BBXX) in traditional alphanumeric code, under S/M (main hours), S/N (other hours)
+// and S/I (intermediate hours). Ships carry their position. A land station's comes
+// from the same station already plotted from BUFR (WIS2 or GTS); until it has been,
+// its latest report waits.
+const SYNOP_TOPIC = /\/a\/wis2\/[^/]+-gts-to-wis2\/data\/core\/S\/[MNI]\//;
+const SYNOP_WAITING_MAX = 5000;
+const STATION_COORDS_MAX = 50000;
+const stationCoords = new Map();  // WIGOS id -> [lon, lat], from every station plotted
+const synopWaiting = new Map();  // WIGOS id -> { job, report } for stations not yet seen
+
+// Present weather, code table 4677 (manned stations)
+function presentWeather(ww) {
+    var named = { 4: 'Smoke', 5: 'Haze', 6: 'Dust', 7: 'Blowing dust or sand', 8: 'Dust whirls', 9: 'Duststorm', 10: 'Mist',
+        11: 'Shallow fog', 12: 'Shallow fog', 13: 'Lightning', 17: 'Thunder', 18: 'Squalls', 19: 'Funnel cloud',
+        20: 'Recent drizzle', 21: 'Recent rain', 22: 'Recent snow', 23: 'Recent rain and snow', 24: 'Recent freezing rain',
+        25: 'Recent rain showers', 26: 'Recent snow showers', 27: 'Recent hail', 28: 'Recent fog', 29: 'Recent thunderstorm',
+        40: 'Fog at a distance', 41: 'Fog patches', 48: 'Freezing fog', 49: 'Freezing fog',
+        56: 'Light freezing drizzle', 57: 'Freezing drizzle', 58: 'Light drizzle and rain', 59: 'Drizzle and rain',
+        66: 'Light freezing rain', 67: 'Freezing rain', 68: 'Light rain and snow', 69: 'Rain and snow',
+        76: 'Diamond dust', 77: 'Snow grains', 78: 'Snow crystals', 79: 'Ice pellets',
+        80: 'Light rain showers', 81: 'Rain showers', 82: 'Violent rain showers', 83: 'Rain and snow showers', 84: 'Rain and snow showers',
+        85: 'Light snow showers', 86: 'Snow showers', 87: 'Snow pellet showers', 88: 'Snow pellet showers', 89: 'Hail showers', 90: 'Hail showers',
+        91: 'Light rain, thunder earlier', 92: 'Rain, thunder earlier', 93: 'Snow or hail, thunder earlier', 94: 'Snow or hail, thunder earlier',
+        95: 'Thunderstorm', 96: 'Thunderstorm with hail', 97: 'Heavy thunderstorm', 98: 'Thunderstorm with dust or sand', 99: 'Heavy thunderstorm with hail' };
+    if (named[ww]) return named[ww];
+    var graded = (light, moderate, heavy) => [light, light, moderate, moderate, heavy, heavy][ww % 10];
+    if (ww >= 14 && ww <= 16) return 'Precipitation in sight';
+    if (ww >= 30 && ww <= 35) return 'Dust or sandstorm';
+    if (ww >= 36 && ww <= 39) return 'Blowing snow';
+    if (ww >= 42 && ww <= 47) return 'Fog';
+    if (ww >= 50 && ww <= 55) return graded('Light drizzle', 'Drizzle', 'Heavy drizzle');
+    if (ww >= 60 && ww <= 65) return graded('Light rain', 'Rain', 'Heavy rain');
+    if (ww >= 70 && ww <= 75) return graded('Light snow', 'Snow', 'Heavy snow');
+    return null;  // 00-03 describe how the clouds are changing
+}
+
+// Visibility (VV, code table 4377) in metres
+function synopVisibility(vv) {
+    if (vv <= 50) return vv * 100;
+    if (vv >= 56 && vv <= 80) return (vv - 50) * 1000;
+    if (vv >= 81 && vv <= 89) return (vv - 80) * 5000 + 30000;
+    return { 90: 0, 91: 50, 92: 200, 93: 500, 94: 1000, 95: 2000, 96: 4000, 97: 10000, 98: 20000, 99: 50000 }[vv] ?? null;
+}
+
+// Pressure in tenths of hPa with the thousands left off (0123 is 1012.3 hPa), in Pa
+function synopPressure(g) {
+    if (!/^\d{4}$/.test(g)) return null;
+    var hpa = Number(g) / 10;
+    return (hpa < 100 ? hpa + 1000 : hpa) * 100;
+}
+
+// Section 1 (and the parts of 2 and 3 worth showing) as BUFR-style rows, so the
+// popup, wind arrows and colouring treat them like decoded BUFR
+function synopRows(groups, windUnit) {
+    var rows = [], knots = windUnit === '3' || windUnit === '4';
+    var digits = (s) => (/^\d+$/.test(s) ? Number(s) : null);
+    var temperature = (g) => (/^[01]\d{3}$/.test(g) ? (g[0] === '1' ? -1 : 1) * Number(g.slice(1)) / 10 + 273.15 : null);
+    var [ixhvv, nddff] = groups;
+    if (!ixhvv || !nddff || ixhvv.length !== 5 || nddff.length !== 5) return null;
+    var manned = /[123]/.test(ixhvv[1]);
+    var vv = digits(ixhvv.slice(3));
+    if (vv !== null && synopVisibility(vv) !== null) rows.push([20001, 'Horizontal visibility', synopVisibility(vv), 'm']);
+    var n = digits(nddff[0]), dd = digits(nddff.slice(1, 3)), ff = digits(nddff.slice(3));
+    if (n !== null && n <= 8) rows.push([20010, 'Cloud cover (total)', n * 12.5, '%']);
+    var i = 2;
+    if (ff === 99 && /^00\d{3}$/.test(groups[2] || '')) ff = Number(groups[i++].slice(2));
+    if (ff !== null) {
+        var speed = knots ? ff * 0.514444 : ff;
+        if (dd !== null && dd <= 36) rows.push([11001, 'Wind direction', dd * 10, 'deg']);
+        rows.push([11002, 'Wind speed', speed, 'm/s']);
+    }
+    var section = 1;
+    for (; i < groups.length; i++) {
+        var g = groups[i];
+        if (/^(222|333|444|555)/.test(g)) { section = Number(g[0]); continue; }
+        if (g.length !== 5) continue;
+        if (section === 1) {
+            if (g[0] === '1' && temperature(g.slice(1)) !== null) rows.push([12101, 'Temperature', temperature(g.slice(1)), 'K']);
+            else if (g[0] === '2' && g[1] === '9' && digits(g.slice(2)) !== null) rows.push([13003, 'Relative humidity', Number(g.slice(2)), '%']);
+            else if (g[0] === '2' && temperature(g.slice(1)) !== null) rows.push([12103, 'Dew-point temperature', temperature(g.slice(1)), 'K']);
+            else if (g[0] === '3' && synopPressure(g.slice(1)) !== null) rows.push([10004, 'Station pressure', synopPressure(g.slice(1)), 'Pa']);
+            // 4PPPP; 4a3hhh (a standard level's height, from high stations) starts 41, 42, 45, 47 or 48
+            else if (g[0] === '4' && /[09]/.test(g[1]) && synopPressure(g.slice(1)) !== null) rows.push([10051, 'Pressure reduced to mean sea level', synopPressure(g.slice(1)), 'Pa']);
+            else if (g[0] === '5' && /^[0-8]\d{3}$/.test(g.slice(1))) {
+                var change = Number(g.slice(2)) * 10 * (g[1] >= '5' ? -1 : g[1] === '4' ? 0 : 1);
+                rows.push([10061, '3-hour pressure change', change, 'Pa']);
+            } else if (g[0] === '6' && /^\d{4}$/.test(g.slice(1))) {
+                var rrr = Number(g.slice(1, 4)), hours = { 1: 6, 2: 12, 3: 18, 4: 24, 5: 1, 6: 2, 7: 3, 8: 9, 9: 15 }[g[4]];
+                var mm = rrr < 990 ? rrr : (rrr - 990) / 10;  // 990 is a trace, 991-999 tenths of a mm
+                var id = { 1: 13019, 6: 13021, 24: 13023 }[hours];
+                if (hours) rows.push([4024, 'Time period', -hours, 'h'], [13011, 'Total precipitation', mm, 'kg m-2']);
+                if (id) rows.push([id, `Precipitation, past ${hours} h`, mm, 'kg m-2']);
+            } else if (g[0] === '7' && manned && digits(g.slice(1, 3)) !== null && presentWeather(Number(g.slice(1, 3)))) {
+                rows.push([20003, 'Present weather', presentWeather(Number(g.slice(1, 3))), '']);
+            }
+        } else if (section === 2 && g[0] === '0' && temperature(g.slice(1)) !== null) {
+            rows.push([22043, 'Sea surface temperature', temperature(g.slice(1)), 'K']);
+        } else if (section === 3) {
+            if (g[0] === '1' && temperature(g.slice(1)) !== null) rows.push([12111, 'Maximum temperature', temperature(g.slice(1)), 'K']);
+            else if (g[0] === '2' && temperature(g.slice(1)) !== null) rows.push([12112, 'Minimum temperature', temperature(g.slice(1)), 'K']);
+            else if (/^91[01]\d\d$/.test(g)) rows.push([11041, 'Maximum wind gust speed', Number(g.slice(3)) * (knots ? 0.514444 : 1), 'm/s']);
+        }
+    }
+    return rows;
+}
+
+// YYGGiw: day and hour, in the month of the notification (or the one before, just after midnight on the 1st)
+function synopTime(yygg, pubtime) {
+    var pub = new Date(Date.parse(pubtime) || Date.now());
+    var day = Number(yygg.slice(0, 2)), hour = Number(yygg.slice(2, 4));
+    if (!(day >= 1 && day <= 31 && hour <= 23)) return null;
+    var month = pub.getUTCMonth() - (day > pub.getUTCDate() + 1 ? 1 : 0);
+    return Date.UTC(pub.getUTCFullYear(), month, day, hour);
+}
+
+function parseSynopBulletin(text, pubtime) {
+    var lines = text.replace(/\r/g, '').split('\n');
+    // Skip the abbreviated heading (TTAAii CCCC YYGGgg [BBB])
+    var heading = lines.findIndex((l) => /^[A-Z]{4}\d{2} [A-Z]{4} \d{6}/.test(l.trim()));
+    var reports = [], kind = null, header = null;
+    for (var chunk of lines.slice(heading + 1).join(' ').split('=')) {
+        var groups = chunk.trim().split(/\s+/).filter(Boolean);
+        if (groups[0] === 'AAXX') { kind = 'land'; header = groups[1] || ''; groups = groups.slice(2); }
+        else if (groups[0] === 'BBXX') { kind = 'ship'; groups = groups.slice(1); }
+        if (!kind || groups.length < 3 || groups.includes('NIL')) continue;
+        if (kind === 'land') {
+            if (!/^\d{5}$/.test(groups[0])) continue;
+            var time = synopTime(header, pubtime), rows = synopRows(groups.slice(1), header[4]);
+            if (time && rows && rows.length) reports.push({ kind, wsi: `0-20000-0-${groups[0]}`, station: groups[0], time, rows, text: `AAXX ${header}\n${groups.join(' ')}=` });
+        } else {
+            // D....D YYGGiw 99LaLaLa QcLoLoLoLo: Qc 1 north-east, 3 south-east, 5 south-west, 7 north-west
+            var [callSign, yyggi, la, lo] = groups;
+            if (!/^99\d{3}$/.test(la || '') || !/^[1357]\d{4}$/.test(lo || '')) continue;
+            var lat = Number(la.slice(2)) / 10 * (/[35]/.test(lo[0]) ? -1 : 1);
+            var lon = Number(lo.slice(1)) / 10 * (/[57]/.test(lo[0]) ? -1 : 1);
+            var shipTime = synopTime(yyggi, pubtime), shipRows = synopRows(groups.slice(4), yyggi[4]);
+            if (shipTime && shipRows && lon <= 180) reports.push({ kind, callSign, coords: [lon, lat], time: shipTime, rows: shipRows, text: `BBXX\n${groups.join(' ')}=` });
+        }
+    }
+    return reports;
+}
+
+function plotSynopBulletin(job, text) {
+    var pubtime = (job.feature.properties || {}).pubtime;
+    for (var report of parseSynopBulletin(text, pubtime)) {
+        if (report.kind === 'ship') plotSynop(job, report, report.coords);
+        else if (stationCoords.has(report.wsi)) plotSynop(job, report, stationCoords.get(report.wsi));
+        else {
+            synopWaiting.delete(report.wsi);  // The latest report stands in for the station
+            synopWaiting.set(report.wsi, { job, report });
+            if (synopWaiting.size > SYNOP_WAITING_MAX) synopWaiting.delete(synopWaiting.keys().next().value);
+        }
+    }
+}
+
+function plotSynop(job, report, coords) {
+    var wsi = report.kind === 'land' ? report.wsi : null;
+    // Skip a station already on the map with a report as recent (usually its BUFR copy)
+    var latest = wsi && latestByStation.get(wsi);
+    if (latest && records.has(latest.id) && observedAt(latest) >= report.time) return;
+    var [channel, t] = job.topic.split('/a/wis2/');
+    var cls = report.kind === 'land' ? 'station' : 'ship';
+    var date = new Date(report.time);
+    var rows = [
+        ...(report.kind === 'land'
+            ? [[1001, 'WMO block number', Number(report.station.slice(0, 2)), 'Numeric'], [1002, 'WMO station number', Number(report.station.slice(2)), 'Numeric']]
+            : [[1011, 'Ship or mobile land station identifier', report.callSign, 'CCITT IA5']]),
+        [4001, 'Year', date.getUTCFullYear(), 'a'], [4002, 'Month', date.getUTCMonth() + 1, 'mon'], [4003, 'Day', date.getUTCDate(), 'd'],
+        [4004, 'Hour', date.getUTCHours(), 'h'], [4005, 'Minute', 0, 'min'],
+        [5001, 'Latitude', coords[1], 'deg'], [6001, 'Longitude', coords[0], 'deg'],
+        ...report.rows,
+    ];
+    var record = addPoint({
+        id: nextId++,
+        coords: coords,
+        topic: job.topic,
+        channel: channel,
+        centre: t.split('/', 1)[0],
+        path: t.slice(t.indexOf('/') + 1),
+        discipline: disciplineOf(t),
+        webcam: false,
+        decodedLayer: job.kind,
+        subLayer: `gts-${cls}`,
+        synop: true,
+        observed: report.time,
+        props: { data_id: `synop:${wsi || report.callSign}:${report.time}`, pubtime: (job.feature.properties || {}).pubtime, datetime: date.toISOString() },
+        links: job.feature.links || [],
+        notification: job.feature,
+        wsi: wsi,
+        format: 'text',
+        color: OBS_CLASSES[cls].color,
+        source: null,
+        // The report as sent, shown under the decoded values
+        decoded: { subsets: 1, index: 0, rows: rows, profile: null, tac: report.text },
+        born: Date.now(),
+    });
+    decodePlotted[job.kind]++;
+    if (!job.linked) {
+        job.linked = true;
+        linkDecoded(job.key, record);
+    }
+}
+
+// Every station plotted gives its position to text SYNOPs from it, including any waiting
+function rememberStation(record) {
+    if (!record.wsi || record.synop || !record.coords) return;
+    stationCoords.delete(record.wsi);
+    stationCoords.set(record.wsi, record.coords);
+    if (stationCoords.size > STATION_COORDS_MAX) stationCoords.delete(stationCoords.keys().next().value);
+    var waiting = synopWaiting.get(record.wsi);
+    if (!waiting) return;
+    synopWaiting.delete(record.wsi);
+    // Not while the station's own point is still being added
+    setTimeout(() => decodeEnabled.has(waiting.job.kind) && plotSynop(waiting.job, waiting.report, record.coords));
+}
+
+// ---------- Lightning. The Met Office sends each batch of flashes as BUFR (one
+// subset per flash: its position, then the sensors that located it) and as a
+// CSV; both are plotted, so a flash seen in one is skipped in the other.
+const FLASHES_MAX = 5000;
+const flashesSeen = new Set();
+
+function seenFlash(time, lat, lon) {
+    var key = `${Math.round(time / 100)}:${lat.toFixed(2)},${lon.toFixed(2)}`;
+    if (flashesSeen.has(key)) return true;
+    flashesSeen.add(key);
+    if (flashesSeen.size > FLASHES_MAX) flashesSeen.delete(flashesSeen.values().next().value);
+    return false;
+}
+
+// Time of a BUFR flash to the millisecond (seconds are 004006)
+function flashTime(values) {
+    var [y, mo, d, h, mi, sec] = [4001, 4002, 4003, 4004, 4005, 4006].map((id) => values.get(id));
+    return Date.UTC(y, mo - 1, d, h, mi || 0) + Math.round((sec || 0) * 1000);
+}
+
+// date,time,microseconds,FLP ID,quality,latitude,longitude,error
+// 19/10/2026,04:20:48,286057,1,G,50.206,-1.228,10.62
+function plotLightningText(job, text) {
+    var props = job.feature.properties || {};
+    var [channel, t] = job.topic.split('/a/wis2/');
+    var line = /^(\d{2})\/(\d{2})\/(\d{4}),(\d{2}):(\d{2}):(\d{2}),(\d+),[^,]*,([^,]*),(-?[\d.]+),(-?[\d.]+)/;
+    var first = null;
+    text.split('\n').forEach((row, i) => {
+        var m = line.exec(row.trim());
+        if (!m) return;
+        var [, d, mo, y, h, mi, sec, micro, quality] = m;
+        var lat = Number(m[9]), lon = Number(m[10]);
+        if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return;
+        var time = Date.UTC(y, mo - 1, d, h, mi, sec) + Math.round(Number(micro) / 1000);
+        if (seenFlash(time, lat, lon)) return;
+        var rows = [
+            [4001, 'Year', Number(y), 'a'], [4002, 'Month', Number(mo), 'mon'], [4003, 'Day', Number(d), 'd'],
+            [4004, 'Hour', Number(h), 'h'], [4005, 'Minute', Number(mi), 'min'], [4006, 'Second', Number(sec) + Number(micro) / 1e6, 's'],
+            [5001, 'Latitude', lat, 'deg'], [6001, 'Longitude', lon, 'deg'],
+            [0, 'Quality', quality, ''],  // The CSV's error column has no stated unit, so it's left out
+        ];
+        var record = addPoint({
+            id: nextId++,
+            coords: [lon, lat],
+            topic: job.topic,
+            channel: channel,
+            centre: t.split('/', 1)[0],
+            path: t.slice(t.indexOf('/') + 1),
+            discipline: disciplineOf(t),
+            webcam: false,
+            decodedLayer: job.kind,
+            subLayer: 'cache-lightning',
+            observed: time,
+            props: { data_id: `${props.data_id}#${i}`, pubtime: props.pubtime, datetime: new Date(time).toISOString() },
+            links: job.feature.links || [],
+            notification: job.feature,
+            wsi: null,
+            format: 'text',
+            color: OBS_CLASSES.lightning.color,
+            source: null,
+            decoded: { subsets: 1, index: 0, rows: rows, profile: null },
+            born: Date.now(),
+        });
+        decodePlotted[job.kind]++;
+        if (!first) linkDecoded(job.key, first = record);
+    });
 }
 
 // Citypage forecasts come in English and French for each site and are reissued
@@ -4192,20 +5050,20 @@ function plotCitypage(job, xml) {
         discipline: disciplineOf(t),
         webcam: false,
         decodedLayer: job.kind,
-        subLayer: 'cache-other',
+        subLayer: 'cache-warning',  // Forecasts carry the warnings in effect for the site
         props: { data_id: key, pubtime: props.pubtime, metadata_id: site.textContent.trim() },
         links: job.feature.links || [],
         notification: job.feature,
         wsi: null,
         french: french,
         format: 'xml',
-        color: OBS_CLASSES.other.color,
+        color: OBS_CLASSES.warning.color,
         source: null,
         decoded: { xml: xml },
         born: Date.now(),
     });
     decodePlotted[job.kind]++;
-    linkDecoded(props.data_id, record);
+    linkDecoded(job.key, record);
 }
 
 // ---------- Colouring stations, ships and buoys by a measured value. Values come from
@@ -4296,7 +5154,6 @@ function setColourBy(key, legend) {
     }
     map.setPaintProperty('swaths-fill', 'fill-color', swathColor);
     paintAge();
-    // The sidebar's scale is optional (the map key always has one), so only fill it in if it has its parts
     var scale = legend.querySelector('.legend-scale');
     if (scale) scale.hidden = !m;
     var colouredOnlyRow = legend.querySelector('.legend-coloured-only');
@@ -4380,17 +5237,19 @@ function setFeatureProperties(record, props) {
 // (001007) when the report is decoded, otherwise from the topic
 // (.../space-based-observations/noaa-20/...), so both give the same row.
 function satelliteKey(record) {
-    var parent = layerOf(record);
-    if (!/-satellite$/.test(parent)) return null;
+    if (!/-satellite$/.test(layerOf(record))) return null;
     var name = satelliteName(record);
-    return name ? `sat:${parent}:${name.toLowerCase()}` : null;
+    return name ? `sat:satellite:${name.toLowerCase()}` : null;
 }
 
+// A WIS2 topic names its satellite (sentinel-6b, geo-kompsat-2a), which beats a
+// number missing from SATELLITE_NAMES; GTS bulletins only have the number
 function satelliteName(record) {
     var row = record.decoded && record.decoded.rows && record.decoded.rows.find((x) => x[0] === 1007);
-    if (row) return SATELLITE_NAMES[row[2]] || `Satellite ${row[2]}`;
+    if (row && SATELLITE_NAMES[row[2]]) return SATELLITE_NAMES[row[2]];
     var match = /space-based-observations\/([^/]+)/.exec(record.topic);
-    return match ? match[1].toUpperCase() : null;
+    if (match) return match[1].toUpperCase();
+    return row ? `Satellite ${row[2]}` : null;
 }
 
 function addSatelliteRow(key) {
@@ -4464,18 +5323,35 @@ function externalStation(stations, s) {
 }
 
 // ---------- Global Replay: past notifications from the WIS2 Global Replay service
-// (OGC API - Features). The view's past REPLAY_WINDOW_MS is fetched newest first,
+// (OGC API - Features). The view's past replayWindowMs is fetched newest first,
 // up to REPLAY_MAX, after each pan; messages carry their data inline, so stations
 // can still be coloured. The service keeps a copy from every global cache, so only
 // one cache's copies are asked for (core data; recommended data isn't cached).
 const REPLAY_API = 'https://wis2-grep.weather.gc.ca/collections/wis2-notification-messages/items';
-const REPLAY_WINDOW_MS = 90 * 60 * 1000;
 const REPLAY_CACHE = 'data-metoffice-noaa-global-cache';
 const REPLAY_PAGE = 500;
 const REPLAY_MAX = 5000;
 let replayTimer = null;
 let replayAbort = null;
 let replayedView = '';
+
+// 5 minutes, 1 hour, 2 h 35 min
+function replayWindowLabel(minutes) {
+    if (minutes < 60) return `${minutes} minutes`;
+    var hours = Math.floor(minutes / 60), rest = minutes % 60;
+    if (rest) return `${hours} h ${rest} min`;
+    return hours === 1 ? '1 hour' : `${hours} hours`;
+}
+
+// The slider under the Global Replay row: a shorter window drops replayed points
+// now outside it, and either way the view is fetched again
+function setReplayWindow(minutes) {
+    replayWindowMs = minutes * 60 * 1000;
+    var cutoff = Date.now() - replayWindowMs;
+    [...records.values()].filter((r) => r.replay && r.born < cutoff).forEach(removePoint);
+    replayedView = '';
+    scheduleReplay(300);
+}
 
 function scheduleReplay(delay = 800) {
     clearTimeout(replayTimer);
@@ -4490,7 +5366,7 @@ async function loadReplay() {
         .map((v) => v.toFixed(2));
     // A view crossing the antimeridian, or the whole globe, asks for everything
     if (b.getEast() - b.getWest() >= 360 || Number(bbox[0]) >= Number(bbox[2])) bbox = ['-180', '-90', '180', '90'];
-    var since = new Date(Date.now() - REPLAY_WINDOW_MS).toISOString().replace(/\.\d+Z$/, 'Z');
+    var since = new Date(Date.now() - replayWindowMs).toISOString().replace(/\.\d+Z$/, 'Z');
     var view = `${bbox.join(',')}|${since.slice(0, 15)}`;  // The same view within ten minutes isn't fetched again
     if (view === replayedView) return;
     replayedView = view;
@@ -4667,7 +5543,7 @@ function inOrNearRing([x, y], ring, margin) {
 
 function buildSwaths() {
     var files = new Map();
-    for (var record of pools.decoded.values()) {
+    for (var record of pools.satellite.values()) {
         if (!record.fileKey || !records.has(record.id)) continue;
         if (!files.has(record.fileKey)) files.set(record.fileKey, []);
         files.get(record.fileKey).push(record);
@@ -4763,6 +5639,7 @@ function buildSwaths() {
                 centre: first.centre,
                 format: first.format,
                 discipline: first.discipline,
+                space: isSpaceRecord(first),
                 topic: first.topic.toLowerCase(),
                 ...props,
             },
@@ -4852,7 +5729,7 @@ function unwrap(coords) {
 
 function buildTracks() {
     var groups = new Map();
-    for (var record of pools.decoded.values()) {
+    for (var record of [...pools.decoded.values(), ...pools.satellite.values()]) {
         if (!record.track || !records.has(record.id)) continue;
         if (!groups.has(record.track)) groups.set(record.track, []);
         groups.get(record.track).push(record);
@@ -4898,6 +5775,7 @@ function buildTracks() {
             centre: last.centre,
             format: last.format,
             discipline: last.discipline,
+            space: isSpaceRecord(last),
             topic: last.topic.toLowerCase(),
         };
         if (kind === 'aircraft') {
@@ -5078,7 +5956,7 @@ function rememberLinks(dataId, links) {
     if (!dataId) return;
     var hrefs = dataLinks.get(dataId) || new Set();
     for (var link of links) {
-        if (link.rel == 'canonical') hrefs.add(link.href);
+        if (isDataLink(link)) hrefs.add(link.href);
     }
     dataLinks.delete(dataId);  // Re-insert to keep recently used ids
     dataLinks.set(dataId, hrefs);
@@ -5091,7 +5969,7 @@ function bufrSource(feature, props) {
     var content = props.content && props.content.encoding === 'base64' ? props.content.value : null;
     // Any canonical link may hold BUFR or text; fetchData checks the content
     var urls = (feature.links || [])
-        .filter((l) => l.rel == 'canonical' && !(l.length > 5e6))
+        .filter((l) => isDataLink(l) && !(l.length > 5e6))
         .map((l) => l.href);
     if (!content && !urls.length) return null;
     return { content: content, dataId: props.data_id, urls: urls, cap: props.cap_info || null };
@@ -5130,8 +6008,14 @@ function isText(bytes) {
     return sample.length > 0 && printable / sample.length > 0.95;
 }
 
+// Hosts that let a browser download their files: the S3-backed global caches and
+// JMA's own server (which JMA's GTS-to-WIS2 bulletins link to). DWD, KMA, CMA and
+// NCM send no CORS headers.
+const CORS_HOSTS = ['www.wis-jma.go.jp'];
+
 function corsFriendly(url) {
-    return hostname(url).endsWith('.amazonaws.com') ? 1 : 0;
+    var host = hostname(url);
+    return host.endsWith('.amazonaws.com') || CORS_HOSTS.includes(host) ? 1 : 0;
 }
 
 // GTS bulletins put an abbreviated heading (e.g. "IUAG04 VHHH 141200") before
