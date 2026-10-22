@@ -56,29 +56,32 @@ function modelFieldUrl(key) {
         + `&bbox={bbox-epsg-3857}&width=256&height=256&format=image/png&transparent=true&_h=${hour}`;
 }
 
-// Shows the model field for the selected measure, if asked for, with its legend
+// Shows the model base layer for the selected measure, if asked for, with its legend.
+// The switch is only offered while colouring by a measure, and says when that measure has no model field.
 function updateModelField(legend) {
-    var m = METRICS[colourBy], on = modelFieldOn && !!m && !!m.wms;
-    var toggle = legend.querySelector('.legend-model input');
-    toggle.disabled = !m || !m.wms;
-    legend.querySelector('.legend-model').classList.toggle('legend-disabled', !m || !m.wms);
+    var m = METRICS[colourBy], available = !!m && !!m.wms, on = modelFieldOn && available;
+    var row = legend.querySelector('.legend-model');
+    row.hidden = !m;
+    row.querySelector('input').disabled = !available;
+    // Shown off where there's nothing to draw; the choice comes back with a measure that has one
+    row.querySelector('input').checked = on;
+    row.classList.toggle('legend-disabled', !available);
+    row.querySelector('.legend-model-note').textContent = !m ? ''
+        : !available ? `No model field for ${m.label.toLowerCase()}`
+        : `ECCC ${m.wms.split('_')[0]} ${m.label.toLowerCase()}, ${new Date().toISOString().slice(11, 13)}:00 UTC, under the points`;
     var info = legend.querySelector('.legend-model-info');
     info.hidden = !on;
     if (map.getLayer('model-field')) {
         if (on) map.getSource('model-field').setTiles([modelFieldUrl(colourBy)]);
         map.setLayoutProperty('model-field', 'visibility', on ? 'visible' : 'none');
     }
-    if (on) {
-        info.querySelector('span').textContent = `ECCC ${m.wms.split('_')[0]} model, ${new Date().toISOString().slice(11, 13)}:00 UTC`;
-        info.querySelector('img').src = `${GEOMET}?version=1.3.0&service=WMS&request=GetLegendGraphic&sld_version=1.1.0&layer=${m.wms}&format=image/png`;
-    }
+    if (on) info.querySelector('img').src = `${GEOMET}?version=1.3.0&service=WMS&request=GetLegendGraphic&sld_version=1.1.0&layer=${m.wms}&format=image/png`;
     updateMapKey();
 }
 
 // Keeps the model field on the current hour
 setInterval(() => {
-    var legend = document.querySelector('.legend');
-    if (legend && modelFieldOn) updateModelField(legend);
+    if (stylePanel && modelFieldOn) updateModelField(stylePanel);
 }, 10 * 60 * 1000);
 
 // Measures stations, ships and buoys can be coloured by (see setColourBy)
@@ -701,10 +704,9 @@ map.on('load', () => {
     setInterval(paintAge, 30 * 1000);
     applyMapFilter();
     // Open coloured by temperature, near the visitor
-    var legend = document.querySelector('.legend');
-    if (legend) {
-        legend.querySelector('.legend-colour select').value = 'temp';
-        setColourBy('temp', legend);
+    if (stylePanel) {
+        stylePanel.querySelector('.legend-colour select').value = 'temp';
+        setColourBy('temp', stylePanel);
     }
     centreOnVisitor();
     preloadDecoder();
@@ -1015,25 +1017,7 @@ class LegendControl {
                 <input type="checkbox" class="form-check-input"${hiddenLayers.has(l.key) ? '' : ' checked'}>
                 ${isGroupRow(g, l) ? '' : `<span class="legend-dot${l.ring ? ' legend-ring' : ''}${l.track ? ' legend-line' : ''}" style="--color: ${l.color}${l.track ? '' : `; --outline: ${darken(l.color)}`}"></span>`}${l.label}
             </label>`}`).join('')}
-            </section>`).join('')}
-            <div class="legend-colour">
-                <label>Color by
-                    <select class="form-select form-select-sm">
-                        <option value="kind">Observation Type</option>
-                        ${[...new Set(Object.values(METRICS).map((m) => m.group))].map((group) => `
-                        <optgroup label="${group}">
-                            ${Object.entries(METRICS).filter(([, m]) => m.group === group).map(([key, m]) => `<option value="${key}">${m.label}</option>`).join('')}
-                        </optgroup>`).join('')}
-                    </select>
-                </label>
-                <label class="legend-coloured-only" hidden><input type="checkbox" class="form-check-input"> Require value 
-                <div class="legend-note legend-colour-status" hidden></div></label>
-                <div class="legend-scale" hidden></div>
-                <label class="legend-model" title="The matching field from Environment and Climate Change Canada's global models, for the current hour, behind the points">
-                    <input type="checkbox" class="form-check-input"> Show model field (gridded value)
-                </label>
-                <div class="legend-model-info" hidden><span class="legend-note"></span><img alt="Model field legend"></div>
-            </div>`;
+            </section>`).join('')}`;
 
         // How far back the Global Replay reaches, under its row: earlier on the left, now on the right
         container.querySelector('.legend-toggle[data-layer="replay"]').insertAdjacentHTML('afterend', `
@@ -1057,12 +1041,6 @@ class LegendControl {
         range.addEventListener('input', showWindow);
         range.addEventListener('change', () => setReplayWindow(minutesShown()));
 
-        container.querySelector('.legend-colour select').addEventListener('change', (e) => setColourBy(e.target.value, container));
-        container.querySelector('.legend-coloured-only input').addEventListener('change', (e) => {
-            colouredOnly = e.target.checked;
-            applyMapFilter();
-        });
-        setInterval(() => showColourStatus(container), 1000);
         container.querySelectorAll('.legend-toggle[data-layer]').forEach((row) => {
             var key = row.dataset.layer;
             row.querySelector('input').addEventListener('change', (e) => {
@@ -1092,10 +1070,6 @@ class LegendControl {
         syncSublayers();
         // The decode layers are defined further down the script, so start once it has run
         setTimeout(syncDecoding);
-        container.querySelector('.legend-model input').addEventListener('change', (e) => {
-            modelFieldOn = e.target.checked;
-            updateModelField(container);
-        });
         return container;
     }
 
@@ -1116,22 +1090,23 @@ function selectQueueTab(tab) {
     if (tab === 'messages') flushQueue();
 }
 
-// Read-only key on the map: only what is drawn now, with the colour scale
-// while colouring by a measure
+// The key on the map. On top, how points are styled: what they're coloured by,
+// its scale, and the options that go with it. Below, only what is drawn now.
 class MapKey {
     onAdd() {
         this.container = document.createElement('div');
         this.container.className = 'maplibregl-ctrl map-key';
+        this.container.append(buildStylePanel());
+        mapKeyBody = this.container.appendChild(document.createElement('div'));
         this.container.addEventListener('click', (e) => {
-            if (!e.target.closest('.map-key-edit')) {
-                // On phones the key opens to its notes and shapes on a tap
-                if (PHONE.matches) this.container.classList.toggle('map-key-open');
+            if (e.target.closest('.map-key-edit')) {
+                document.body.classList.add('queue-open');
+                selectQueueTab('layers');
                 return;
             }
-            document.body.classList.add('queue-open');
-            selectQueueTab('layers');
+            // On phones the key opens to its options, notes and shapes on a tap anywhere but a control
+            if (PHONE.matches && !e.target.closest('select, input, label')) this.container.classList.toggle('map-key-open');
         });
-        mapKey = this.container;
         updateMapKey();
         return this.container;
     }
@@ -1140,18 +1115,57 @@ class MapKey {
         // Nothing to do here
     }
 }
-let mapKey = null;
+let mapKeyBody = null;
+let stylePanel = null;
+
+// Color by and the options that go with it, at the top of the map key
+function buildStylePanel() {
+    stylePanel = document.createElement('div');
+    stylePanel.className = 'map-key-style';
+    stylePanel.innerHTML = `
+        <div class="legend-colour">
+            <label class="key-colour-by">Style by
+                <select class="form-select form-select-sm" aria-label="Color points by">
+                    <option value="kind">Observation type</option>
+                    ${[...new Set(Object.values(METRICS).map((m) => m.group))].map((group) => `
+                    <optgroup label="${group}">
+                        ${Object.entries(METRICS).filter(([, m]) => m.group === group).map(([key, m]) => `<option value="${key}">${m.label}</option>`).join('')}
+                    </optgroup>`).join('')}
+                </select>
+            </label>
+            <div class="legend-scale" hidden><span></span><i></i><span></span></div>
+            <div class="key-options">
+                <label class="legend-coloured-only" hidden title="Only points with a value for the measure are drawn"><input type="checkbox" class="form-check-input"> Require value</label>
+            </div>
+            <div class="legend-note legend-colour-status" hidden></div>
+            <label class="legend-model form-switch" hidden title="Draw Environment and Climate Change Canada's global model field for the same measure, at the current hour, under the points, so observations can be compared with the model">
+                <input type="checkbox" class="form-check-input" role="switch">
+                <span>Model base layer<small class="legend-model-note"></small></span>
+            </label>
+            <div class="legend-model-info" hidden><img alt="Model field legend"></div>
+        </div>`;
+    stylePanel.querySelector('select').addEventListener('change', (e) => setColourBy(e.target.value, stylePanel));
+    stylePanel.querySelector('.legend-coloured-only input').addEventListener('change', (e) => {
+        colouredOnly = e.target.checked;
+        applyMapFilter();
+    });
+    stylePanel.querySelector('.legend-model input').addEventListener('change', (e) => {
+        modelFieldOn = e.target.checked;
+        updateModelField(stylePanel);
+    });
+    setInterval(() => showColourStatus(stylePanel), 1000);
+    return stylePanel;
+}
 
 function updateMapKey() {
-    if (!mapKey) return;
+    if (!mapKeyBody) return;
     var hidden = effectiveHidden();
     var drawn = (key) => seenLayers.has(key) && !hidden.includes(key);
     var symbol = (shape, color) => `<span class="legend-dot${shape === 'diamond' ? ' key-diamond' : ''}${shape === 'square' ? ' key-square' : ''}${shape === 'ring' ? ' legend-ring' : ''}" style="--color: ${color}; --outline: ${darken(color)}"></span>`;
     var rows = [];
     var m = METRICS[colourBy];
     if (m) {
-        rows.push(`<div class="key-title">${esc(m.label)} (${esc(m.unit)})</div>`);
-        rows.push(`<div class="legend-scale"><span>${scaleLabel(m.stops[0][0])}</span><i style="background: linear-gradient(90deg, ${m.stops.map(([, c]) => c).join(', ')})"></i><span>${scaleLabel(m.stops[m.stops.length - 1][0])}</span></div>`);
+        // The measure and its scale are in the style panel above
         // With "Require value" on, points without one aren't drawn, so there's nothing to explain
         if (!colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}No value, or not measured</div>`);
     } else {
@@ -1171,7 +1185,7 @@ function updateMapKey() {
     if (!hidden.includes('gts-tracks') && seenLayers.has('gts-aircraft')) {
         rows.push(`<div class="key-row"><span class="legend-dot legend-line" style="--color: linear-gradient(90deg, #99e9f2, #22b8cf, #1971c2, #5f3dc4)"></span>Aircraft tracks by altitude</div>`);
     }
-    if (modelFieldOn && m && m.wms) rows.push(`<div class="key-note">Background: ECCC model ${esc(m.label.toLowerCase())}</div>`);
+    if (modelFieldOn && m && m.wms) rows.push(`<div class="key-note">Base layer: ECCC model ${esc(m.label.toLowerCase())}</div>`);
     if (windArrows()) {
         rows.push('<div class="key-note"><span class="key-arrow">➜</span>Arrows point the way the wind blows; longer is stronger. Zoom in for more.</div>');
         rows.push(`<div class="key-note">${symbol('ring', m.stops[0][1])}Calm</div>`);
@@ -1181,7 +1195,7 @@ function updateMapKey() {
     // Each symbol stays on one line with its label
     var shape = (kind, color, label) => `<span class="key-shape">${symbol(kind, color)}${label}</span>`;
     rows.push(`<div class="key-shapes">${shape('circle', '#adb5bd', 'WIS2')}${drawn('origin') ? shape('ring', COLORS.origin, 'WIS2 origin') : ''}${shape('diamond', '#adb5bd', 'GTS')}${drawn('airports') ? shape('square', '#adb5bd', 'Airports') : ''}<button type="button" class="btn btn-link btn-sm map-key-edit">Edit layers</button></div>`);
-    mapKey.innerHTML = rows.join('');
+    mapKeyBody.innerHTML = rows.join('');
 }
 
 function showLegendRow(key) {
@@ -5084,7 +5098,6 @@ function setColourBy(key, legend) {
     }
     map.setPaintProperty('swaths-fill', 'fill-color', swathColor);
     paintAge();
-    // The sidebar's scale is optional (the map key always has one), so only fill it in if it has its parts
     var scale = legend.querySelector('.legend-scale');
     if (scale) scale.hidden = !m;
     var colouredOnlyRow = legend.querySelector('.legend-coloured-only');
