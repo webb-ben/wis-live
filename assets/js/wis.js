@@ -2904,7 +2904,8 @@ function openSounding(profile, label, values) {
 // placeholder such as "MISSING", or no letters at all (e.g. "0000", "///")
 function stationName(entry) {
     if (!entry || typeof entry[0] !== 'string') return null;
-    var name = entry[0].replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\s+/g, ' ').trim();
+    // ÿ is a BUFR padding byte (0xFF) read as Latin-1
+    var name = entry[0].replace(/ÿ/g, '').replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\s+/g, ' ').trim();
     if (name.length < 2 || name.length > 64) return null;
     if (name.includes('\ufffd')) return null;
     if (!/[a-z]/i.test(name)) return null;
@@ -4176,6 +4177,8 @@ from pybufrkit.descriptors import ElementDescriptor
 
 def _value(v):
     if isinstance(v, bytes):
+        # All-ones bytes are BUFR's padding (and missing) characters, which would read as ÿ
+        v = v.replace(b'\\xff', b'')
         try:
             v = v.decode('utf-8')
         except UnicodeDecodeError:
