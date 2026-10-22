@@ -285,6 +285,10 @@
   --accent: #7048e8;
   --tint: #f5f2fe;
 }
+.legend-section-space {
+  --accent: #9c36b5;
+  --tint: #fbf3fd;
+}
 .legend-group {
   margin-bottom: 2px;
   color: var(--accent);
@@ -1153,6 +1157,11 @@
   box-shadow: none;
 }
 .legend-section-gts .legend-sample {
+  --outline: #6c757d;
+  box-shadow: none;
+}
+.legend-section-space .legend-sample {
+  --color: #9c36b5;
   --outline: #6c757d;
   box-shadow: none;
 }
