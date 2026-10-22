@@ -707,11 +707,14 @@ map.on('load', () => {
     paintAge();
     setInterval(paintAge, 30 * 1000);
     applyMapFilter();
-    // Open coloured by temperature, near the visitor
+    // Open coloured by observation type, or as the link says (style=temp and so on), near the visitor
     if (stylePanel) {
-        stylePanel.querySelector('.legend-colour select').value = 'temp';
-        setColourBy('temp', stylePanel);
+        stylePanel.querySelector('.legend-colour select').value = startColour;
+        stylePanel.querySelector('.legend-coloured-only input').checked = colouredOnly;
+        setColourBy(startColour, stylePanel);
     }
+    // A link to a dataset shows it as its Show on map would (the catalogue code is wired up just after load)
+    if (startDataset) setTimeout(() => showDatasetFromUrl(startDataset));
     centreOnVisitor();
     preloadDecoder();
     flushPoints();
@@ -1155,10 +1158,12 @@ function buildStylePanel() {
     stylePanel.querySelector('.legend-coloured-only input').addEventListener('change', (e) => {
         colouredOnly = e.target.checked;
         applyMapFilter();
+        writeFiltersToUrl();
     });
     stylePanel.querySelector('.legend-model input').addEventListener('change', (e) => {
         modelFieldOn = e.target.checked;
         updateModelField(stylePanel);
+        writeFiltersToUrl();
     });
     setInterval(() => showColourStatus(stylePanel), 1000);
     return stylePanel;
@@ -3159,10 +3164,19 @@ function applyMapFilter() {
 function filterChips() {
     var not = (key) => (filterModes[key] === 'hide' ? 'not ' : '');
     var chips = [];
-    if (filters.text) chips.push({ label: `${not('text')}topic “${filters.text}”`, clear: () => {
+    var clearTopic = () => {
         filters.text = '';
         queueFilter.value = '';
-    } });
+    };
+    // A dataset shown on the map is one chip for it and its topic filter
+    if (shownDataset && filters.text === shownDataset.topic) {
+        chips.push({ label: `dataset “${shownDataset.title}”`, clear: () => {
+            shownDataset = null;
+            clearTopic();
+        } });
+    } else if (filters.text) {
+        chips.push({ label: `${not('text')}topic “${filters.text}”`, clear: clearTopic });
+    }
     [...filters.centres].sort().forEach((centre) => chips.push({ label: `${not('centres')}${centre}`, clear: () => {
         filters.centres.delete(centre);
         var item = centres.get(centre);
@@ -3207,16 +3221,23 @@ function applyFilters() {
     queueToggle.classList.toggle('filtered', active);
     queueToggle.title = active ? 'Layers and messages (filters on)' : 'Layers and messages';
     document.querySelector('.queue-reset').hidden = !active;
-    document.querySelector('.queue-share').hidden = !active;
-    writeFiltersToUrl();
+    writeFiltersToUrl();  // Shows Copy link too, while the URL has filters or styling to share
     filterDatasetRows();
     renderFilterBanner();
 }
 
-// ---------- Filters in the address bar, so a filtered view can be shared:
+// ---------- Filters and point styling in the address bar, so a view can be shared:
 // ?topic=synop&centre=de-dwd,jp-jma&format=bufr&discipline=ocean&hide=centres
-// (hide lists the filters set to Hide rather than Only). Other parameters are kept.
+// (hide lists the filters set to Hide rather than Only), and style=temp&require=1&base=1
+// (the measure points are coloured by, Require value, the model base layer; style is
+// left out for the default, observation type). Other parameters are kept.
 const FILTER_PARAMS = { text: 'topic', centres: 'centre', format: 'format', disciplines: 'discipline' };
+const DEFAULT_COLOUR = 'kind';
+let startColour = DEFAULT_COLOUR;  // The measure the page opens coloured by
+// ?dataset=<metadata_id> opens the page as if that dataset's Show on map had been clicked;
+// Show on map writes it, and taking its chip off the banner removes it
+let startDataset = null;
+let shownDataset = null;  // { id, title } of the dataset last shown on the map
 
 function readFiltersFromUrl() {
     var params = new URLSearchParams(location.search);
@@ -3226,18 +3247,33 @@ function readFiltersFromUrl() {
     filters.format = FORMATS.hasOwnProperty(params.get(FILTER_PARAMS.format)) ? params.get(FILTER_PARAMS.format) : '';
     list(FILTER_PARAMS.disciplines).filter((d) => DISCIPLINES.hasOwnProperty(d)).forEach((d) => filters.disciplines.add(d));
     list('hide').filter((key) => filterModes.hasOwnProperty(key)).forEach((key) => { filterModes[key] = 'hide'; });
+    var style = params.get('style');
+    if (style === 'kind' || METRICS.hasOwnProperty(style)) startColour = style;
+    colouredOnly = params.get('require') === '1';
+    modelFieldOn = params.get('base') === '1';
+    if (/^urn:wmo:md:/.test(params.get('dataset') || '')) startDataset = params.get('dataset');
 }
 
 function writeFiltersToUrl() {
     var params = new URLSearchParams(location.search);
     var set = (name, value) => (value ? params.set(name, value) : params.delete(name));
-    set(FILTER_PARAMS.text, filters.text);
+    // A dataset shown on the map stands for its topic filter; changing the filter leaves it a plain filter
+    if (shownDataset && !startDataset && filters.text !== shownDataset.topic) shownDataset = null;
+    set(FILTER_PARAMS.text, shownDataset && filters.text === shownDataset.topic ? '' : filters.text);
     set(FILTER_PARAMS.centres, [...filters.centres].sort().join(','));
     set(FILTER_PARAMS.format, filters.format);
     set(FILTER_PARAMS.disciplines, [...filters.disciplines].join(','));
     // A mode only matters while its filter is set
     set('hide', Object.keys(filterModes).filter((key) => filterModes[key] === 'hide' && (key === 'text' ? filters.text
         : key === 'format' ? filters.format : filters[key].size)).join(','));
+    // The options only count while colouring by a measure (and the base layer only for one with a model field)
+    var m = METRICS[colourBy];
+    set('style', colourBy !== DEFAULT_COLOUR ? colourBy : '');
+    set('require', colouredOnly && m ? '1' : '');
+    set('base', modelFieldOn && m && m.wms ? '1' : '');
+    if (!startDataset) set('dataset', shownDataset ? shownDataset.id : '');  // Kept while a link's dataset is still loading
+    var share = document.querySelector('.queue-share');
+    if (share) share.hidden = !['topic', 'centre', 'format', 'discipline', 'style', 'require', 'base', 'dataset'].some((p) => params.has(p));
     var query = params.toString().replace(/%2C/gi, ',');  // Commas read better unescaped
     try {
         history.replaceState(history.state, '', `${location.pathname}${query ? `?${query}` : ''}${location.hash}`);
@@ -3482,7 +3518,10 @@ class QueueControl {
         banner.setAttribute('aria-label', 'Filters in force');
         banner.innerHTML = '<span class="filter-banner-label">Filtered</span><span class="filter-banner-chips"></span>'
             + '<button type="button" class="filter-banner-clear" title="Remove every filter">Clear all</button>';
-        banner.querySelector('.filter-banner-clear').addEventListener('click', () => sidebar.querySelector('.queue-reset').click());
+        banner.querySelector('.filter-banner-clear').addEventListener('click', () => {
+            shownDataset = null;  // Its chip goes too
+            sidebar.querySelector('.queue-reset').click();
+        });
         document.body.appendChild(banner);
         sidebar.querySelector('.queue-reset').addEventListener('click', function(){
             Object.keys(filterModes).forEach((key) => { filterModes[key] = 'only'; });
@@ -5277,6 +5316,7 @@ function setColourBy(key, legend) {
         metricQueue = replayMetricQueue = [];
     }
     showColourStatus(legend);
+    writeFiltersToUrl();
 }
 
 function showColourStatus(legend) {
@@ -5731,13 +5771,14 @@ function showDatasetInPopup(el, id) {
 // without a location, so what it published in the past DATASET_HOURS is fetched from
 // the Global Replay (switched on for it) and plotted, `report` says what was found, and
 // the map goes to the dataset's points, if there are any, rather than to its declared
-// area.
+// area. The URL carries dataset= (not the topic), and the banner a chip to take it off.
 let datasetAbort = null;
 
 async function showDatasetOnMap(d, report) {
     // Filtered to the dataset's topic (the catalogue gives the cache channel; origin copies
-    // match too).
+    // match too). The link carries dataset= rather than the topic, which it implies.
     var topic = d.channel.replace(/^(cache|origin)\//, '').replace(/\/#$/, '').toLowerCase();
+    shownDataset = { id: d.id, title: d.title, topic };
     filters.text = topic;
     filterModes.text = 'only';
     queueFilter.value = topic;
@@ -5777,6 +5818,33 @@ async function showDatasetOnMap(d, report) {
     } catch (err) {
         if (err.name !== 'AbortError') report(`Could not fetch its recent messages: ${err.message}`);
     }
+}
+
+// A link's ?dataset=: the same as clicking that dataset's Show on map in the Datasets tab,
+// which is opened (except on phones, where it would cover the map) at the dataset's row
+async function showDatasetFromUrl(id) {
+    var rec = await gdcRecord(id);
+    var d = rec && describeDataset(rec);
+    startDataset = null;
+    if (!d || !d.channel) {
+        writeFiltersToUrl();  // Nothing to show; the parameter goes
+        return;
+    }
+    var report = () => {};
+    if (gdcEls && !PHONE.matches) {
+        document.body.classList.add('queue-open');
+        gdcSearched = true;  // Searched here, so the tab doesn't start its own
+        selectQueueTab('datasets');
+        await searchCatalogue();
+        var row = [...gdcEls.list.children].find((r) => r.gdc && r.gdc.id === id && !r.hidden);
+        if (row) row.scrollIntoView({ block: 'center' });
+        var note = row ? row.querySelector('.gdc-note') : gdcEls.status;
+        report = (text) => {
+            note.hidden = false;
+            note.textContent = text;
+        };
+    }
+    showDatasetOnMap(d, report);
 }
 
 // The Datasets tab: a search box over the whole catalogue, narrowed by the sidebar's filters
