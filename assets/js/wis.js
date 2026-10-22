@@ -39,7 +39,7 @@ const OBS_CLASSES = {
     gnss: { label: 'Ground-based GNSS', color: '#a5662b', title: 'Atmospheric path delays and water vapour from GNSS receivers (e.g. E-GVAP), not weather observations' },
     satellite: { label: 'Space-based (satellites)', color: '#9c36b5', title: 'Observations from satellites (winds, radiances, occultations)' },
     webcam: { label: 'Webcam images', color: '#fcc419', cacheOnly: true, title: 'Camera images' },
-    warning: { label: 'Warnings and alerts', color: '#e03131', cacheOnly: true, title: 'Weather warnings, alerts and advisories, including CAP messages' },
+    warning: { label: 'Warnings and alerts', color: '#e03131', cacheOnly: true, title: 'Weather warnings, alerts and advisories, including CAP messages and Environment Canada city forecasts' },
     other: { label: 'Other', color: '#868e96', title: 'Anything not in the groups above' },
 };
 // ---------- Model fields from ECCC GeoMet (WMS). GeoMet serves its default time,
@@ -208,9 +208,6 @@ const LAYER_GROUPS = [
         { key: 'obs', label: 'Cache', color: OBS_CLASSES.station.color, optIn: true },  // Always listed
         // Sublayers sit under their parent and are off whenever it is off
         ...Object.entries(OBS_CLASSES).filter(([key]) => key !== 'satellite').map(([key, c]) => ({ key: `cache-${key}`, parent: 'obs', label: c.label, color: c.color, title: c.title })),
-        // An option rather than a layer: decoded reports join the groups above
-        { key: 'files', parent: 'obs', option: true, label: 'Decode files without a location',
-            title: 'Download and decode small cached files whose notification has no location; the reports inside join the groups above' },
         { key: 'origin', label: 'Origin', color: COLORS.origin, ring: true },
         { key: 'replay', label: 'Global Replay (past 90 minutes)', color: COLORS.replay, optIn: true,
             title: 'Fill the view with the past 90 minutes of WIS2 core-data notifications from the Global Replay service (wis2-grep.weather.gc.ca). Older points are fainter.' },
@@ -250,6 +247,8 @@ const LAYER_PARENTS = Object.fromEntries([
     ...LAYER_GROUPS.flatMap((g) => g.layers).filter((l) => l.parent).map((l) => [l.key, l.parent]),
     // Replayed satellites also go when the Global Replay is off (see applyMapFilter)
     ...SATELLITE_LAYERS.map((k) => [k, 'satellite']),
+    // Files without a location are always decoded while Cache is on; the reports inside join its groups
+    ['files', 'obs'],
 ]);
 
 function ancestors(key) {
@@ -4350,14 +4349,14 @@ function plotCitypage(job, xml) {
         discipline: disciplineOf(t),
         webcam: false,
         decodedLayer: job.kind,
-        subLayer: 'cache-other',
+        subLayer: 'cache-warning',  // Forecasts carry the warnings in effect for the site
         props: { data_id: key, pubtime: props.pubtime, metadata_id: site.textContent.trim() },
         links: job.feature.links || [],
         notification: job.feature,
         wsi: null,
         french: french,
         format: 'xml',
-        color: OBS_CLASSES.other.color,
+        color: OBS_CLASSES.warning.color,
         source: null,
         decoded: { xml: xml },
         born: Date.now(),
