@@ -3155,6 +3155,51 @@ function applyMapFilter() {
     radars.forEach((r) => map.getLayer(r.id) && map.setLayoutProperty(r.id, 'visibility', radarShown));
 }
 
+// The filters in force, each with a way to take it off (keeping the sidebar's controls in step)
+function filterChips() {
+    var not = (key) => (filterModes[key] === 'hide' ? 'not ' : '');
+    var chips = [];
+    if (filters.text) chips.push({ label: `${not('text')}topic “${filters.text}”`, clear: () => {
+        filters.text = '';
+        queueFilter.value = '';
+    } });
+    [...filters.centres].sort().forEach((centre) => chips.push({ label: `${not('centres')}${centre}`, clear: () => {
+        filters.centres.delete(centre);
+        var item = centres.get(centre);
+        if (item) item.querySelector('input').checked = false;
+        showSelectedCentres();
+    } }));
+    if (filters.format) chips.push({ label: `${not('format')}${FORMATS[filters.format]}`, clear: () => {
+        filters.format = '';
+        document.querySelector('.queue-format').value = '';
+    } });
+    filters.disciplines.forEach((d) => chips.push({ label: `${not('disciplines')}${DISCIPLINES[d]}`, clear: () => {
+        filters.disciplines.delete(d);
+        document.querySelector(`.queue-chip[data-discipline="${d}"]`).setAttribute('aria-pressed', 'false');
+    } }));
+    return chips;
+}
+
+// Over the map while any filter is on, sidebar open or not: one chip per filter to remove it, and Clear all
+function renderFilterBanner() {
+    var banner = document.querySelector('.filter-banner');
+    if (!banner) return;
+    var chips = filterChips();
+    banner.hidden = !chips.length;
+    banner.querySelector('.filter-banner-chips').replaceChildren(...chips.map((c) => {
+        var chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'filter-banner-chip';
+        chip.title = `Remove the filter: ${c.label}`;
+        chip.textContent = c.label;
+        chip.addEventListener('click', () => {
+            c.clear();
+            applyFilters();
+        });
+        return chip;
+    }));
+}
+
 function applyFilters() {
     applyMapFilter();
     rebuildQueue();
@@ -3165,6 +3210,7 @@ function applyFilters() {
     document.querySelector('.queue-share').hidden = !active;
     writeFiltersToUrl();
     filterDatasetRows();
+    renderFilterBanner();
 }
 
 // ---------- Filters in the address bar, so a filtered view can be shared:
@@ -3317,7 +3363,7 @@ class QueueControl {
             <!-- Filters shared by the map and the message list -->
             <div class="queue-header queue-filters">
                 <div class="queue-title"><strong>Filters</strong>
-                    <button type="button" class="btn btn-sm btn-link queue-reset" hidden>Reset filters</button>
+                    <button type="button" class="btn btn-sm btn-outline-danger queue-reset" hidden title="Remove every filter">Clear filters</button>
                     <button type="button" class="btn btn-sm btn-link queue-share" hidden title="Copy a link that opens the map with these filters">Copy link</button>
                 </div>
                 <div class="filter-row">${filterModeButton('text')}<input type="search" class="form-control form-control-sm" placeholder="Filter topics"></div>
@@ -3428,6 +3474,16 @@ class QueueControl {
             paintFilterMode(button);
             applyFilters();
         }));
+        // The filters in force, over the map (see renderFilterBanner)
+        var banner = document.createElement('div');
+        banner.className = 'filter-banner';
+        banner.hidden = true;
+        banner.setAttribute('role', 'region');
+        banner.setAttribute('aria-label', 'Filters in force');
+        banner.innerHTML = '<span class="filter-banner-label">Filtered</span><span class="filter-banner-chips"></span>'
+            + '<button type="button" class="filter-banner-clear" title="Remove every filter">Clear all</button>';
+        banner.querySelector('.filter-banner-clear').addEventListener('click', () => sidebar.querySelector('.queue-reset').click());
+        document.body.appendChild(banner);
         sidebar.querySelector('.queue-reset').addEventListener('click', function(){
             Object.keys(filterModes).forEach((key) => { filterModes[key] = 'only'; });
             sidebar.querySelectorAll('.filter-mode').forEach(paintFilterMode);

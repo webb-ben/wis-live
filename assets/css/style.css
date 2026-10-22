@@ -34,6 +34,90 @@
 .queue-open .maplibregl-ctrl-bottom-left {
   left: min(340px, calc(100vw - 52px));
 }
+
+/* The filters in force, at the bottom of the map, centred on the part of it left
+   showing between the sidebar (--left) and the info panel (--right); each chip
+   removes its filter. */
+.filter-banner {
+  --left: 0px;
+  --right: 0px;
+  position: fixed;
+  bottom: 14px;
+  left: calc(var(--left) + (100vw - var(--left) - var(--right)) / 2);
+  z-index: 1000;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 4px;
+  max-width: calc(100vw - var(--left) - var(--right) - 80px);
+  padding: 2px 4px 2px 8px;
+  border: 1px solid #dee2e6;
+  border-radius: 12px;
+  background-color: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  font-size: 11px;
+  transform: translateX(-50%);
+  transition: left 0.2s;
+}
+.filter-banner[hidden] {
+  display: none;
+}
+.queue-open .filter-banner {
+  --left: min(340px, calc(100vw - 52px));
+}
+.info-open .filter-banner {
+  --right: min(380px, calc(100vw - 52px));
+}
+.filter-banner-label {
+  color: #868e96;
+  font-weight: 600;
+}
+.filter-banner-chips {
+  display: contents;
+}
+.filter-banner-chip {
+  max-width: 220px;
+  overflow: hidden;
+  padding: 0 6px;
+  border: 1px solid #e9ecef;
+  border-radius: 10px;
+  background-color: #f8f9fa;
+  color: #495057;
+  line-height: 1.6;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.filter-banner-chip::after {
+  content: ' ×';
+  color: #868e96;
+}
+.filter-banner-chip:hover,
+.filter-banner-chip:focus-visible {
+  border-color: #c92a2a;
+  color: #c92a2a;
+}
+.filter-banner-clear {
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: #6c757d;
+  text-decoration: underline;
+}
+.filter-banner-clear:hover,
+.filter-banner-clear:focus-visible {
+  color: #c92a2a;
+}
+@media (max-width: 600px) {
+  /* The sidebar covers the map on phones, and has its own Clear filters; the info
+     panel is a sheet over the bottom of the map, so the banner sits above it */
+  .queue-open .filter-banner {
+    display: none;
+  }
+  .info-open .filter-banner {
+    --right: 0px;
+    bottom: calc(55dvh + 10px);
+  }
+}
 .maplibregl-ctrl-group .queue-toggle {
   font-size: 16px;
   line-height: 29px;
@@ -1511,9 +1595,12 @@
   align-items: center;
   margin-bottom: 4px;
 }
-.queue-filters .queue-reset,
 .queue-filters .queue-share {
   padding: 0;
+}
+.queue-filters .queue-reset {
+  padding: 1px 8px;
+  font-size: 12px;
 }
 .queue-filters .queue-share {
   margin: 0 8px 0 10px;
