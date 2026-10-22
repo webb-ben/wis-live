@@ -197,6 +197,10 @@ const METRIC_QUEUE_MAX = 5000;  // Station files waiting to be decoded, newest k
 let colourBy = 'kind';
 let colouredOnly = false;  // Hide every point not coloured by the measure
 let metricQueue = [];
+// Replayed stations wait in a queue of their own, taken only when no live station is waiting,
+// newest first and capped: a past hour shouldn't hold up what's arriving now
+const REPLAY_DECODE_MAX = 500;
+let replayMetricQueue = [];
 let metricBusy = false;
 
 // GTS sublayers that start off. Their bulletins aren't downloaded until they're
@@ -654,7 +658,7 @@ map.on('load', () => {
     // Wind arrows point the way the wind blows (reports give where it comes from)
     map.addImage('arrow', arrowSdf(), { sdf: true, pixelRatio: 2 });
     map.on('moveend', () => scheduleReplay());
-    scheduleReplay(0);  // On at first
+    scheduleReplay(0);  // On at first, once the decoder has loaded
     // Points from other sources (airports) are squares
     map.addImage('square', squareSdf(), { sdf: true, pixelRatio: 2 });
     map.addLayer({
@@ -4031,6 +4035,7 @@ const DATA_LINKS_MAX = 20000;
 const dataLinks = new Map();  // data_id -> hrefs seen from every cache
 const decoderWorkers = {};  // lane ('main' or 'files') -> worker
 let decoderReady = false;
+let decoderGaveUp = false;  // It couldn't start; the Global Replay, which waits for it, goes ahead
 let nextCall = 1;
 const decoderCalls = new Map();  // call id -> { resolve, reject }
 
@@ -4352,10 +4357,17 @@ function callDecoderOn(lane, fn, ...args) {
         worker.onmessage = (e) => {
             var call = decoderCalls.get(e.data.id);
             decoderCalls.delete(e.data.id);
-            if (e.data.error) return call.reject(new Error(e.data.error));
+            if (e.data.error) {
+                if (lane === 'main' && !decoderReady && !decoderGaveUp) {
+                    decoderGaveUp = true;
+                    scheduleReplay(0);
+                }
+                return call.reject(new Error(e.data.error));
+            }
             if (lane === 'main' && !decoderReady) {
                 decoderReady = true;
                 startFilesDecoder();
+                scheduleReplay(0);  // Held back until now
             }
             call.resolve(e.data.result);
         };
@@ -5167,10 +5179,10 @@ function setColourBy(key, legend) {
             hi.textContent = `${scaleLabel(m.stops[m.stops.length - 1][0])} ${m.unit}`;
             bar.style.background = `linear-gradient(90deg, ${m.stops.map(([v, c]) => c).join(', ')})`;
         }
-        if (m.targets === 'satellite') metricQueue = [];
+        if (m.targets === 'satellite') metricQueue = replayMetricQueue = [];
         else queueStationDecodes();
     } else {
-        metricQueue = [];
+        metricQueue = replayMetricQueue = [];
     }
     showColourStatus(legend);
 }
@@ -5182,28 +5194,35 @@ function showColourStatus(legend) {
     var points = [...records.values()].filter((r) => targets.includes(layerOf(r)));
     var known = points.filter((r) => r.feature && r.feature.properties[`m_${colourBy}`] !== undefined).length;
     el.hidden = false;
-    el.textContent = `${known.toLocaleString()} of ${points.length.toLocaleString()} have a value` + (metricQueue.length ? ` · decoding ${metricQueue.length}` : '');
+    var waiting = metricQueue.length + replayMetricQueue.length;
+    el.textContent = `${known.toLocaleString()} of ${points.length.toLocaleString()} have a value` + (waiting ? ` · decoding ${waiting.toLocaleString()}` : '');
 }
 
 // Cache stations, ships and buoys without decoded data, newest first
 function queueStationDecodes() {
-    metricQueue = [...pools.wis2.values()]
-        .filter((r) => !r.decoded && r.source && !r.metricTried && COLOURABLE.includes(layerOf(r)))
-        .slice(-METRIC_QUEUE_MAX);
+    var waiting = [...pools.wis2.values()].filter((r) => !r.decoded && r.source && !r.metricTried && COLOURABLE.includes(layerOf(r)));
+    metricQueue = waiting.filter((r) => !r.replay).slice(-METRIC_QUEUE_MAX);
+    replayMetricQueue = waiting.filter((r) => r.replay).sort((a, b) => b.born - a.born).slice(0, REPLAY_DECODE_MAX);
     pumpStationDecodes();
 }
 
 function queueStationDecode(record) {
     if (colourBy === 'kind' || record.decoded || !record.source || !COLOURABLE.includes(layerOf(record))) return;
-    metricQueue.push(record);
-    if (metricQueue.length > METRIC_QUEUE_MAX) metricQueue.shift();
+    if (record.replay) {
+        // Replays arrive newest first, so once the queue is full the rest are older still
+        if (replayMetricQueue.length < REPLAY_DECODE_MAX) replayMetricQueue.push(record);
+    } else {
+        metricQueue.push(record);
+        if (metricQueue.length > METRIC_QUEUE_MAX) metricQueue.shift();
+    }
     pumpStationDecodes();
 }
 
 async function pumpStationDecodes() {
-    if (metricBusy || !metricQueue.length || colourBy === 'kind') return;
+    if (metricBusy || (!metricQueue.length && !replayMetricQueue.length) || colourBy === 'kind') return;
     metricBusy = true;
-    var record = metricQueue.pop();
+    // Live stations newest first; replayed ones only once none are waiting
+    var record = metricQueue.length ? metricQueue.pop() : replayMetricQueue.shift();
     record.metricTried = true;
     try {
         if (records.has(record.id) && !record.decoded) {
@@ -5331,9 +5350,25 @@ const REPLAY_API = 'https://wis2-grep.weather.gc.ca/collections/wis2-notificatio
 const REPLAY_CACHE = 'data-metoffice-noaa-global-cache';
 const REPLAY_PAGE = 500;
 const REPLAY_MAX = 5000;
+// Replayed notifications go on the map a batch at a time, newest first, rather than
+// thousands at once, so live messages and the decoder keep up
+const REPLAY_BATCH = 10;
+const REPLAY_TICK_MS = 500;
 let replayTimer = null;
 let replayAbort = null;
 let replayedView = '';
+let replayBacklog = [];  // [topic, feature] still to go on the map
+let replayFeeding = null;
+
+function feedReplay() {
+    replayFeeding = null;
+    if (effectiveHidden().includes('replay')) {
+        replayBacklog = [];
+        return;
+    }
+    replayBacklog.splice(0, REPLAY_BATCH).forEach(([topic, feature]) => onMessage(topic, feature, true));
+    if (replayBacklog.length) replayFeeding = setTimeout(feedReplay, REPLAY_TICK_MS);
+}
 
 // 5 minutes, 1 hour, 2 h 35 min
 function replayWindowLabel(minutes) {
@@ -5353,24 +5388,34 @@ function setReplayWindow(minutes) {
     scheduleReplay(300);
 }
 
+// Nothing is asked of the replay service until the decoder has loaded (or failed to):
+// both are big downloads, and the decoder matters more to the first view
 function scheduleReplay(delay = 800) {
     clearTimeout(replayTimer);
     if (effectiveHidden().includes('replay')) return;
+    if (!decoderReady && !decoderGaveUp) return;  // Called again once it has
     replayTimer = setTimeout(loadReplay, delay);
 }
 
-async function loadReplay() {
+// The view as a bbox for an OGC API query (west, south, east, north). A view crossing
+// the antimeridian, or the whole globe, asks for everything.
+function viewBbox() {
     var b = map.getBounds();
     var clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
     var bbox = [clamp(b.getWest(), -180, 180), clamp(b.getSouth(), -90, 90), clamp(b.getEast(), -180, 180), clamp(b.getNorth(), -90, 90)]
         .map((v) => v.toFixed(2));
-    // A view crossing the antimeridian, or the whole globe, asks for everything
     if (b.getEast() - b.getWest() >= 360 || Number(bbox[0]) >= Number(bbox[2])) bbox = ['-180', '-90', '180', '90'];
+    return bbox;
+}
+
+async function loadReplay() {
+    var bbox = viewBbox();
     var since = new Date(Date.now() - replayWindowMs).toISOString().replace(/\.\d+Z$/, 'Z');
     var view = `${bbox.join(',')}|${since.slice(0, 15)}`;  // The same view within ten minutes isn't fetched again
     if (view === replayedView) return;
     replayedView = view;
     if (replayAbort) replayAbort.abort();
+    replayBacklog = [];  // What was waiting belongs to the last view
     var abort = replayAbort = new AbortController();
     var url = `${REPLAY_API}?f=json&sortby=-pubtime&limit=${REPLAY_PAGE}&bbox=${bbox.join(',')}&datetime=${since}/..&global-cache=${REPLAY_CACHE}`;
     try {
@@ -5378,10 +5423,12 @@ async function loadReplay() {
             var response = await fetch(url, { signal: abort.signal });
             if (!response.ok) throw new Error(`Global Replay answered ${response.status}`);
             var page = await response.json();
+            if (abort.signal.aborted) break;
             for (var feature of page.features || []) {
                 var topic = feature.properties && feature.properties.topic;
-                if (topic && topic.includes('/a/wis2/')) onMessage(topic, feature, true);
+                if (topic && topic.includes('/a/wis2/')) replayBacklog.push([topic, feature]);
             }
+            if (!replayFeeding) feedReplay();
             fetched += (page.features || []).length;
             var next = (page.links || []).find((l) => l.rel === 'next');
             url = next && (page.features || []).length ? next.href : null;
