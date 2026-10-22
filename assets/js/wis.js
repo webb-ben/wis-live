@@ -197,6 +197,10 @@ const METRIC_QUEUE_MAX = 5000;  // Station files waiting to be decoded, newest k
 let colourBy = 'kind';
 let colouredOnly = false;  // Hide every point not coloured by the measure
 let metricQueue = [];
+// Replayed stations wait in a queue of their own, taken only when no live station is waiting,
+// newest first and capped: a past hour shouldn't hold up what's arriving now
+const REPLAY_DECODE_MAX = 500;
+let replayMetricQueue = [];
 let metricBusy = false;
 
 // GTS sublayers that start off. Their bulletins aren't downloaded until they're
@@ -210,17 +214,13 @@ const GTS_OPT_IN = ['aircraft'];
 // than opt-in ones stay hidden until a point of that kind has arrived. Opt-in
 // rows are decoded in the browser, since their notifications carry no location.
 const LAYER_GROUPS = [
-    { key: 'wis2', label: 'WIS2', subtitle: 'Published directly through the WMO Information System', layers: [
+    { key: 'wis2', label: 'WIS2', subtitle: 'Live from the WIS2 Global Brokers', layers: [
+        { key: 'origin', label: 'Origin', color: COLORS.origin, ring: true },
         { key: 'obs', label: 'Cache', color: OBS_CLASSES.station.color, optIn: true },  // Always listed
         // Sublayers sit under their parent and are off whenever it is off
         ...Object.entries(OBS_CLASSES).filter(([key]) => key !== 'satellite').map(([key, c]) => ({ key: `cache-${key}`, parent: 'obs', label: c.label, color: c.color, title: c.title })),
         { key: 'radar', parent: 'obs', label: 'Weather radar', color: COLORS.radar,
             title: 'Reflectivity from the lowest scan of each radar volume (ODIM HDF5) in the cache, drawn around the radar; downloaded only while this is on' },
-        { key: 'origin', label: 'Origin', color: COLORS.origin, ring: true },
-        { key: 'replay', label: 'Global Replay', color: COLORS.replay, optIn: true,
-            title: 'Fill the view with past WIS2 core-data notifications from the Global Replay service (wis2-grep.weather.gc.ca); how far back is set by the slider below. Older points are fainter.' },
-        // Replayed messages sorted like the cache's, each row shown once something arrives in it
-        ...Object.entries(OBS_CLASSES).filter(([key]) => key !== 'satellite').map(([key, c]) => ({ key: `replay-${key}`, parent: 'replay', label: c.label, color: c.color, title: c.title })),
     ] },
     { key: 'gts', label: 'GTS gateways', subtitle: 'Bulletins relayed with the GTS', layers: [
         { key: 'gts', label: 'GTS-to-WIS2 (decode required)', color: COLORS.gts, optIn: true,
@@ -234,7 +234,8 @@ const LAYER_GROUPS = [
                 color: 'linear-gradient(90deg, #99e9f2, #22b8cf, #1971c2, #5f3dc4)',
                 title: 'Each aircraft drawn in the air at its altitude: a path coloured by height (light low, dark high), chevrons pointing the way it is flying, and a red arrowhead at its latest report. Tilt the map to see it in 3D. Off: every report is a point on the ground.' }] : []),
         ]),
-        { key: 'wis2gts', label: 'WIS2-to-GTS (decode required)', color: COLORS.wis2gts, optIn: true,
+        // Listed once a WIS2-to-GTS centre has published something (see revealGatewayRows)
+        { key: 'wis2gts', label: 'WIS2-to-GTS (decode required)', color: COLORS.wis2gts,
             title: 'Download and decode the BUFR that WIS2 centres pass on to the GTS (centres ending -wis2-to-gts), and plot the reports inside' },
     ] },
     { key: 'space', label: 'Satellites', subtitle: 'Space-based observations from WIS2 and the GTS', layers: [
@@ -244,14 +245,17 @@ const LAYER_GROUPS = [
         { key: 'sat-coverage', parent: 'satellite', option: true, label: 'Draw as coverage areas',
             title: 'Draw files with many reports as shaded coverage, and satellites as tracks. Off: every report is a point, coloured by the selected measure.' },
     ] },
-    { key: 'other', label: 'Other sources', subtitle: 'Not from WIS2: fetched directly from the provider', layers: [
-        { key: 'airports', label: 'Airports worldwide (METAR)', color: OBS_CLASSES.station.color, optIn: true,
-            title: 'The latest METAR from every airport the Iowa Environmental Mesonet collects, refreshed every 20 minutes. The airports nearest the view load first.' },
+    { key: 'other', label: 'Other sources', subtitle: 'More live observations, from services outside the Global Brokers', layers: [
+        { key: 'replay', label: 'Global Replay', color: COLORS.replay, optIn: true,
+            title: 'Past WIS2 core-data notifications for the view, from the Global Replay service (wis2-grep.weather.gc.ca). Starts once the decoder has loaded and fills in a few at a time, newest first; how far back is set by the slider below, and older points are fainter.' },
+        // Replayed messages sorted like the cache's, each row shown once something arrives in it
+        ...Object.entries(OBS_CLASSES).filter(([key]) => key !== 'satellite').map(([key, c]) => ({ key: `replay-${key}`, parent: 'replay', label: c.label, color: c.color, title: c.title })),
+        { key: 'airports', label: 'METAR', color: OBS_CLASSES.station.color, optIn: true,
+            title: 'Airport weather reports: the latest METAR from every airport the Iowa Environmental Mesonet collects, refreshed every 20 minutes, nearest the view first. An airport that also reports through WIS2 is shown once, as the WIS2 station, with its METAR linked.' },
     ] },
 ];
-// Off at first: radar, airports, WIS2-to-GTS, satellites, aircraft and ground-based GNSS (cache, GTS and replay), and aircraft tracks.
-// The Global Replay is on, reaching back REPLAY_DEFAULT_MINUTES, so the map isn't empty at first
-const hiddenLayers = new Set(['radar', 'cache-gnss', 'gts-gnss', 'replay-gnss', 'airports', 'wis2gts', 'satellite', 'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks']);
+// Off at first: radar, the Global Replay, METAR, WIS2-to-GTS, satellites, aircraft and ground-based GNSS (cache, GTS and replay), and aircraft tracks
+const hiddenLayers = new Set(['radar', 'replay', 'cache-gnss', 'gts-gnss', 'replay-gnss', 'airports', 'wis2gts', 'satellite', 'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks']);
 // How far back the Global Replay reaches, set by a continuous slider on a log scale:
 // 12 hours ago at the left, 5 minutes at the right, so time runs left to right and
 // recent windows get most of the track. Long windows over a busy view stop at
@@ -654,7 +658,7 @@ map.on('load', () => {
     // Wind arrows point the way the wind blows (reports give where it comes from)
     map.addImage('arrow', arrowSdf(), { sdf: true, pixelRatio: 2 });
     map.on('moveend', () => scheduleReplay());
-    scheduleReplay(0);  // On at first
+    scheduleReplay(0);  // If switched on (it starts off), once the decoder has loaded
     // Points from other sources (airports) are squares
     map.addImage('square', squareSdf(), { sdf: true, pixelRatio: 2 });
     map.addLayer({
@@ -703,11 +707,14 @@ map.on('load', () => {
     paintAge();
     setInterval(paintAge, 30 * 1000);
     applyMapFilter();
-    // Open coloured by temperature, near the visitor
+    // Open coloured by observation type, or as the link says (style=temp and so on), near the visitor
     if (stylePanel) {
-        stylePanel.querySelector('.legend-colour select').value = 'temp';
-        setColourBy('temp', stylePanel);
+        stylePanel.querySelector('.legend-colour select').value = startColour;
+        stylePanel.querySelector('.legend-coloured-only input').checked = colouredOnly;
+        setColourBy(startColour, stylePanel);
     }
+    // A link to a dataset shows it as its Show on map would (the catalogue code is wired up just after load)
+    if (startDataset) setTimeout(() => showDatasetFromUrl(startDataset));
     centreOnVisitor();
     preloadDecoder();
     flushPoints();
@@ -829,6 +836,7 @@ function addPoint(record) {
     if (!reduceMotion && !feature.properties.superseded && !record.external && !record.replay) pulses.push(feature);
     if (!seenLayers.has(feature.properties.layer)) showLegendRow(feature.properties.layer);
     if (feature.properties.sat) addSatelliteRow(feature.properties.sat);
+    indexTwin(record);
     // Other sources are bounded by their own station lists, and stay put
     if (record.external) return record;
 
@@ -892,6 +900,7 @@ function removePoint(record) {
     if (record.track) tracksDirty = true;
     if (record.fileKey) swathsDirty = true;
     records.delete(record.id);
+    unindexTwin(record);
     pools[poolOf(record)].delete(record.id);
     if (byDataId.get(record.props.data_id) === record) byDataId.delete(record.props.data_id);
     if (record.track && latestOnTrack.get(record.track) === record) latestOnTrack.delete(record.track);
@@ -1088,6 +1097,7 @@ function selectQueueTab(tab) {
     document.querySelectorAll('.queue-tabs button').forEach((b) => b.setAttribute('aria-selected', b.dataset.tab === tab));
     document.querySelectorAll('.queue-pane').forEach((pane) => { pane.hidden = pane.dataset.pane !== tab; });
     if (tab === 'messages') flushQueue();
+    if (tab === 'datasets' && !gdcSearched) searchCatalogue();
 }
 
 // The key on the map. On top, how points are styled: what they're coloured by,
@@ -1148,10 +1158,12 @@ function buildStylePanel() {
     stylePanel.querySelector('.legend-coloured-only input').addEventListener('change', (e) => {
         colouredOnly = e.target.checked;
         applyMapFilter();
+        writeFiltersToUrl();
     });
     stylePanel.querySelector('.legend-model input').addEventListener('change', (e) => {
         modelFieldOn = e.target.checked;
         updateModelField(stylePanel);
+        writeFiltersToUrl();
     });
     setInterval(() => showColourStatus(stylePanel), 1000);
     return stylePanel;
@@ -1194,7 +1206,10 @@ function updateMapKey() {
     // How each source is drawn: WIS2 cache circles, WIS2 origin rings, GTS diamonds
     // Each symbol stays on one line with its label
     var shape = (kind, color, label) => `<span class="key-shape">${symbol(kind, color)}${label}</span>`;
-    rows.push(`<div class="key-shapes">${shape('circle', '#adb5bd', 'WIS2')}${drawn('origin') ? shape('ring', COLORS.origin, 'WIS2 origin') : ''}${shape('diamond', '#adb5bd', 'GTS')}${drawn('airports') ? shape('square', '#adb5bd', 'Airports') : ''}<button type="button" class="btn btn-link btn-sm map-key-edit">Edit layers</button></div>`);
+    // Other sources are squares: the Global Replay (its rows are replay-station and so on) and airports
+    var squares = [!hidden.includes('replay') && [...seenLayers].some((k) => k.startsWith('replay-')) && 'Replay',
+        drawn('airports') && 'METAR'].filter(Boolean);
+    rows.push(`<div class="key-shapes">${shape('circle', '#adb5bd', 'WIS2')}${drawn('origin') ? shape('ring', COLORS.origin, 'WIS2 origin') : ''}${shape('diamond', '#adb5bd', 'GTS')}${squares.length ? shape('square', '#adb5bd', squares.join(', ')) : ''}<button type="button" class="btn btn-link btn-sm map-key-edit">Edit layers</button></div>`);
     mapKeyBody.innerHTML = rows.join('');
 }
 
@@ -1266,12 +1281,14 @@ function buildPopup(record) {
     var oscar = record.links.find((l) => l.rel == 'via' && /oscar/.test(l.href));
     var image = record.webcam && canonical;
     var wis2box = record.external ? null : wis2boxOf(record);
+    // A WIS2 or GTS station that is also an airport links its METAR
+    var twinAirport = twinKind(record) === 'station' ? twinsNear(record, 'airport')[0] : null;
 
     var div = document.createElement('div');
     div.className = 'pp';
     div.innerHTML = `
         <header class="pp-head">
-            <span class="pp-dot${record.channel !== 'cache' && !record.external ? ' pp-ring' : ''}${isGateway(record) ? ' is-gts' : ''}${record.external ? ' is-ext' : ''}" style="--color: ${record.color}; --outline: ${darken(record.color)}"></span>
+            <span class="pp-dot${record.channel !== 'cache' && !record.external ? ' pp-ring' : ''}${isGateway(record) ? ' is-gts' : ''}${record.external || record.replay ? ' is-ext' : ''}" style="--color: ${record.color}; --outline: ${darken(record.color)}"></span>
             <div>
                 <div class="pp-title"></div>
                 <div class="pp-sub">
@@ -1286,7 +1303,8 @@ function buildPopup(record) {
         <dl class="pp-meta">
             ${record.wsi ? `<dt>Station</dt><dd>${oscar
                 ? `<a href="${esc(oscar.href)}" target="_blank" rel="noopener">${esc(record.wsi)}</a>`
-                : esc(record.wsi)}</dd>` : ''}
+                : esc(record.wsi)}${twinAirport
+                ? ` · METAR <a href="#" class="pp-twin" title="The same station's latest METAR">${esc(twinAirport.wsi)}</a>` : ''}</dd>` : ''}
             ${props.datetime ? `<dt>Observed</dt><dd>${esc(new Date(props.datetime).toLocaleString())} (${timeAgo(props.datetime)})</dd>` : ''}
             <dt>Topic</dt><dd class="pp-mono">${esc(record.path)}</dd>
             ${wis2box ? `<dt>wis2box</dt><dd>${[wis2box.version && esc(wis2box.version), wis2box.url
@@ -1300,10 +1318,19 @@ function buildPopup(record) {
         </div>
         <div class="pp-decoded" data-panel="data"></div>
         <div class="pp-forecast" data-panel="forecast" hidden></div>
-        <div class="pp-message" data-panel="message" hidden></div>`;
+        <div class="pp-message" data-panel="message" hidden></div>
+        <div class="pp-dataset" hidden></div>`;
 
     var title = div.querySelector('.pp-title');
     title.textContent = record.wsi || props.metadata_id || record.centre;
+    var twin = div.querySelector('.pp-twin');
+    // What the dataset is, from the Global Discovery Catalogue
+    var dataset = datasetId(record);
+    if (dataset) showDatasetInPopup(div.querySelector('.pp-dataset'), dataset);
+    if (twin) twin.addEventListener('click', (e) => {
+        e.preventDefault();
+        openPopup(twinAirport);
+    });
 
     var actions = div.querySelector('.pp-actions');
     var out = div.querySelector('.pp-decoded');
@@ -2877,7 +2904,8 @@ function openSounding(profile, label, values) {
 // placeholder such as "MISSING", or no letters at all (e.g. "0000", "///")
 function stationName(entry) {
     if (!entry || typeof entry[0] !== 'string') return null;
-    var name = entry[0].replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\s+/g, ' ').trim();
+    // ÿ is a BUFR padding byte (0xFF) read as Latin-1
+    var name = entry[0].replace(/ÿ/g, '').replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\s+/g, ' ').trim();
     if (name.length < 2 || name.length > 64) return null;
     if (name.includes('\ufffd')) return null;
     if (!/[a-z]/i.test(name)) return null;
@@ -3116,9 +3144,13 @@ function applyMapFilter() {
     var arrows = windArrows();
     map.setFilter('points-arrow', arrows ? [...shown, isArrow()] : ['boolean', false]);
     if (arrows) shown = [...shown, ['!', isArrow()]];
-    map.setFilter('points', [...shown, ['!=', ['get', 'gateway'], true], ['!=', ['get', 'ext'], true]]);
-    map.setFilter('points-gts', [...shown, ['==', ['get', 'gateway'], true]]);
-    map.setFilter('points-ext', [...shown, ['==', ['get', 'ext'], true]]);
+    // Circles for WIS2, diamonds for the GTS, squares for other sources: airports and the Global Replay
+    var square = ['any', ['==', ['get', 'ext'], true], ['==', ['get', 'replay'], true]];
+    map.setFilter('points', [...shown, ['!=', ['get', 'gateway'], true], ['!', square]]);
+    map.setFilter('points-gts', [...shown, ['==', ['get', 'gateway'], true], ['!', square]]);
+    // An airport with a twin station (WIS2 or GTS) is only drawn while every layer with one is off
+    var twinShown = ['all', ...TWIN_LAYERS.filter((l) => !effectiveHidden().includes(l)).map((l) => ['!=', ['get', `twin_${l}`], true])];
+    map.setFilter('points-ext', [...shown, square, twinShown]);
     map.setFilter('pulses', [...(tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr), ...notInSwath]);
     map.setFilter('swaths-fill', !coverage ? ['boolean', false] : expr.length > 1 ? expr : null);
     var trackExpr = coverage ? expr : [...expr, ['!=', ['get', 'kind'], 'satellite']];
@@ -3129,6 +3161,60 @@ function applyMapFilter() {
     radars.forEach((r) => map.getLayer(r.id) && map.setLayoutProperty(r.id, 'visibility', radarShown));
 }
 
+// The filters in force, each with a way to take it off (keeping the sidebar's controls in step)
+function filterChips() {
+    var not = (key) => (filterModes[key] === 'hide' ? 'not ' : '');
+    var chips = [];
+    var clearTopic = () => {
+        filters.text = '';
+        queueFilter.value = '';
+    };
+    // A dataset shown on the map is one chip for it and its topic filter
+    if (shownDataset && filters.text === shownDataset.topic) {
+        chips.push({ label: `dataset “${shownDataset.title}”`, clear: () => {
+            shownDataset = null;
+            clearTopic();
+        } });
+    } else if (filters.text) {
+        chips.push({ label: `${not('text')}topic “${filters.text}”`, clear: clearTopic });
+    }
+    [...filters.centres].sort().forEach((centre) => chips.push({ label: `${not('centres')}${centre}`, clear: () => {
+        filters.centres.delete(centre);
+        var item = centres.get(centre);
+        if (item) item.querySelector('input').checked = false;
+        showSelectedCentres();
+    } }));
+    if (filters.format) chips.push({ label: `${not('format')}${FORMATS[filters.format]}`, clear: () => {
+        filters.format = '';
+        document.querySelector('.queue-format').value = '';
+    } });
+    filters.disciplines.forEach((d) => chips.push({ label: `${not('disciplines')}${DISCIPLINES[d]}`, clear: () => {
+        filters.disciplines.delete(d);
+        document.querySelector(`.queue-chip[data-discipline="${d}"]`).setAttribute('aria-pressed', 'false');
+    } }));
+    return chips;
+}
+
+// Over the map while any filter is on, sidebar open or not: one chip per filter to remove it, and Clear all
+function renderFilterBanner() {
+    var banner = document.querySelector('.filter-banner');
+    if (!banner) return;
+    var chips = filterChips();
+    banner.hidden = !chips.length;
+    banner.querySelector('.filter-banner-chips').replaceChildren(...chips.map((c) => {
+        var chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'filter-banner-chip';
+        chip.title = `Remove the filter: ${c.label}`;
+        chip.textContent = c.label;
+        chip.addEventListener('click', () => {
+            c.clear();
+            applyFilters();
+        });
+        return chip;
+    }));
+}
+
 function applyFilters() {
     applyMapFilter();
     rebuildQueue();
@@ -3136,14 +3222,23 @@ function applyFilters() {
     queueToggle.classList.toggle('filtered', active);
     queueToggle.title = active ? 'Layers and messages (filters on)' : 'Layers and messages';
     document.querySelector('.queue-reset').hidden = !active;
-    document.querySelector('.queue-share').hidden = !active;
-    writeFiltersToUrl();
+    writeFiltersToUrl();  // Shows Copy link too, while the URL has filters or styling to share
+    filterDatasetRows();
+    renderFilterBanner();
 }
 
-// ---------- Filters in the address bar, so a filtered view can be shared:
+// ---------- Filters and point styling in the address bar, so a view can be shared:
 // ?topic=synop&centre=de-dwd,jp-jma&format=bufr&discipline=ocean&hide=centres
-// (hide lists the filters set to Hide rather than Only). Other parameters are kept.
+// (hide lists the filters set to Hide rather than Only), and style=temp&require=1&base=1
+// (the measure points are coloured by, Require value, the model base layer; style is
+// left out for the default, observation type). Other parameters are kept.
 const FILTER_PARAMS = { text: 'topic', centres: 'centre', format: 'format', disciplines: 'discipline' };
+const DEFAULT_COLOUR = 'kind';
+let startColour = DEFAULT_COLOUR;  // The measure the page opens coloured by
+// ?dataset=<metadata_id> opens the page as if that dataset's Show on map had been clicked;
+// Show on map writes it, and taking its chip off the banner removes it
+let startDataset = null;
+let shownDataset = null;  // { id, title } of the dataset last shown on the map
 
 function readFiltersFromUrl() {
     var params = new URLSearchParams(location.search);
@@ -3153,18 +3248,33 @@ function readFiltersFromUrl() {
     filters.format = FORMATS.hasOwnProperty(params.get(FILTER_PARAMS.format)) ? params.get(FILTER_PARAMS.format) : '';
     list(FILTER_PARAMS.disciplines).filter((d) => DISCIPLINES.hasOwnProperty(d)).forEach((d) => filters.disciplines.add(d));
     list('hide').filter((key) => filterModes.hasOwnProperty(key)).forEach((key) => { filterModes[key] = 'hide'; });
+    var style = params.get('style');
+    if (style === 'kind' || METRICS.hasOwnProperty(style)) startColour = style;
+    colouredOnly = params.get('require') === '1';
+    modelFieldOn = params.get('base') === '1';
+    if (/^urn:wmo:md:/.test(params.get('dataset') || '')) startDataset = params.get('dataset');
 }
 
 function writeFiltersToUrl() {
     var params = new URLSearchParams(location.search);
     var set = (name, value) => (value ? params.set(name, value) : params.delete(name));
-    set(FILTER_PARAMS.text, filters.text);
+    // A dataset shown on the map stands for its topic filter; changing the filter leaves it a plain filter
+    if (shownDataset && !startDataset && filters.text !== shownDataset.topic) shownDataset = null;
+    set(FILTER_PARAMS.text, shownDataset && filters.text === shownDataset.topic ? '' : filters.text);
     set(FILTER_PARAMS.centres, [...filters.centres].sort().join(','));
     set(FILTER_PARAMS.format, filters.format);
     set(FILTER_PARAMS.disciplines, [...filters.disciplines].join(','));
     // A mode only matters while its filter is set
     set('hide', Object.keys(filterModes).filter((key) => filterModes[key] === 'hide' && (key === 'text' ? filters.text
         : key === 'format' ? filters.format : filters[key].size)).join(','));
+    // The options only count while colouring by a measure (and the base layer only for one with a model field)
+    var m = METRICS[colourBy];
+    set('style', colourBy !== DEFAULT_COLOUR ? colourBy : '');
+    set('require', colouredOnly && m ? '1' : '');
+    set('base', modelFieldOn && m && m.wms ? '1' : '');
+    if (!startDataset) set('dataset', shownDataset ? shownDataset.id : '');  // Kept while a link's dataset is still loading
+    var share = document.querySelector('.queue-share');
+    if (share) share.hidden = !['topic', 'centre', 'format', 'discipline', 'style', 'require', 'base', 'dataset'].some((p) => params.has(p));
     var query = params.toString().replace(/%2C/gi, ',');  // Commas read better unescaped
     try {
         history.replaceState(history.state, '', `${location.pathname}${query ? `?${query}` : ''}${location.hash}`);
@@ -3290,7 +3400,7 @@ class QueueControl {
             <!-- Filters shared by the map and the message list -->
             <div class="queue-header queue-filters">
                 <div class="queue-title"><strong>Filters</strong>
-                    <button type="button" class="btn btn-sm btn-link queue-reset" hidden>Reset filters</button>
+                    <button type="button" class="btn btn-sm btn-outline-danger queue-reset" hidden title="Remove every filter">Clear filters</button>
                     <button type="button" class="btn btn-sm btn-link queue-share" hidden title="Copy a link that opens the map with these filters">Copy link</button>
                 </div>
                 <div class="filter-row">${filterModeButton('text')}<input type="search" class="form-control form-control-sm" placeholder="Filter topics"></div>
@@ -3316,9 +3426,18 @@ class QueueControl {
             </div>
             <div class="queue-tabs" role="tablist">
                 <button type="button" role="tab" data-tab="layers" aria-selected="true">Layers</button>
+                <button type="button" role="tab" data-tab="datasets" aria-selected="false">Datasets</button>
                 <button type="button" role="tab" data-tab="messages" aria-selected="false">Messages</button>
             </div>
             <div class="queue-pane queue-pane-layers" data-pane="layers"></div>
+            <div class="queue-pane queue-pane-datasets" data-pane="datasets" hidden>
+                <div class="gdc-controls">
+                    <input type="search" class="form-control form-control-sm gdc-query" placeholder="Search the WIS2 catalogue" aria-label="Search the WIS2 Global Discovery Catalogue">
+                </div>
+                <div class="gdc-status legend-note"></div>
+                <ol class="gdc-list"></ol>
+                <button type="button" class="btn btn-sm btn-outline-secondary gdc-more" hidden>More</button>
+            </div>
             <div class="queue-pane queue-pane-messages" data-pane="messages" hidden>
                 <div class="queue-controls">
                     <select class="form-select form-select-sm queue-mapped" aria-label="Messages to list">
@@ -3392,6 +3511,19 @@ class QueueControl {
             paintFilterMode(button);
             applyFilters();
         }));
+        // The filters in force, over the map (see renderFilterBanner)
+        var banner = document.createElement('div');
+        banner.className = 'filter-banner';
+        banner.hidden = true;
+        banner.setAttribute('role', 'region');
+        banner.setAttribute('aria-label', 'Filters in force');
+        banner.innerHTML = '<span class="filter-banner-label">Filtered</span><span class="filter-banner-chips"></span>'
+            + '<button type="button" class="filter-banner-clear" title="Remove every filter">Clear all</button>';
+        banner.querySelector('.filter-banner-clear').addEventListener('click', () => {
+            shownDataset = null;  // Its chip goes too
+            sidebar.querySelector('.queue-reset').click();
+        });
+        document.body.appendChild(banner);
         sidebar.querySelector('.queue-reset').addEventListener('click', function(){
             Object.keys(filterModes).forEach((key) => { filterModes[key] = 'only'; });
             sidebar.querySelectorAll('.filter-mode').forEach(paintFilterMode);
@@ -3424,6 +3556,8 @@ class QueueControl {
             }
             setTimeout(() => { share.textContent = 'Copy link'; }, 2000);
         });
+        // The catalogue's code comes later in the script, so wire it up once that has run
+        setTimeout(() => initCatalogue(sidebar));
         queueMapped.addEventListener('change', rebuildQueue);
         queuePause.addEventListener('click', function(){
             queuePaused = !queuePaused;
@@ -3907,6 +4041,7 @@ function parseMessage(topic, message) {
 function onMessage(topic, feature, replay) {
     // Kept for every message so the sidebar can find a downloadable copy
     rememberLinks((feature.properties || {}).data_id, feature.links || []);
+    noteDataset(feature);
     revealGatewayRows(topic, feature);
     // Replayed messages are only drawn: decoding a past hour of files would swamp the decoder
     var kind = !replay && Object.keys(DECODE_LAYERS).find((key) => DECODE_LAYERS[key](topic, feature));
@@ -4031,6 +4166,7 @@ const DATA_LINKS_MAX = 20000;
 const dataLinks = new Map();  // data_id -> hrefs seen from every cache
 const decoderWorkers = {};  // lane ('main' or 'files') -> worker
 let decoderReady = false;
+let decoderGaveUp = false;  // It couldn't start; the Global Replay, which waits for it, goes ahead
 let nextCall = 1;
 const decoderCalls = new Map();  // call id -> { resolve, reject }
 
@@ -4041,6 +4177,8 @@ from pybufrkit.descriptors import ElementDescriptor
 
 def _value(v):
     if isinstance(v, bytes):
+        # All-ones bytes are BUFR's padding (and missing) characters, which would read as ÿ
+        v = v.replace(b'\\xff', b'')
         try:
             v = v.decode('utf-8')
         except UnicodeDecodeError:
@@ -4352,10 +4490,17 @@ function callDecoderOn(lane, fn, ...args) {
         worker.onmessage = (e) => {
             var call = decoderCalls.get(e.data.id);
             decoderCalls.delete(e.data.id);
-            if (e.data.error) return call.reject(new Error(e.data.error));
+            if (e.data.error) {
+                if (lane === 'main' && !decoderReady && !decoderGaveUp) {
+                    decoderGaveUp = true;
+                    scheduleReplay(0);
+                }
+                return call.reject(new Error(e.data.error));
+            }
             if (lane === 'main' && !decoderReady) {
                 decoderReady = true;
                 startFilesDecoder();
+                scheduleReplay(0);  // Held back until now
             }
             call.resolve(e.data.result);
         };
@@ -4426,11 +4571,12 @@ let decodeQueue = [];
 let decodeBusy = false;
 const decodeSeen = new Set();
 
-// Shows the GTS Aircraft and the Satellites rows once such a file has been
-// announced, even though it isn't downloaded while the row is off
+// Shows the GTS Aircraft, Satellites, radar and WIS2-to-GTS rows once such a file
+// has been announced, even though it isn't downloaded while the row is off
 function revealGatewayRows(topic, feature) {
     if (!seenLayers.has('satellite') && isSpaceBased(topic)) showLegendRow('satellite');
     if (!seenLayers.has('radar') && DECODE_LAYERS.radar(topic, feature)) showLegendRow('radar');
+    if (!seenLayers.has('wis2gts') && WIS2_GTS_TOPIC.test(topic)) showLegendRow('wis2gts');
     if (!seenLayers.has('gts-aircraft') && GATEWAY_AIRCRAFT.test(topic)) showLegendRow('gts-aircraft');
 }
 
@@ -5167,12 +5313,13 @@ function setColourBy(key, legend) {
             hi.textContent = `${scaleLabel(m.stops[m.stops.length - 1][0])} ${m.unit}`;
             bar.style.background = `linear-gradient(90deg, ${m.stops.map(([v, c]) => c).join(', ')})`;
         }
-        if (m.targets === 'satellite') metricQueue = [];
+        if (m.targets === 'satellite') metricQueue = replayMetricQueue = [];
         else queueStationDecodes();
     } else {
-        metricQueue = [];
+        metricQueue = replayMetricQueue = [];
     }
     showColourStatus(legend);
+    writeFiltersToUrl();
 }
 
 function showColourStatus(legend) {
@@ -5182,28 +5329,35 @@ function showColourStatus(legend) {
     var points = [...records.values()].filter((r) => targets.includes(layerOf(r)));
     var known = points.filter((r) => r.feature && r.feature.properties[`m_${colourBy}`] !== undefined).length;
     el.hidden = false;
-    el.textContent = `${known.toLocaleString()} of ${points.length.toLocaleString()} have a value` + (metricQueue.length ? ` · decoding ${metricQueue.length}` : '');
+    var waiting = metricQueue.length + replayMetricQueue.length;
+    el.textContent = `${known.toLocaleString()} of ${points.length.toLocaleString()} have a value` + (waiting ? ` · decoding ${waiting.toLocaleString()}` : '');
 }
 
 // Cache stations, ships and buoys without decoded data, newest first
 function queueStationDecodes() {
-    metricQueue = [...pools.wis2.values()]
-        .filter((r) => !r.decoded && r.source && !r.metricTried && COLOURABLE.includes(layerOf(r)))
-        .slice(-METRIC_QUEUE_MAX);
+    var waiting = [...pools.wis2.values()].filter((r) => !r.decoded && r.source && !r.metricTried && COLOURABLE.includes(layerOf(r)));
+    metricQueue = waiting.filter((r) => !r.replay).slice(-METRIC_QUEUE_MAX);
+    replayMetricQueue = waiting.filter((r) => r.replay).sort((a, b) => b.born - a.born).slice(0, REPLAY_DECODE_MAX);
     pumpStationDecodes();
 }
 
 function queueStationDecode(record) {
     if (colourBy === 'kind' || record.decoded || !record.source || !COLOURABLE.includes(layerOf(record))) return;
-    metricQueue.push(record);
-    if (metricQueue.length > METRIC_QUEUE_MAX) metricQueue.shift();
+    if (record.replay) {
+        // Replays arrive newest first, so once the queue is full the rest are older still
+        if (replayMetricQueue.length < REPLAY_DECODE_MAX) replayMetricQueue.push(record);
+    } else {
+        metricQueue.push(record);
+        if (metricQueue.length > METRIC_QUEUE_MAX) metricQueue.shift();
+    }
     pumpStationDecodes();
 }
 
 async function pumpStationDecodes() {
-    if (metricBusy || !metricQueue.length || colourBy === 'kind') return;
+    if (metricBusy || (!metricQueue.length && !replayMetricQueue.length) || colourBy === 'kind') return;
     metricBusy = true;
-    var record = metricQueue.pop();
+    // Live stations newest first; replayed ones only once none are waiting
+    var record = metricQueue.length ? metricQueue.pop() : replayMetricQueue.shift();
     record.metricTried = true;
     try {
         if (records.has(record.id) && !record.decoded) {
@@ -5282,6 +5436,65 @@ function addSatelliteRow(key) {
     after.after(row);
 }
 
+// ---------- One point per station: many airports also report as weather stations,
+// through WIS2 or the GTS (synops with WMO or WIGOS ids), with no identifier in
+// common with the METAR. An airport within TWIN_KM of such a station (WIS2 cache,
+// GTS or replay) is taken to be the same station: the station's point stays, the
+// airport square is hidden while any layer with a twin of it is on (see
+// applyMapFilter), and the station's popup links the METAR.
+const TWIN_KM = 2;
+const TWIN_CELL = 0.05;  // Grid cell in degrees (about 5 km), so lookups only look next door
+const TWIN_LAYERS = ['cache-station', 'gts-station', 'replay-station'];
+const twinGrid = new Map();  // cell -> Set of airport and station records
+
+function twinKind(record) {
+    if (record.subLayer === 'airports') return 'airport';
+    return !record.external && TWIN_LAYERS.includes(layerOf(record)) ? 'station' : null;
+}
+
+function twinCell([lon, lat], dx = 0, dy = 0) {
+    return `${Math.floor(lon / TWIN_CELL) + dx},${Math.floor(lat / TWIN_CELL) + dy}`;
+}
+
+// Records of a kind within TWIN_KM, nearest first
+function twinsNear(record, kind) {
+    var near = [];
+    for (var dx = -1; dx <= 1; dx++) {
+        for (var dy = -1; dy <= 1; dy++) {
+            for (var other of twinGrid.get(twinCell(record.coords, dx, dy)) || []) {
+                if (other === record || twinKind(other) !== kind || !records.has(other.id)) continue;
+                var km = distanceKm(record.coords, other.coords);
+                if (km <= TWIN_KM) near.push([km, other]);
+            }
+        }
+    }
+    return near.sort((a, b) => a[0] - b[0]).map(([, other]) => other);
+}
+
+// Flags an airport with each station layer that has a twin of it (twin_gts-station and so on)
+function markTwins(airport) {
+    var layers = new Set(twinsNear(airport, 'station').map(layerOf));
+    setFeatureProperties(airport, Object.fromEntries(TWIN_LAYERS.map((l) => [`twin_${l}`, layers.has(l)])));
+}
+
+function indexTwin(record) {
+    var kind = twinKind(record);
+    if (!kind || !record.coords) return;
+    var cell = twinCell(record.coords);
+    if (!twinGrid.has(cell)) twinGrid.set(cell, new Set());
+    twinGrid.get(cell).add(record);
+    if (kind === 'airport') markTwins(record);
+    else twinsNear(record, 'airport').forEach(markTwins);
+}
+
+// A station that goes may leave its airport with no twin, and so shown again
+function unindexTwin(record) {
+    var cell = record.coords && twinGrid.get(twinCell(record.coords));
+    if (!cell || !cell.delete(record)) return;
+    if (!cell.size) twinGrid.delete(twinCell(record.coords));
+    if (twinKind(record) === 'station') twinsNear(record, 'airport').forEach(markTwins);
+}
+
 // Adds a station from another source, or refreshes the readings of one already on the map
 function externalStation(stations, s) {
     // Fade by the age of the observation, like WIS2 points
@@ -5331,9 +5544,25 @@ const REPLAY_API = 'https://wis2-grep.weather.gc.ca/collections/wis2-notificatio
 const REPLAY_CACHE = 'data-metoffice-noaa-global-cache';
 const REPLAY_PAGE = 500;
 const REPLAY_MAX = 5000;
+// Replayed notifications go on the map a batch at a time, newest first, rather than
+// thousands at once, so live messages and the decoder keep up
+const REPLAY_BATCH = 10;
+const REPLAY_TICK_MS = 500;
 let replayTimer = null;
 let replayAbort = null;
 let replayedView = '';
+let replayBacklog = [];  // [topic, feature] still to go on the map
+let replayFeeding = null;
+
+function feedReplay() {
+    replayFeeding = null;
+    if (effectiveHidden().includes('replay')) {
+        replayBacklog = [];
+        return;
+    }
+    replayBacklog.splice(0, REPLAY_BATCH).forEach(([topic, feature]) => onMessage(topic, feature, true));
+    if (replayBacklog.length) replayFeeding = setTimeout(feedReplay, REPLAY_TICK_MS);
+}
 
 // 5 minutes, 1 hour, 2 h 35 min
 function replayWindowLabel(minutes) {
@@ -5353,24 +5582,34 @@ function setReplayWindow(minutes) {
     scheduleReplay(300);
 }
 
+// Nothing is asked of the replay service until the decoder has loaded (or failed to):
+// both are big downloads, and the decoder matters more to the first view
 function scheduleReplay(delay = 800) {
     clearTimeout(replayTimer);
     if (effectiveHidden().includes('replay')) return;
+    if (!decoderReady && !decoderGaveUp) return;  // Called again once it has
     replayTimer = setTimeout(loadReplay, delay);
 }
 
-async function loadReplay() {
+// The view as a bbox for an OGC API query (west, south, east, north). A view crossing
+// the antimeridian, or the whole globe, asks for everything.
+function viewBbox() {
     var b = map.getBounds();
     var clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
     var bbox = [clamp(b.getWest(), -180, 180), clamp(b.getSouth(), -90, 90), clamp(b.getEast(), -180, 180), clamp(b.getNorth(), -90, 90)]
         .map((v) => v.toFixed(2));
-    // A view crossing the antimeridian, or the whole globe, asks for everything
     if (b.getEast() - b.getWest() >= 360 || Number(bbox[0]) >= Number(bbox[2])) bbox = ['-180', '-90', '180', '90'];
+    return bbox;
+}
+
+async function loadReplay() {
+    var bbox = viewBbox();
     var since = new Date(Date.now() - replayWindowMs).toISOString().replace(/\.\d+Z$/, 'Z');
     var view = `${bbox.join(',')}|${since.slice(0, 15)}`;  // The same view within ten minutes isn't fetched again
     if (view === replayedView) return;
     replayedView = view;
     if (replayAbort) replayAbort.abort();
+    replayBacklog = [];  // What was waiting belongs to the last view
     var abort = replayAbort = new AbortController();
     var url = `${REPLAY_API}?f=json&sortby=-pubtime&limit=${REPLAY_PAGE}&bbox=${bbox.join(',')}&datetime=${since}/..&global-cache=${REPLAY_CACHE}`;
     try {
@@ -5378,10 +5617,12 @@ async function loadReplay() {
             var response = await fetch(url, { signal: abort.signal });
             if (!response.ok) throw new Error(`Global Replay answered ${response.status}`);
             var page = await response.json();
+            if (abort.signal.aborted) break;
             for (var feature of page.features || []) {
                 var topic = feature.properties && feature.properties.topic;
-                if (topic && topic.includes('/a/wis2/')) onMessage(topic, feature, true);
+                if (topic && topic.includes('/a/wis2/')) replayBacklog.push([topic, feature]);
             }
+            if (!replayFeeding) feedReplay();
             fetched += (page.features || []).length;
             var next = (page.links || []).find((l) => l.rel === 'next');
             url = next && (page.features || []).length ? next.href : null;
@@ -5392,6 +5633,319 @@ async function loadReplay() {
             console.debug(`Could not load the Global Replay: ${err.message}`);
         }
     }
+}
+
+// ---------- WIS2 Global Discovery Catalogue (OGC API - Records): what each dataset
+// is, shown in a point's popup (looked up by its notification's metadata_id), and a
+// search over every dataset in the sidebar's Datasets tab
+// The three Global Discovery Catalogues hold the same records. Searches, lookups and links
+// go to the one nearest the visitor (going by their time zone, see guessCentre), and on
+// to the next if it can't be reached.
+const GDCS = [
+    { name: 'ECCC, Canada', api: 'https://wis2-gdc.weather.gc.ca/collections/wis2-discovery-metadata/items', at: [-75.7, 45.4] },
+    { name: 'CMA, China', api: 'https://gdc.wis.cma.cn/collections/wis2-discovery-metadata/items', at: [116.4, 39.9] },
+    { name: 'DWD, Germany', api: 'https://wis2.dwd.de/gdc/collections/wis2-discovery-metadata/items', at: [8.8, 50.1] },
+].sort((a, b) => distanceKm(guessCentre(), a.at) - distanceKm(guessCentre(), b.at));
+
+// A catalogue request (a path under the records), from the nearest catalogue that answers
+async function gdcFetch(path, options) {
+    var lastError = null;
+    for (var gdc of GDCS) {
+        try {
+            var response = await fetch(gdc.api + path, options);
+            if (response.ok || response.status === 404) return response;
+            lastError = new Error(`${gdc.name} answered ${response.status}`);
+        } catch (err) {
+            if (err.name === 'AbortError') throw err;
+            lastError = err;
+        }
+    }
+    throw lastError;
+}
+
+// What a dataset's "Show on map" fetches from the Global Replay
+const DATASET_HOURS = 6;
+const DATASET_MAX = 500;
+const GDC_CACHE_MAX = 500;  // Records kept, so a popup doesn't ask again
+// The whole catalogue (about 600 datasets) fits in one page, so the ones seen arriving can be
+// listed first; a search with no text or view filter is about 5 MB
+const GDC_PAGE = 1000;
+const DATASETS_SEEN_MAX = 5000;
+const gdcRecords = new Map();  // metadata_id -> Promise of its record, or null when the catalogue has none
+const datasetSeen = new Map();  // metadata_id -> when a notification for it was last published
+let gdcSearched = false;
+let gdcNext = null;
+let gdcAbort = null;
+let gdcEls = null;
+
+// WIS2 datasets are urn:wmo:md:...; GTS relays still carry urn:x-wmo:md:..., which the catalogue doesn't hold
+function datasetId(record) {
+    var id = record.props.metadata_id || ((record.notification || {}).properties || {}).metadata_id;
+    return /^urn:wmo:md:/.test(id || '') ? id : null;
+}
+
+function noteDataset(feature) {
+    var props = feature.properties || {}, id = props.metadata_id;
+    if (!/^urn:wmo:md:/.test(id || '')) return;
+    var when = Date.parse(props.pubtime || '') || Date.now();
+    if ((datasetSeen.get(id) || 0) >= when) return;
+    datasetSeen.delete(id);  // Re-insert to keep recent ones
+    datasetSeen.set(id, when);
+    if (datasetSeen.size > DATASETS_SEEN_MAX) datasetSeen.delete(datasetSeen.keys().next().value);
+}
+
+function gdcRecord(id) {
+    if (!gdcRecords.has(id)) {
+        gdcRecords.set(id, gdcFetch(`/${encodeURIComponent(id)}?f=json`)
+            .then((response) => (response.ok ? response.json() : null))
+            .catch(() => null));
+        if (gdcRecords.size > GDC_CACHE_MAX) gdcRecords.delete(gdcRecords.keys().next().value);
+    }
+    return gdcRecords.get(id);
+}
+
+function gdcPage(id) {
+    return `${GDCS[0].api}/${encodeURIComponent(id)}?f=html`;
+}
+
+// Links from the catalogue are the publishers' own, so only web links are followed
+function webLink(href) {
+    return /^https?:\/\//i.test(href || '') ? href : null;
+}
+
+// What a catalogue record says about its dataset
+function describeDataset(rec) {
+    var p = rec.properties || {}, links = rec.links || [];
+    var contacts = p.contacts || [];
+    var host = contacts.find((c) => (c.roles || []).includes('host')) || contacts[0] || {};
+    var licence = links.find((l) => l.rel === 'license' && webLink(l.href));
+    return {
+        id: rec.id,
+        title: (p.title || rec.id || '').trim(),
+        description: (p.description || '').trim(),
+        policy: p['wmo:dataPolicy'] || '',
+        centre: p['centre-id'] || '',
+        publisher: host.organization || host.name || '',
+        licence: licence ? { href: licence.href, title: licence.title || 'Licence' } : null,
+        channel: (links.find((l) => l.channel) || {}).channel || '',
+        geometry: rec.geometry,
+    };
+}
+
+function policyBadge(policy) {
+    return /^(core|recommended)$/.test(policy) ? `<span class="pp-badge pp-policy-${policy}" title="WIS2 data policy">${policy}</span>` : '';
+}
+
+// The Dataset section of a popup, filled once the record has come back
+function showDatasetInPopup(el, id) {
+    gdcRecord(id).then((rec) => {
+        if (!rec || !el.isConnected) return;
+        var d = describeDataset(rec);
+        el.innerHTML = `
+            <div class="pp-section">Dataset</div>
+            <div class="pp-dataset-head"><a target="_blank" rel="noopener" title="Open the dataset's record in the WIS2 Global Discovery Catalogue"></a>${policyBadge(d.policy)}</div>
+            <div class="pp-dataset-by"></div>
+            <p class="pp-dataset-text"></p>
+            <div class="pp-dataset-actions">
+                ${d.channel ? '<button type="button" class="btn btn-sm btn-outline-secondary pp-dataset-show" title="Fetch what this dataset published recently and show it on the map">Show on map</button>' : ''}
+                ${d.licence ? '<a class="pp-dataset-licence" target="_blank" rel="noopener"></a>' : ''}
+            </div>
+            <div class="legend-note pp-dataset-note" hidden></div>`;
+        var title = el.querySelector('.pp-dataset-head a');
+        title.href = gdcPage(d.id);
+        title.textContent = d.title;
+        el.querySelector('.pp-dataset-by').textContent = d.publisher;
+        el.querySelector('.pp-dataset-text').textContent = d.description;
+        if (d.licence) {
+            var licence = el.querySelector('.pp-dataset-licence');
+            licence.href = d.licence.href;
+            licence.textContent = d.licence.title;
+        }
+        var show = el.querySelector('.pp-dataset-show'), note = el.querySelector('.pp-dataset-note');
+        if (show) show.addEventListener('click', () => showDatasetOnMap(d, (text) => {
+            note.hidden = false;
+            note.textContent = text;
+        }));
+        el.hidden = false;
+    });
+}
+
+// Puts a dataset on the map, filtered to its topic: many datasets publish rarely or
+// without a location, so what it published in the past DATASET_HOURS is fetched from
+// the Global Replay (switched on for it) and plotted, `report` says what was found, and
+// the map goes to the dataset's points, if there are any, rather than to its declared
+// area. The URL carries dataset= (not the topic), and the banner a chip to take it off.
+let datasetAbort = null;
+
+async function showDatasetOnMap(d, report) {
+    // Filtered to the dataset's topic (the catalogue gives the cache channel; origin copies
+    // match too). The link carries dataset= rather than the topic, which it implies.
+    var topic = d.channel.replace(/^(cache|origin)\//, '').replace(/\/#$/, '').toLowerCase();
+    shownDataset = { id: d.id, title: d.title, topic };
+    filters.text = topic;
+    filterModes.text = 'only';
+    queueFilter.value = topic;
+    document.querySelectorAll('.filter-mode[data-filter="text"]').forEach(paintFilterMode);
+    applyFilters();
+    var replayBox = document.querySelector('.legend-toggle[data-layer="replay"] input');
+    if (replayBox && !replayBox.checked) {
+        replayBox.checked = true;
+        replayBox.dispatchEvent(new Event('change'));
+    }
+    if (datasetAbort) datasetAbort.abort();
+    var abort = datasetAbort = new AbortController();
+    report(`Fetching what it published in the past ${DATASET_HOURS} hours…`);
+    var since = new Date(Date.now() - DATASET_HOURS * 3600 * 1000).toISOString().replace(/\.\d+Z$/, 'Z');
+    // The replay keeps a copy per global cache, so cached (core) data is asked of one;
+    // recommended data isn't cached, so its origin notifications are asked for
+    var params = new URLSearchParams({ f: 'json', sortby: '-pubtime', limit: DATASET_MAX, datetime: `${since}/..`, topic: d.channel.replace(/\/#$/, '') });
+    if (d.channel.startsWith('cache/')) params.set('global-cache', REPLAY_CACHE);
+    try {
+        var response = await fetch(`${REPLAY_API}?${params}`, { signal: abort.signal });
+        if (!response.ok) throw new Error(`the Global Replay answered ${response.status}`);
+        var page = await response.json();
+        var features = (page.features || []).filter((f) => f.properties && f.properties.topic);
+        features.forEach((f) => onMessage(f.properties.topic, f, true));
+        var located = features.filter((f) => f.geometry && f.geometry.type && pointFor(f.geometry)).length;
+        var total = page.numberMatched !== undefined ? page.numberMatched : features.length;
+        var hours = `in the past ${DATASET_HOURS} hours`;
+        report(!total ? `Nothing published ${hours}.`
+            : !located ? `${total.toLocaleString()} notifications ${hours}, none with a location to put on the map.`
+            : `${total.toLocaleString()} notifications ${hours}${total > features.length ? ` (the latest ${features.length.toLocaleString()} fetched)` : ''}, ${located.toLocaleString()} with a location.`);
+        // To the dataset's points, live and replayed, if any
+        var points = [...records.values()].filter((r) => r.topic.toLowerCase().includes(topic) && r.coords);
+        if (points.length) {
+            var lons = points.map((r) => r.coords[0]), lats = points.map((r) => r.coords[1]);
+            map.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], { padding: 60, maxZoom: 7 });
+        }
+    } catch (err) {
+        if (err.name !== 'AbortError') report(`Could not fetch its recent messages: ${err.message}`);
+    }
+}
+
+// A link's ?dataset=: the same as clicking that dataset's Show on map in the Datasets tab,
+// which is opened (except on phones, where it would cover the map) at the dataset's row
+async function showDatasetFromUrl(id) {
+    var rec = await gdcRecord(id);
+    var d = rec && describeDataset(rec);
+    startDataset = null;
+    if (!d || !d.channel) {
+        writeFiltersToUrl();  // Nothing to show; the parameter goes
+        return;
+    }
+    var report = () => {};
+    if (gdcEls && !PHONE.matches) {
+        document.body.classList.add('queue-open');
+        gdcSearched = true;  // Searched here, so the tab doesn't start its own
+        selectQueueTab('datasets');
+        await searchCatalogue();
+        var row = [...gdcEls.list.children].find((r) => r.gdc && r.gdc.id === id && !r.hidden);
+        if (row) row.scrollIntoView({ block: 'center' });
+        var note = row ? row.querySelector('.gdc-note') : gdcEls.status;
+        report = (text) => {
+            note.hidden = false;
+            note.textContent = text;
+        };
+    }
+    showDatasetOnMap(d, report);
+}
+
+// The Datasets tab: a search box over the whole catalogue, narrowed by the sidebar's filters
+function initCatalogue(sidebar) {
+    var pane = sidebar.querySelector('.queue-pane-datasets');
+    gdcEls = {
+        pane,
+        query: pane.querySelector('.gdc-query'),
+        status: pane.querySelector('.gdc-status'),
+        list: pane.querySelector('.gdc-list'),
+        more: pane.querySelector('.gdc-more'),
+    };
+    var typing = null;
+    gdcEls.query.addEventListener('input', () => {
+        clearTimeout(typing);
+        typing = setTimeout(() => searchCatalogue(), 400);
+    });
+    gdcEls.more.addEventListener('click', () => searchCatalogue(gdcNext));
+}
+
+async function searchCatalogue(next) {
+    if (!gdcEls) return;
+    gdcSearched = true;
+    if (gdcAbort) gdcAbort.abort();
+    var abort = gdcAbort = new AbortController();
+    var url = next;
+    if (!url) {
+        var params = new URLSearchParams({ f: 'json', limit: GDC_PAGE });
+        var q = gdcEls.query.value.trim();
+        if (q) params.set('q', q);
+        gdcEls.list.replaceChildren();
+    }
+    gdcEls.status.textContent = 'Searching the catalogue…';
+    gdcEls.more.hidden = true;
+    try {
+        // A next page is a full link from the catalogue that answered; a new search goes to the nearest
+        var response = url ? await fetch(url, { signal: abort.signal }) : await gdcFetch(`?${params}`, { signal: abort.signal });
+        if (!response.ok) throw new Error(`it answered ${response.status}`);
+        var page = await response.json();
+        // Datasets seen arriving first, most recent first; the rest in the catalogue's order
+        var seen = (d) => datasetSeen.get(d.id) || 0;
+        (page.features || []).map(describeDataset)
+            .map((d, i) => [d, i]).sort(([a, i], [b, j]) => seen(b) - seen(a) || i - j)
+            .forEach(([d]) => gdcEls.list.appendChild(datasetRow(d)));
+        var shown = gdcEls.list.children.length, total = page.numberMatched;
+        gdcEls.baseStatus = (!shown ? 'No datasets match'
+            : `${shown.toLocaleString()}${total !== undefined ? ` of ${total.toLocaleString()}` : ''} datasets`)
+            + ` · catalogue: ${new URL(response.url).host}`;
+        filterDatasetRows();
+        gdcNext = ((page.links || []).find((l) => l.rel === 'next') || {}).href || null;
+        gdcEls.more.hidden = !gdcNext || (total !== undefined && shown >= total);
+    } catch (err) {
+        if (err.name !== 'AbortError') gdcEls.status.textContent = `Could not search the catalogue: ${err.message}`;
+    }
+}
+
+// The sidebar's filters, applied to a dataset: centres by its centre-id, the topic text and
+// the discipline chips by its topic (Space also takes satellite topics). File type isn't
+// applied: catalogue records don't say what format their files come in.
+function datasetMatchesFilters(d) {
+    var test = (key, active, matches) => !active || (filterModes[key] === 'hide' ? !matches : matches);
+    var topic = d.channel.toLowerCase();
+    var item = { topic, discipline: disciplineOf(d.channel.split('/a/wis2/')[1] || '') };
+    return test('centres', filters.centres.size, filters.centres.has(d.centre))
+        && test('disciplines', filters.disciplines.size, matchesDiscipline(item))
+        && test('text', filters.text, topic.includes(filters.text));
+}
+
+// Hides the rows the filters leave out (rather than rebuilding the list, so notes stay)
+function filterDatasetRows() {
+    if (!gdcEls || !gdcEls.baseStatus) return;
+    var rows = [...gdcEls.list.children];
+    rows.forEach((row) => { row.hidden = !datasetMatchesFilters(row.gdc); });
+    var hidden = rows.filter((row) => row.hidden).length;
+    gdcEls.status.textContent = gdcEls.baseStatus + (hidden ? ` · ${hidden.toLocaleString()} hidden by the filters` : '');
+}
+
+function datasetRow(d) {
+    var row = document.createElement('li');
+    row.className = 'gdc-row';
+    row.gdc = d;
+    var seen = datasetSeen.get(d.id);
+    row.innerHTML = `
+        <a class="gdc-title" target="_blank" rel="noopener" title="Open the dataset's record in the catalogue"></a>
+        <div class="gdc-meta"><strong></strong>${policyBadge(d.policy)}<span class="gdc-seen"></span>${d.channel
+            ? '<button type="button" class="btn btn-sm btn-link gdc-show" title="Filter the map and messages to this dataset, with what it published recently">Show on map</button>' : ''}</div>
+        <div class="legend-note gdc-note" hidden></div>`;
+    var title = row.querySelector('.gdc-title');
+    title.href = gdcPage(d.id);
+    title.textContent = d.title;
+    row.querySelector('.gdc-meta strong').textContent = d.centre;
+    row.querySelector('.gdc-seen').textContent = seen ? `seen ${timeAgo(new Date(seen).toISOString())}` : 'not seen yet';
+    var show = row.querySelector('.gdc-show'), note = row.querySelector('.gdc-note');
+    if (show) show.addEventListener('click', () => showDatasetOnMap(d, (text) => {
+        note.hidden = false;
+        note.textContent = text;
+    }));
+    return row;
 }
 
 // ---------- Airports worldwide: the latest METAR from each airport, from the Iowa

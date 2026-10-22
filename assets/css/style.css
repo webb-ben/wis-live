@@ -34,6 +34,90 @@
 .queue-open .maplibregl-ctrl-bottom-left {
   left: min(340px, calc(100vw - 52px));
 }
+
+/* The filters in force, at the bottom of the map, centred on the part of it left
+   showing between the sidebar (--left) and the info panel (--right); each chip
+   removes its filter. */
+.filter-banner {
+  --left: 0px;
+  --right: 0px;
+  position: fixed;
+  bottom: 14px;
+  left: calc(var(--left) + (100vw - var(--left) - var(--right)) / 2);
+  z-index: 1000;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 4px;
+  max-width: calc(100vw - var(--left) - var(--right) - 80px);
+  padding: 2px 4px 2px 8px;
+  border: 1px solid #dee2e6;
+  border-radius: 12px;
+  background-color: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  font-size: 11px;
+  transform: translateX(-50%);
+  transition: left 0.2s;
+}
+.filter-banner[hidden] {
+  display: none;
+}
+.queue-open .filter-banner {
+  --left: min(340px, calc(100vw - 52px));
+}
+.info-open .filter-banner {
+  --right: min(380px, calc(100vw - 52px));
+}
+.filter-banner-label {
+  color: #868e96;
+  font-weight: 600;
+}
+.filter-banner-chips {
+  display: contents;
+}
+.filter-banner-chip {
+  max-width: 220px;
+  overflow: hidden;
+  padding: 0 6px;
+  border: 1px solid #e9ecef;
+  border-radius: 10px;
+  background-color: #f8f9fa;
+  color: #495057;
+  line-height: 1.6;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.filter-banner-chip::after {
+  content: ' ×';
+  color: #868e96;
+}
+.filter-banner-chip:hover,
+.filter-banner-chip:focus-visible {
+  border-color: #c92a2a;
+  color: #c92a2a;
+}
+.filter-banner-clear {
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: #6c757d;
+  text-decoration: underline;
+}
+.filter-banner-clear:hover,
+.filter-banner-clear:focus-visible {
+  color: #c92a2a;
+}
+@media (max-width: 600px) {
+  /* The sidebar covers the map on phones, and has its own Clear filters; the info
+     panel is a sheet over the bottom of the map, so the banner sits above it */
+  .queue-open .filter-banner {
+    display: none;
+  }
+  .info-open .filter-banner {
+    --right: 0px;
+    bottom: calc(55dvh + 10px);
+  }
+}
 .maplibregl-ctrl-group .queue-toggle {
   font-size: 16px;
   line-height: 29px;
@@ -1511,9 +1595,12 @@
   align-items: center;
   margin-bottom: 4px;
 }
-.queue-filters .queue-reset,
 .queue-filters .queue-share {
   padding: 0;
+}
+.queue-filters .queue-reset {
+  padding: 1px 8px;
+  font-size: 12px;
 }
 .queue-filters .queue-share {
   margin: 0 8px 0 10px;
@@ -1727,7 +1814,8 @@
   opacity: 1;
 }
 
-/* Other sources (NOAA): their own section colour, and squares for symbols */
+/* Other sources (Global Replay, airports): their own section colour, and squares
+   for symbols, on the map and here */
 .legend-section-other {
   --accent: #495057;
   --tint: #f8f9fa;
@@ -1890,4 +1978,133 @@
 .pp-badge.pp-replay {
   background-color: #edf2ff;
   color: #3b5bdb;
+}
+
+/* WIS2 data policy, from the Global Discovery Catalogue */
+.pp-badge.pp-policy-core {
+  background-color: #e3f4dc;
+  color: #2f6b1d;
+}
+.pp-badge.pp-policy-recommended {
+  background-color: #fff3bf;
+  color: #8a6100;
+}
+
+/* The dataset a point belongs to, at the end of its popup */
+.pp-dataset {
+  margin-top: 10px;
+}
+.pp-dataset[hidden] {
+  display: none;
+}
+.pp-dataset-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-weight: 600;
+}
+.pp-dataset-by {
+  color: #6c757d;
+  font-size: 12px;
+}
+.pp-dataset-by:empty {
+  display: none;
+}
+/* Descriptions run long: three lines, the rest in the catalogue */
+.pp-dataset-text {
+  display: -webkit-box;
+  margin: 4px 0 6px;
+  overflow: hidden;
+  color: #495057;
+  font-size: 12px;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+.pp-dataset-text:empty {
+  display: none;
+}
+.pp-dataset-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  font-size: 12px;
+}
+
+/* The Datasets tab: search the catalogue; the results scroll under the search box */
+.queue-pane-datasets {
+  display: flex;
+  flex-direction: column;
+}
+.gdc-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.gdc-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #dddddd;
+}
+.gdc-status {
+  padding: 4px 8px 0;
+}
+.gdc-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.gdc-row {
+  padding: 6px 8px;
+  border-bottom: 1px solid #f1f3f5;
+}
+.gdc-title {
+  display: block;
+  color: #212529;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.gdc-title:hover {
+  text-decoration: underline;
+}
+.gdc-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  margin-top: 2px;
+  color: #6c757d;
+  font-size: 11px;
+}
+.gdc-meta strong {
+  color: #495057;
+  font-weight: 600;
+}
+.gdc-meta .gdc-show {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  font-size: 11px;
+  line-height: inherit;
+  white-space: nowrap;
+}
+.gdc-more {
+  display: block;
+  margin: 8px auto;
+}
+/* What Show on map found, under the dataset it was asked of */
+.gdc-note,
+.pp-dataset-note {
+  margin-top: 4px;
+  color: #495057;
+}
+.gdc-note[hidden],
+.pp-dataset-note[hidden] {
+  display: none;
+}
+.gdc-more[hidden] {
+  display: none;
 }
