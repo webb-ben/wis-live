@@ -214,8 +214,8 @@ const LAYER_GROUPS = [
         { key: 'radar', parent: 'obs', label: 'Weather radar', color: COLORS.radar,
             title: 'Reflectivity from the lowest scan of each radar volume (ODIM HDF5) in the cache, drawn around the radar; downloaded only while this is on' },
         { key: 'origin', label: 'Origin', color: COLORS.origin, ring: true },
-        { key: 'replay', label: 'Global Replay (past 90 minutes)', color: COLORS.replay, optIn: true,
-            title: 'Fill the view with the past 90 minutes of WIS2 core-data notifications from the Global Replay service (wis2-grep.weather.gc.ca). Older points are fainter.' },
+        { key: 'replay', label: 'Global Replay', color: COLORS.replay, optIn: true,
+            title: 'Fill the view with past WIS2 core-data notifications from the Global Replay service (wis2-grep.weather.gc.ca); how far back is set by the slider below. Older points are fainter.' },
         // Replayed messages sorted like the cache's, each row shown once something arrives in it
         ...Object.entries(OBS_CLASSES).filter(([key]) => key !== 'satellite').map(([key, c]) => ({ key: `replay-${key}`, parent: 'replay', label: c.label, color: c.color, title: c.title })),
     ] },
@@ -246,8 +246,30 @@ const LAYER_GROUPS = [
             title: 'The latest METAR from every airport the Iowa Environmental Mesonet collects, refreshed every 20 minutes. The airports nearest the view load first.' },
     ] },
 ];
-// Off at first: radar, the Global Replay, airports, WIS2-to-GTS, satellites, aircraft and ground-based GNSS (cache, GTS and replay), and aircraft tracks
-const hiddenLayers = new Set(['radar', 'cache-gnss', 'gts-gnss', 'replay-gnss', 'replay', 'airports', 'wis2gts', 'satellite', 'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks']);
+// Off at first: radar, airports, WIS2-to-GTS, satellites, aircraft and ground-based GNSS (cache, GTS and replay), and aircraft tracks.
+// The Global Replay is on, reaching back REPLAY_DEFAULT_MINUTES, so the map isn't empty at first
+const hiddenLayers = new Set(['radar', 'cache-gnss', 'gts-gnss', 'replay-gnss', 'airports', 'wis2gts', 'satellite', 'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks']);
+// How far back the Global Replay reaches, set by a continuous slider on a log scale:
+// 12 hours ago at the left, 5 minutes at the right, so time runs left to right and
+// recent windows get most of the track. Long windows over a busy view stop at
+// REPLAY_MAX, newest first, so they reach back less far there
+const REPLAY_RANGE_MINUTES = [720, 5];
+const REPLAY_TICKS = [720, 360, 180, 60, 30, 15, 5];
+const REPLAY_DEFAULT_MINUTES = 5;
+let replayWindowMs = REPLAY_DEFAULT_MINUTES * 60 * 1000;
+
+// Slider position (0 to 1) for a window in minutes, and back, rounded to whole
+// minutes under an hour and to 5 minutes above
+function replayPosition(minutes) {
+    var [far, near] = REPLAY_RANGE_MINUTES.map(Math.log);
+    return (Math.log(minutes) - far) / (near - far);
+}
+
+function replayMinutesAt(position) {
+    var [far, near] = REPLAY_RANGE_MINUTES.map(Math.log);
+    var minutes = Math.exp(far + (near - far) * position);
+    return minutes < 60 ? Math.round(minutes) : Math.round(minutes / 5) * 5;
+}
 const LAYER_PARENTS = Object.fromEntries([
     ...LAYER_GROUPS.flatMap((g) => g.layers).filter((l) => l.parent).map((l) => [l.key, l.parent]),
     // Replayed satellites also go when the Global Replay is off (see applyMapFilter)
@@ -256,6 +278,8 @@ const LAYER_PARENTS = Object.fromEntries([
     ['files', 'obs'],
     // Text SYNOPs join GTS-to-WIS2's groups, so they're decoded while it is on
     ['gts-text', 'gts'],
+    // The replay window slider is greyed out with its row
+    ['replay-window', 'replay'],
 ]);
 
 function ancestors(key) {
@@ -627,6 +651,7 @@ map.on('load', () => {
     // Wind arrows point the way the wind blows (reports give where it comes from)
     map.addImage('arrow', arrowSdf(), { sdf: true, pixelRatio: 2 });
     map.on('moveend', () => scheduleReplay());
+    scheduleReplay(0);  // On at first
     // Points from other sources (airports) are squares
     map.addImage('square', squareSdf(), { sdf: true, pixelRatio: 2 });
     map.addLayer({
@@ -1009,6 +1034,28 @@ class LegendControl {
                 </label>
                 <div class="legend-model-info" hidden><span class="legend-note"></span><img alt="Model field legend"></div>
             </div>`;
+
+        // How far back the Global Replay reaches, under its row: earlier on the left, now on the right
+        container.querySelector('.legend-toggle[data-layer="replay"]').insertAdjacentHTML('afterend', `
+            <label class="legend-option legend-range" data-layer="replay-window">
+                <span class="legend-range-value">Since <output></output></span>
+                <input type="range" min="0" max="1000" step="1" value="${Math.round(replayPosition(replayWindowMs / 60000) * 1000)}"
+                    aria-label="How far back the Global Replay reaches">
+                <span class="legend-range-ticks" aria-hidden="true">${REPLAY_TICKS.map((m) =>
+                    `<span style="--at: ${replayPosition(m)}">${m < 60 ? `${m}m` : `${m / 60}h`}</span>`).join('')}</span>
+            </label>`);
+        var range = container.querySelector('.legend-range input');
+        var minutesShown = () => replayMinutesAt(range.value / 1000);
+        var showWindow = () => {
+            var minutes = minutesShown();
+            var since = new Date(Date.now() - minutes * 60000).toISOString().slice(11, 16);
+            container.querySelector('.legend-range output').textContent = `${since} UTC (${replayWindowLabel(minutes)} ago)`;
+            range.setAttribute('aria-valuetext', `${replayWindowLabel(minutes)}, since ${since} UTC`);
+        };
+        showWindow();
+        setInterval(showWindow, 30 * 1000);  // The start time moves with the clock
+        range.addEventListener('input', showWindow);
+        range.addEventListener('change', () => setReplayWindow(minutesShown()));
 
         container.querySelector('.legend-colour select').addEventListener('change', (e) => setColourBy(e.target.value, container));
         container.querySelector('.legend-coloured-only input').addEventListener('change', (e) => {
@@ -5207,18 +5254,35 @@ function externalStation(stations, s) {
 }
 
 // ---------- Global Replay: past notifications from the WIS2 Global Replay service
-// (OGC API - Features). The view's past REPLAY_WINDOW_MS is fetched newest first,
+// (OGC API - Features). The view's past replayWindowMs is fetched newest first,
 // up to REPLAY_MAX, after each pan; messages carry their data inline, so stations
 // can still be coloured. The service keeps a copy from every global cache, so only
 // one cache's copies are asked for (core data; recommended data isn't cached).
 const REPLAY_API = 'https://wis2-grep.weather.gc.ca/collections/wis2-notification-messages/items';
-const REPLAY_WINDOW_MS = 90 * 60 * 1000;
 const REPLAY_CACHE = 'data-metoffice-noaa-global-cache';
 const REPLAY_PAGE = 500;
 const REPLAY_MAX = 5000;
 let replayTimer = null;
 let replayAbort = null;
 let replayedView = '';
+
+// 5 minutes, 1 hour, 2 h 35 min
+function replayWindowLabel(minutes) {
+    if (minutes < 60) return `${minutes} minutes`;
+    var hours = Math.floor(minutes / 60), rest = minutes % 60;
+    if (rest) return `${hours} h ${rest} min`;
+    return hours === 1 ? '1 hour' : `${hours} hours`;
+}
+
+// The slider under the Global Replay row: a shorter window drops replayed points
+// now outside it, and either way the view is fetched again
+function setReplayWindow(minutes) {
+    replayWindowMs = minutes * 60 * 1000;
+    var cutoff = Date.now() - replayWindowMs;
+    [...records.values()].filter((r) => r.replay && r.born < cutoff).forEach(removePoint);
+    replayedView = '';
+    scheduleReplay(300);
+}
 
 function scheduleReplay(delay = 800) {
     clearTimeout(replayTimer);
@@ -5233,7 +5297,7 @@ async function loadReplay() {
         .map((v) => v.toFixed(2));
     // A view crossing the antimeridian, or the whole globe, asks for everything
     if (b.getEast() - b.getWest() >= 360 || Number(bbox[0]) >= Number(bbox[2])) bbox = ['-180', '-90', '180', '90'];
-    var since = new Date(Date.now() - REPLAY_WINDOW_MS).toISOString().replace(/\.\d+Z$/, 'Z');
+    var since = new Date(Date.now() - replayWindowMs).toISOString().replace(/\.\d+Z$/, 'Z');
     var view = `${bbox.join(',')}|${since.slice(0, 15)}`;  // The same view within ten minutes isn't fetched again
     if (view === replayedView) return;
     replayedView = view;

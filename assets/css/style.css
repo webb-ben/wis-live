@@ -1137,6 +1137,107 @@
   color: #6c757d;
   font-size: 10px;
 }
+/* The Global Replay's window: the start time over a slider that runs from
+   12 hours ago (left) to now (right), with the stops marked beneath */
+.legend-range {
+  --accent-range: #4c6ef5;  /* COLORS.replay */
+  display: block;
+  margin: 2px 0 6px 26px;
+  padding: 6px 8px 4px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+.legend-range-value {
+  display: block;
+  margin-bottom: 4px;
+  color: #495057;
+}
+.legend-range output {
+  color: #212529;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.legend-range input[type="range"] {
+  display: block;
+  width: 100%;
+  height: 16px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+/* A plain timeline: the thumb marks the start time, nothing fills in */
+.legend-range input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px;
+  border-radius: 1px;
+  background: #ced4da;
+}
+.legend-range input[type="range"]::-moz-range-track {
+  height: 2px;
+  border-radius: 1px;
+  background: #ced4da;
+}
+.legend-range input[type="range"]::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  margin-top: -6px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: var(--accent-range);
+  box-shadow: 0 0 0 1px var(--accent-range), 0 1px 3px rgba(0, 0, 0, 0.3);
+  -webkit-appearance: none;
+  appearance: none;
+}
+.legend-range input[type="range"]::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: var(--accent-range);
+  box-shadow: 0 0 0 1px var(--accent-range), 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+.legend-range input[type="range"]:focus-visible {
+  outline: 2px solid var(--accent-range);
+  outline-offset: 2px;
+}
+/* One label under each stop: stops run from the thumb's centre at one end
+   (7px in) to its centre at the other, --at being 0 to 1 along them */
+.legend-range-ticks {
+  position: relative;
+  display: block;
+  height: 12px;
+  margin-top: 2px;
+  color: #868e96;
+  font-size: 9px;
+}
+.legend-range-ticks span {
+  position: absolute;
+  top: 3px;
+  left: calc(7px + (100% - 14px) * var(--at));
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+/* A tick on the timeline above each label */
+.legend-range-ticks span::before {
+  content: '';
+  position: absolute;
+  top: -9px;
+  left: 50%;
+  width: 1px;
+  height: 6px;
+  background-color: #adb5bd;
+}
+.legend-range.legend-disabled,
+.legend-range.legend-disabled .legend-range-value,
+.legend-range.legend-disabled output {
+  color: #adb5bd;
+}
+.legend-range.legend-disabled input[type="range"] {
+  cursor: default;
+  filter: grayscale(1);
+  opacity: 0.5;
+}
 
 /* How a section's points look on the map: white outline for WIS2, dark for GTS */
 .legend-style {
