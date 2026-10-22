@@ -3136,6 +3136,41 @@ function applyFilters() {
     queueToggle.classList.toggle('filtered', active);
     queueToggle.title = active ? 'Layers and messages (filters on)' : 'Layers and messages';
     document.querySelector('.queue-reset').hidden = !active;
+    document.querySelector('.queue-share').hidden = !active;
+    writeFiltersToUrl();
+}
+
+// ---------- Filters in the address bar, so a filtered view can be shared:
+// ?topic=synop&centre=de-dwd,jp-jma&format=bufr&discipline=ocean&hide=centres
+// (hide lists the filters set to Hide rather than Only). Other parameters are kept.
+const FILTER_PARAMS = { text: 'topic', centres: 'centre', format: 'format', disciplines: 'discipline' };
+
+function readFiltersFromUrl() {
+    var params = new URLSearchParams(location.search);
+    var list = (name) => (params.get(name) || '').split(',').map((s) => s.trim()).filter(Boolean);
+    filters.text = (params.get(FILTER_PARAMS.text) || '').trim().toLowerCase();
+    list(FILTER_PARAMS.centres).forEach((c) => filters.centres.add(c));
+    filters.format = FORMATS.hasOwnProperty(params.get(FILTER_PARAMS.format)) ? params.get(FILTER_PARAMS.format) : '';
+    list(FILTER_PARAMS.disciplines).filter((d) => DISCIPLINES.hasOwnProperty(d)).forEach((d) => filters.disciplines.add(d));
+    list('hide').filter((key) => filterModes.hasOwnProperty(key)).forEach((key) => { filterModes[key] = 'hide'; });
+}
+
+function writeFiltersToUrl() {
+    var params = new URLSearchParams(location.search);
+    var set = (name, value) => (value ? params.set(name, value) : params.delete(name));
+    set(FILTER_PARAMS.text, filters.text);
+    set(FILTER_PARAMS.centres, [...filters.centres].sort().join(','));
+    set(FILTER_PARAMS.format, filters.format);
+    set(FILTER_PARAMS.disciplines, [...filters.disciplines].join(','));
+    // A mode only matters while its filter is set
+    set('hide', Object.keys(filterModes).filter((key) => filterModes[key] === 'hide' && (key === 'text' ? filters.text
+        : key === 'format' ? filters.format : filters[key].size)).join(','));
+    var query = params.toString().replace(/%2C/gi, ',');  // Commas read better unescaped
+    try {
+        history.replaceState(history.state, '', `${location.pathname}${query ? `?${query}` : ''}${location.hash}`);
+    } catch (err) {
+        // Some embedded views don't allow it; the filters still apply
+    }
 }
 
 function zoomToCentres(selected) {
@@ -3256,6 +3291,7 @@ class QueueControl {
             <div class="queue-header queue-filters">
                 <div class="queue-title"><strong>Filters</strong>
                     <button type="button" class="btn btn-sm btn-link queue-reset" hidden>Reset filters</button>
+                    <button type="button" class="btn btn-sm btn-link queue-share" hidden title="Copy a link that opens the map with these filters">Copy link</button>
                 </div>
                 <div class="filter-row">${filterModeButton('text')}<input type="search" class="form-control form-control-sm" placeholder="Filter topics"></div>
                 <div class="queue-selects">
@@ -3368,6 +3404,25 @@ class QueueControl {
             searchCentres();
             showSelectedCentres();
             applyFilters();
+        });
+        // Filters given in the link this page was opened with
+        queueFilter.value = filters.text;
+        queueFormat.value = filters.format;
+        chips.forEach((chip) => chip.dataset.discipline && chip.setAttribute('aria-pressed', filters.disciplines.has(chip.dataset.discipline)));
+        sidebar.querySelectorAll('.filter-mode').forEach(paintFilterMode);
+        showSelectedCentres();
+        // The map's filter needs the rest of the script, so apply once it has run
+        if (filtersActive()) setTimeout(applyFilters);
+        var share = sidebar.querySelector('.queue-share');
+        share.addEventListener('click', async () => {
+            writeFiltersToUrl();
+            try {
+                await navigator.clipboard.writeText(location.href);
+                share.textContent = 'Copied';
+            } catch (err) {
+                share.textContent = 'Copy from the address bar';
+            }
+            setTimeout(() => { share.textContent = 'Copy link'; }, 2000);
         });
         queueMapped.addEventListener('change', rebuildQueue);
         queuePause.addEventListener('click', function(){
@@ -3774,6 +3829,7 @@ function connectFastest() {
     });
 }
 
+readFiltersFromUrl();  // Before the sidebar is built, so its controls start set
 map.addControl(new QueueControl(), 'top-left');
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-left');
 map.addControl(new ProjectionControl(), 'top-left');

@@ -1511,8 +1511,12 @@
   align-items: center;
   margin-bottom: 4px;
 }
-.queue-filters .queue-reset {
+.queue-filters .queue-reset,
+.queue-filters .queue-share {
   padding: 0;
+}
+.queue-filters .queue-share {
+  margin: 0 8px 0 10px;
 }
 .queue-pane-messages .queue-controls {
   gap: 8px;
