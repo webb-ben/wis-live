@@ -214,17 +214,13 @@ const GTS_OPT_IN = ['aircraft'];
 // than opt-in ones stay hidden until a point of that kind has arrived. Opt-in
 // rows are decoded in the browser, since their notifications carry no location.
 const LAYER_GROUPS = [
-    { key: 'wis2', label: 'WIS2', subtitle: 'Published directly through the WMO Information System', layers: [
+    { key: 'wis2', label: 'WIS2', subtitle: 'Live from the WIS2 Global Brokers', layers: [
+        { key: 'origin', label: 'Origin', color: COLORS.origin, ring: true },
         { key: 'obs', label: 'Cache', color: OBS_CLASSES.station.color, optIn: true },  // Always listed
         // Sublayers sit under their parent and are off whenever it is off
         ...Object.entries(OBS_CLASSES).filter(([key]) => key !== 'satellite').map(([key, c]) => ({ key: `cache-${key}`, parent: 'obs', label: c.label, color: c.color, title: c.title })),
         { key: 'radar', parent: 'obs', label: 'Weather radar', color: COLORS.radar,
             title: 'Reflectivity from the lowest scan of each radar volume (ODIM HDF5) in the cache, drawn around the radar; downloaded only while this is on' },
-        { key: 'origin', label: 'Origin', color: COLORS.origin, ring: true },
-        { key: 'replay', label: 'Global Replay', color: COLORS.replay, optIn: true,
-            title: 'Fill the view with past WIS2 core-data notifications from the Global Replay service (wis2-grep.weather.gc.ca); how far back is set by the slider below. Older points are fainter.' },
-        // Replayed messages sorted like the cache's, each row shown once something arrives in it
-        ...Object.entries(OBS_CLASSES).filter(([key]) => key !== 'satellite').map(([key, c]) => ({ key: `replay-${key}`, parent: 'replay', label: c.label, color: c.color, title: c.title })),
     ] },
     { key: 'gts', label: 'GTS gateways', subtitle: 'Bulletins relayed with the GTS', layers: [
         { key: 'gts', label: 'GTS-to-WIS2 (decode required)', color: COLORS.gts, optIn: true,
@@ -248,14 +244,17 @@ const LAYER_GROUPS = [
         { key: 'sat-coverage', parent: 'satellite', option: true, label: 'Draw as coverage areas',
             title: 'Draw files with many reports as shaded coverage, and satellites as tracks. Off: every report is a point, coloured by the selected measure.' },
     ] },
-    { key: 'other', label: 'Other sources', subtitle: 'Not from WIS2: fetched directly from the provider', layers: [
+    { key: 'other', label: 'Other sources', subtitle: 'More live observations, from services outside the Global Brokers', layers: [
+        { key: 'replay', label: 'Global Replay', color: COLORS.replay, optIn: true,
+            title: 'Past WIS2 core-data notifications for the view, from the Global Replay service (wis2-grep.weather.gc.ca). Starts once the decoder has loaded and fills in a few at a time, newest first; how far back is set by the slider below, and older points are fainter.' },
+        // Replayed messages sorted like the cache's, each row shown once something arrives in it
+        ...Object.entries(OBS_CLASSES).filter(([key]) => key !== 'satellite').map(([key, c]) => ({ key: `replay-${key}`, parent: 'replay', label: c.label, color: c.color, title: c.title })),
         { key: 'airports', label: 'Airports worldwide (METAR)', color: OBS_CLASSES.station.color, optIn: true,
             title: 'The latest METAR from every airport the Iowa Environmental Mesonet collects, refreshed every 20 minutes. The airports nearest the view load first.' },
     ] },
 ];
-// Off at first: radar, airports, WIS2-to-GTS, satellites, aircraft and ground-based GNSS (cache, GTS and replay), and aircraft tracks.
-// The Global Replay is on, reaching back REPLAY_DEFAULT_MINUTES, so the map isn't empty at first
-const hiddenLayers = new Set(['radar', 'cache-gnss', 'gts-gnss', 'replay-gnss', 'airports', 'wis2gts', 'satellite', 'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks']);
+// Off at first: radar, the Global Replay, airports, WIS2-to-GTS, satellites, aircraft and ground-based GNSS (cache, GTS and replay), and aircraft tracks
+const hiddenLayers = new Set(['radar', 'replay', 'cache-gnss', 'gts-gnss', 'replay-gnss', 'airports', 'wis2gts', 'satellite', 'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks']);
 // How far back the Global Replay reaches, set by a continuous slider on a log scale:
 // 12 hours ago at the left, 5 minutes at the right, so time runs left to right and
 // recent windows get most of the track. Long windows over a busy view stop at
@@ -658,7 +657,7 @@ map.on('load', () => {
     // Wind arrows point the way the wind blows (reports give where it comes from)
     map.addImage('arrow', arrowSdf(), { sdf: true, pixelRatio: 2 });
     map.on('moveend', () => scheduleReplay());
-    scheduleReplay(0);  // On at first, once the decoder has loaded
+    scheduleReplay(0);  // If switched on (it starts off), once the decoder has loaded
     // Points from other sources (airports) are squares
     map.addImage('square', squareSdf(), { sdf: true, pixelRatio: 2 });
     map.addLayer({
@@ -1198,7 +1197,10 @@ function updateMapKey() {
     // How each source is drawn: WIS2 cache circles, WIS2 origin rings, GTS diamonds
     // Each symbol stays on one line with its label
     var shape = (kind, color, label) => `<span class="key-shape">${symbol(kind, color)}${label}</span>`;
-    rows.push(`<div class="key-shapes">${shape('circle', '#adb5bd', 'WIS2')}${drawn('origin') ? shape('ring', COLORS.origin, 'WIS2 origin') : ''}${shape('diamond', '#adb5bd', 'GTS')}${drawn('airports') ? shape('square', '#adb5bd', 'Airports') : ''}<button type="button" class="btn btn-link btn-sm map-key-edit">Edit layers</button></div>`);
+    // Other sources are squares: the Global Replay (its rows are replay-station and so on) and airports
+    var squares = [!hidden.includes('replay') && [...seenLayers].some((k) => k.startsWith('replay-')) && 'Replay',
+        drawn('airports') && 'Airports'].filter(Boolean);
+    rows.push(`<div class="key-shapes">${shape('circle', '#adb5bd', 'WIS2')}${drawn('origin') ? shape('ring', COLORS.origin, 'WIS2 origin') : ''}${shape('diamond', '#adb5bd', 'GTS')}${squares.length ? shape('square', '#adb5bd', squares.join(', ')) : ''}<button type="button" class="btn btn-link btn-sm map-key-edit">Edit layers</button></div>`);
     mapKeyBody.innerHTML = rows.join('');
 }
 
@@ -1275,7 +1277,7 @@ function buildPopup(record) {
     div.className = 'pp';
     div.innerHTML = `
         <header class="pp-head">
-            <span class="pp-dot${record.channel !== 'cache' && !record.external ? ' pp-ring' : ''}${isGateway(record) ? ' is-gts' : ''}${record.external ? ' is-ext' : ''}" style="--color: ${record.color}; --outline: ${darken(record.color)}"></span>
+            <span class="pp-dot${record.channel !== 'cache' && !record.external ? ' pp-ring' : ''}${isGateway(record) ? ' is-gts' : ''}${record.external || record.replay ? ' is-ext' : ''}" style="--color: ${record.color}; --outline: ${darken(record.color)}"></span>
             <div>
                 <div class="pp-title"></div>
                 <div class="pp-sub">
@@ -3120,9 +3122,11 @@ function applyMapFilter() {
     var arrows = windArrows();
     map.setFilter('points-arrow', arrows ? [...shown, isArrow()] : ['boolean', false]);
     if (arrows) shown = [...shown, ['!', isArrow()]];
-    map.setFilter('points', [...shown, ['!=', ['get', 'gateway'], true], ['!=', ['get', 'ext'], true]]);
-    map.setFilter('points-gts', [...shown, ['==', ['get', 'gateway'], true]]);
-    map.setFilter('points-ext', [...shown, ['==', ['get', 'ext'], true]]);
+    // Circles for WIS2, diamonds for the GTS, squares for other sources: airports and the Global Replay
+    var square = ['any', ['==', ['get', 'ext'], true], ['==', ['get', 'replay'], true]];
+    map.setFilter('points', [...shown, ['!=', ['get', 'gateway'], true], ['!', square]]);
+    map.setFilter('points-gts', [...shown, ['==', ['get', 'gateway'], true], ['!', square]]);
+    map.setFilter('points-ext', [...shown, square]);
     map.setFilter('pulses', [...(tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr), ...notInSwath]);
     map.setFilter('swaths-fill', !coverage ? ['boolean', false] : expr.length > 1 ? expr : null);
     var trackExpr = coverage ? expr : [...expr, ['!=', ['get', 'kind'], 'satellite']];
