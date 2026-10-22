@@ -21,6 +21,7 @@ const COLORS = {
     gts: '#9b6cd1',
     wis2gts: '#c2255c',
     files: '#83C95D',
+    radar: '#0ca678',
     'cache-satellite': '#9c36b5',  // OBS_CLASSES.satellite
     'gts-satellite': '#9c36b5',
     replay: '#4c6ef5',
@@ -208,6 +209,8 @@ const LAYER_GROUPS = [
         { key: 'obs', label: 'Cache', color: OBS_CLASSES.station.color, optIn: true },  // Always listed
         // Sublayers sit under their parent and are off whenever it is off
         ...Object.entries(OBS_CLASSES).filter(([key]) => key !== 'satellite').map(([key, c]) => ({ key: `cache-${key}`, parent: 'obs', label: c.label, color: c.color, title: c.title })),
+        { key: 'radar', parent: 'obs', label: 'Weather radar', color: COLORS.radar,
+            title: 'Reflectivity from the lowest scan of each radar volume (ODIM HDF5) in the cache, drawn around the radar; downloaded only while this is on' },
         { key: 'origin', label: 'Origin', color: COLORS.origin, ring: true },
         { key: 'replay', label: 'Global Replay (past 90 minutes)', color: COLORS.replay, optIn: true,
             title: 'Fill the view with the past 90 minutes of WIS2 core-data notifications from the Global Replay service (wis2-grep.weather.gc.ca). Older points are fainter.' },
@@ -241,8 +244,8 @@ const LAYER_GROUPS = [
             title: 'The latest METAR from every airport the Iowa Environmental Mesonet collects, refreshed every 20 minutes. The airports nearest the view load first.' },
     ] },
 ];
-// Off at first: the Global Replay, airports, WIS2-to-GTS, satellites, aircraft and ground-based GNSS (cache, GTS and replay), and aircraft tracks
-const hiddenLayers = new Set(['cache-gnss', 'gts-gnss', 'replay-gnss', 'replay', 'airports', 'wis2gts', 'satellite', 'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks']);
+// Off at first: radar, the Global Replay, airports, WIS2-to-GTS, satellites, aircraft and ground-based GNSS (cache, GTS and replay), and aircraft tracks
+const hiddenLayers = new Set(['radar', 'cache-gnss', 'gts-gnss', 'replay-gnss', 'replay', 'airports', 'wis2gts', 'satellite', 'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks']);
 const LAYER_PARENTS = Object.fromEntries([
     ...LAYER_GROUPS.flatMap((g) => g.layers).filter((l) => l.parent).map((l) => [l.key, l.parent]),
     // Replayed satellites also go when the Global Replay is off (see applyMapFilter)
@@ -344,6 +347,12 @@ const attribution = new maplibregl.AttributionControl({
 const records = new Map();  // id -> record for every point on the map
 const pools = { wis2: new Map(), decoded: new Map(), satellite: new Map() };  // Same records, in arrival order per cap
 const POOL_CAPS = { wis2: MAX_POINTS, decoded: MAX_DECODED_POINTS, satellite: MAX_SATELLITE_POINTS };
+
+// Weather radar images, one per radar (drawn in the radar section; the map key reads them)
+// dBZ thresholds and colours, light rain to hail; below 5 dBZ isn't drawn
+const RADAR_COLORS = [[5, '#9be1ff'], [10, '#4fc3f7'], [15, '#2196f3'], [20, '#00c853'], [25, '#64dd17'], [30, '#ffeb3b'],
+    [35, '#ffc107'], [40, '#ff9800'], [45, '#f44336'], [50, '#c62828'], [55, '#e91e63'], [60, '#9c27b0'], [65, '#ffffff']];
+const radars = new Map();  // site -> { id, time, quantity, updated }
 
 function poolOf(record) {
     if (!record.decodedLayer) return 'wis2';
@@ -1101,6 +1110,10 @@ function updateMapKey() {
         rows.push(`<div class="key-row"><span class="legend-dot key-swath"></span>Satellite coverage${colourBy === 'cloudAmount' ? ', darker = cloudier' : ''}</div>`);
     }
     if (drawn('wis2gts')) rows.push(`<div class="key-row">${symbol('diamond', COLORS.wis2gts)}WIS2-to-GTS</div>`);
+    if (!hidden.includes('radar') && radars.size) {
+        rows.push(`<div class="key-title">Radar reflectivity (dBZ)</div>`);
+        rows.push(`<div class="legend-scale"><span>5</span><i style="background: linear-gradient(90deg, ${RADAR_COLORS.map(([, c]) => c).join(', ')})"></i><span>65</span></div>`);
+    }
     if (!hidden.includes('gts-tracks') && seenLayers.has('gts-aircraft')) {
         rows.push(`<div class="key-row"><span class="legend-dot legend-line" style="--color: linear-gradient(90deg, #99e9f2, #22b8cf, #1971c2, #5f3dc4)"></span>Aircraft tracks by altitude</div>`);
     }
@@ -3039,6 +3052,8 @@ function applyMapFilter() {
     map.setFilter('tracks', [...trackExpr, ['==', ['geometry-type'], 'LineString']]);
     updateMapKey();
     map.setFilter('track-ribbons', [...trackExpr, ['==', ['geometry-type'], 'Polygon']]);
+    var radarShown = effectiveHidden().includes('radar') ? 'none' : 'visible';
+    radars.forEach((r) => map.getLayer(r.id) && map.setLayoutProperty(r.id, 'visibility', radarShown));
 }
 
 function applyFilters() {
@@ -3763,7 +3778,7 @@ function parseMessage(topic, message) {
 function onMessage(topic, feature, replay) {
     // Kept for every message so the sidebar can find a downloadable copy
     rememberLinks((feature.properties || {}).data_id, feature.links || []);
-    revealGatewayRows(topic);
+    revealGatewayRows(topic, feature);
     // Replayed messages are only drawn: decoding a past hour of files would swamp the decoder
     var kind = !replay && Object.keys(DECODE_LAYERS).find((key) => DECODE_LAYERS[key](topic, feature));
     if (kind && decodeEnabled.has(kind)) queueDecode(kind, topic, feature);
@@ -3984,6 +3999,117 @@ def _profile(rows):
 def ready():
     return 'ok'
 
+# ---- Weather radar (ODIM HDF5 polar volumes). Returns the lowest-elevation
+# reflectivity scan, DBZH before TH, as bytes of (dBZ + 32) * 2, 0 for no echo.
+def _attr(groups, name, default=None):
+    for g in groups:
+        if g is not None and name in g.attrs:
+            v = g.attrs[name]
+            if isinstance(v, bytes):
+                return v.decode()
+            return v.item() if hasattr(v, 'item') else v
+    return default
+
+# GAMIC volumes (scan0, scan1, ... each with moment_N datasets) instead of ODIM's
+# dataset1/data1: values span dyn_range_min..max over 1..2^bits-1 (0 is no data),
+# and each ray's azimuth is in ray_header, so rays are put back on whole degrees
+def _gamic_scan(f, np, base64):
+    best = None
+    for name, s in f.items():
+        if not name.startswith('scan') or 'how' not in s:
+            continue
+        el = _attr([s['how']], 'elevation')
+        for m in s:
+            q = _attr([s[m]], 'moment') if m.startswith('moment_') else None
+            if q in ('Zh', 'UZh') and el is not None:
+                rank = (q != 'Zh', float(el))
+                if best is None or rank < best[0]:
+                    best = (rank, s, s[m], q)
+    if best is None:
+        return None
+    _, s, m, q = best
+    raw = m[()]
+    bits = 16 if raw.dtype == np.uint16 else 8
+    lo, hi = float(_attr([m], 'dyn_range_min')), float(_attr([m], 'dyn_range_max'))
+    dbz = lo + (raw.astype('float32') - 1) * (hi - lo) / (2 ** bits - 2)
+    q8 = np.clip(np.round((dbz + 32) * 2), 1, 254).astype('uint8')
+    q8[raw == 0] = 0
+    rays = s['ray_header'][()]
+    start, stop = rays['azimuth_start'], rays['azimuth_stop']
+    azimuth = (start + ((stop - start) % 360) / 2) % 360
+    out = np.zeros((360, raw.shape[1]), 'uint8')
+    out[azimuth.astype(int) % 360] = q8
+    # Fine range gates (100 m out to 250 km) are thinned to at most 1250 bins
+    step = max(1, -(-raw.shape[1] // 1250))
+    out = np.ascontiguousarray(out[:, ::step])
+    when = str(_attr([f['what']], 'date', ''))
+    how = s['how']
+    return json.dumps({
+        'quantity': 'DBZH' if q == 'Zh' else 'TH',
+        'source': {'NOD': _attr([f.get('how')], 'site_name') or _attr([f.get('how')], 'host_name') or ''},
+        'lat': float(_attr([f['where']], 'lat')),
+        'lon': float(_attr([f['where']], 'lon')),
+        'elangle': float(_attr([how], 'elevation')),
+        'rscale': float(_attr([how], 'range_step')) * step,     # m
+        'rstart': float(_attr([how], 'range_start', 0.0)) / 1000,  # km
+        'nrays': 360,
+        'nbins': int(out.shape[1]),
+        'date': when[:10].replace('-', ''),
+        'time': when[11:19].replace(':', ''),
+        'data': base64.b64encode(out.tobytes()).decode(),
+    })
+
+def radar_scan(data):
+    import io, base64
+    import h5py
+    import numpy as np
+    f = h5py.File(io.BytesIO(bytes(data.to_py())), 'r')
+    if any(k.startswith('scan') for k in f):
+        return _gamic_scan(f, np, base64) or json.dumps(None)
+    best = None
+    for name, ds in f.items():
+        if not name.startswith('dataset') or 'where' not in ds:
+            continue
+        el = _attr([ds['where']], 'elangle')
+        if el is None:
+            continue
+        for dname, d in ds.items():
+            if not dname.startswith('data') or 'data' not in d:
+                continue
+            q = _attr([d.get('what'), ds.get('what')], 'quantity')
+            if q not in ('DBZH', 'TH'):
+                continue
+            rank = (q != 'DBZH', float(el))
+            if best is None or rank < best[0]:
+                best = (rank, ds, d, q)
+    if best is None:
+        return json.dumps(None)
+    _, ds, d, q = best
+    whats = [d.get('what'), ds.get('what'), f.get('what')]
+    raw = d['data'][()]
+    dbz = raw.astype('float32') * float(_attr(whats, 'gain', 1.0)) + float(_attr(whats, 'offset', 0.0))
+    out = np.clip(np.round((dbz + 32) * 2), 1, 254).astype('uint8')
+    for flag in ('nodata', 'undetect'):
+        v = _attr(whats, flag)
+        if v is not None:
+            out[raw == v] = 0
+    where = [ds['where'], f.get('where')]
+    source = _attr([f.get('what')], 'source', '')
+    return json.dumps({
+        'quantity': q,
+        'source': dict(p.split(':', 1) for p in source.split(',') if ':' in p),
+        'lat': float(_attr([f.get('where')], 'lat')),
+        'lon': float(_attr([f.get('where')], 'lon')),
+        'elangle': float(_attr([ds['where']], 'elangle')),
+        'rscale': float(_attr(where, 'rscale')),        # m
+        'rstart': float(_attr(where, 'rstart', 0.0)),   # km
+        'nrays': int(raw.shape[0]),
+        'nbins': int(raw.shape[1]),
+        'date': _attr([ds.get('what'), f.get('what')], 'startdate') or _attr([f.get('what')], 'date'),
+        'time': _attr([ds.get('what'), f.get('what')], 'starttime') or _attr([f.get('what')], 'time'),
+        'data': base64.b64encode(out.tobytes()).decode(),
+    })
+
 def decode_subsets(data, limit=0):
     subsets = _decode(data)
     if limit and len(subsets) > limit:
@@ -4015,6 +4141,7 @@ def decode_bufr(data, wsi, key, index=-1):
 const DECODER_WORKER = `
 importScripts('${PYODIDE_URL}pyodide.js');
 let ready = null;
+let h5py = null;  // Loaded on the first radar file
 
 async function init(wheelUrls) {
     const py = await loadPyodide({ indexURL: '${PYODIDE_URL}' });
@@ -4040,6 +4167,7 @@ onmessage = async (e) => {
     try {
         if (!ready) ready = init(wheelUrls);
         const py = await ready;
+        if (fn === 'radar_scan') await (h5py = h5py || py.loadPackage('h5py'));
         postMessage({ id, result: py.globals.get(fn)(...args) });
     } catch (err) {
         ready = null;  // Allow a retry after a failed start
@@ -4075,7 +4203,7 @@ function roomyForTwoDecoders() {
 }
 
 function decoderLane(fn) {
-    return fn === 'decode_subsets' && filesDecoderReady ? 'files' : 'main';
+    return (fn === 'decode_subsets' || fn === 'radar_scan') && filesDecoderReady ? 'files' : 'main';
 }
 
 function startFilesDecoder() {
@@ -4127,6 +4255,12 @@ const NOT_BUFR = ['grib', 'xml', 'csv', 'json', 'image', 'hdf', 'text'];
 // Satellite files, from the cache or the GTS, are decoded while the Satellites row
 // is on, whatever Cache and GTS-to-WIS2 say, and may be larger than other files
 const SATELLITE_FILE_MAX_BYTES = 16 * 1024 * 1024;  // Big passes (IASI runs to 15 MB) are sampled, see _messages
+const RADAR_FILE_MAX_BYTES = 50 * 1024 * 1024;
+// Volumes bigger than this (Cyprus's GAMIC files run 27-39 MB) are fetched at most every
+// RADAR_LARGE_EVERY_MS per radar, rather than every few minutes
+const RADAR_LARGE_BYTES = 5 * 1024 * 1024;
+const RADAR_LARGE_EVERY_MS = 15 * 60 * 1000;
+const radarLargeFetched = new Map();  // radar (data_id without its time) -> when last fetched
 const DECODE_LAYERS = {
     gts: (topic, feature) => topic.startsWith('cache/') && GTS_TOPIC.test(topic) && !GATEWAY_SATELLITE.test(topic),
     'gts-satellite': (topic, feature) => topic.startsWith('cache/') && GTS_TOPIC.test(topic) && GATEWAY_SATELLITE.test(topic),
@@ -4134,6 +4268,11 @@ const DECODE_LAYERS = {
         && !(feature.links || []).some((l) => isDataLink(l) && l.length > DECODE_FILE_MAX_BYTES),
     // Gateway centres belong to their own layers above
     files: (topic, feature) => topic.startsWith('cache/') && !GATEWAY_TOPIC.test(topic) && !isSpaceBased(topic) && decodableFile(topic, feature),
+    // ODIM HDF5 radar volumes. Velocity-only files are skipped by name, or by their
+    // GTS heading once a file under it has turned out to hold no reflectivity
+    radar: (topic, feature) => topic.startsWith('cache/') && /radar/i.test(topic) && formatOf(feature) === 'hdf'
+        && !radarNoReflectivity.has(radarHeading(feature))
+        && !(feature.links || []).some((l) => isDataLink(l) && (l.length > RADAR_FILE_MAX_BYTES || /vrad/i.test(l.href))),
     // Any space-based file not drawn from its notification: no geometry, or a swath too large to plot
     'cache-satellite': (topic, feature) => topic.startsWith('cache/') && !GATEWAY_TOPIC.test(topic) && isSpaceBased(topic)
         && !(feature.geometry && feature.geometry.type && pointFor(feature.geometry)) && !NOT_BUFR.includes(formatOf(feature))
@@ -4149,15 +4288,16 @@ function decodableFile(topic, feature) {
 const DECODE_FETCH_TIMEOUT_MS = 20000;
 const DECODE_QUEUE_MAX = 100;  // Oldest files are dropped when decoding falls behind
 const decodeEnabled = new Set();
-const decodePlotted = { gts: 0, 'gts-satellite': 0, wis2gts: 0, files: 0, 'cache-satellite': 0 };
+const decodePlotted = { gts: 0, 'gts-satellite': 0, wis2gts: 0, files: 0, 'cache-satellite': 0, radar: 0 };
 let decodeQueue = [];
 let decodeBusy = false;
 const decodeSeen = new Set();
 
 // Shows the GTS Aircraft and the Satellites rows once such a file has been
 // announced, even though it isn't downloaded while the row is off
-function revealGatewayRows(topic) {
+function revealGatewayRows(topic, feature) {
     if (!seenLayers.has('satellite') && isSpaceBased(topic)) showLegendRow('satellite');
+    if (!seenLayers.has('radar') && DECODE_LAYERS.radar(topic, feature)) showLegendRow('radar');
     if (!seenLayers.has('gts-aircraft') && GATEWAY_AIRCRAFT.test(topic)) showLegendRow('gts-aircraft');
 }
 
@@ -4177,6 +4317,7 @@ function queueDecode(kind, topic, feature) {
     var href = link ? link.href : [...(dataLinks.get((feature.properties || {}).data_id) || [])].find(corsFriendly);
     if (!href || !key || decodeSeen.has(key)) return;
     if (satelliteSkipped(kind, topic)) return;
+    if (kind === 'radar' && radarThrottled(feature)) return;
     decodeSeen.add(key);
     if (decodeSeen.size > DATA_LINKS_MAX) decodeSeen.delete(decodeSeen.values().next().value);
     // XML needs no decoder, so it skips the queue rather than waiting behind BUFR
@@ -4208,9 +4349,11 @@ async function fetchForDecode(job) {
     decodeFetching++;
     try {
         // A stalled server would otherwise hold up the queue
-        var response = await fetch(job.href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) });
+        // Radar volumes can run to tens of MB, so they get longer
+        var response = await fetch(job.href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS * (job.kind === 'radar' ? 4 : 1)) });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        var bytes = bufrPart(new Uint8Array(await response.arrayBuffer()));
+        var raw = new Uint8Array(await response.arrayBuffer());
+        var bytes = job.kind === 'radar' ? raw : bufrPart(raw);
         if (bytes) decodeReady.push({ job, bytes });
     } catch (err) {
         decodeSeen.delete(job.key);  // Let another cache's copy try
@@ -4226,8 +4369,12 @@ async function decodeNext() {
     decodeBusy = true;
     var { job, bytes } = decodeReady.shift();
     try {
-        var subsets = JSON.parse(await callDecoder('decode_subsets', bytes, DECODE_FILE_MAX_REPORTS));
-        subsets.forEach(([rows, profile], i) => plotDecodedReport(job, rows, profile, i, subsets.length));
+        if (job.kind === 'radar') {
+            plotRadar(job, JSON.parse(await callDecoder('radar_scan', bytes)));
+        } else {
+            var subsets = JSON.parse(await callDecoder('decode_subsets', bytes, DECODE_FILE_MAX_REPORTS));
+            subsets.forEach(([rows, profile], i) => plotDecodedReport(job, rows, profile, i, subsets.length));
+        }
     } catch (err) {
         console.debug(`Could not decode ${job.href}: ${err.message}`);
     }
@@ -4316,6 +4463,124 @@ function trimRows(rows) {
     }
     return kept;
 }
+
+// ---------- Weather radar. Each radar's latest lowest scan is drawn as an image
+// around it, reprojected from range and azimuth onto the map's Mercator grid.
+const RADAR_MAX = 100;  // Radars drawn at once
+const RADAR_STALE_MS = 30 * 60 * 1000;  // A radar with nothing newer is taken off
+const RADAR_IMAGE_PX = 600;
+let radarIds = 0;
+let radarLookup = null;
+
+// RGBA for each byte the decoder sends: (dBZ + 32) * 2, 0 for no echo
+function radarColours() {
+    if (radarLookup) return radarLookup;
+    radarLookup = new Uint8ClampedArray(256 * 4);
+    for (var v = 1; v < 255; v++) {
+        var dbz = v / 2 - 32, step = RADAR_COLORS.filter(([t]) => dbz >= t).pop();
+        if (!step) continue;
+        var hex = step[1];
+        radarLookup.set([parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16), 255], v * 4);
+    }
+    return radarLookup;
+}
+
+function renderRadar(scan) {
+    var bytes = Uint8Array.from(atob(scan.data), (c) => c.charCodeAt(0));
+    var R = 6371008.8, rad = Math.PI / 180;
+    var start = scan.rstart * 1000, range = start + scan.nbins * scan.rscale;
+    var dLat = range / R / rad, dLon = dLat / Math.cos(scan.lat * rad);
+    var north = scan.lat + dLat, south = scan.lat - dLat, west = scan.lon - dLon, east = scan.lon + dLon;
+    var merc = (lat) => Math.log(Math.tan(Math.PI / 4 + lat * rad / 2));
+    var yN = merc(north), yS = merc(south), size = RADAR_IMAGE_PX;
+    var canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    var ctx = canvas.getContext('2d'), image = ctx.createImageData(size, size), lut = radarColours();
+    for (var py = 0; py < size; py++) {
+        // Rows are evenly spaced in Mercator y, as the map draws the image
+        var lat = (2 * Math.atan(Math.exp(yN + (py + 0.5) / size * (yS - yN))) - Math.PI / 2) / rad;
+        var dy = (lat - scan.lat) * rad * R, kx = rad * R * Math.cos(lat * rad);
+        for (var px = 0; px < size; px++) {
+            var dx = (west + (px + 0.5) / size * (east - west) - scan.lon) * kx;
+            var bin = Math.floor((Math.hypot(dx, dy) - start) / scan.rscale);
+            if (bin < 0 || bin >= scan.nbins) continue;
+            // Rays run clockwise from north
+            var ray = Math.floor(((Math.atan2(dx, dy) / rad + 360) % 360) / 360 * scan.nrays) % scan.nrays;
+            var v = bytes[ray * scan.nbins + bin];
+            if (v && lut[v * 4 + 3]) image.data.set(lut.subarray(v * 4, v * 4 + 4), (py * size + px) * 4);
+        }
+    }
+    ctx.putImageData(image, 0, 0);
+    return { url: canvas.toDataURL('image/png'), coordinates: [[west, north], [east, north], [east, south], [west, south]] };
+}
+
+// A large volume from a radar fetched less than RADAR_LARGE_EVERY_MS ago is skipped.
+// The radar is the data_id with its timestamp taken out (LONGRANGE_LCA_20261019180257_00.h5)
+function radarThrottled(feature) {
+    var link = (feature.links || []).find((l) => isDataLink(l));
+    if (!link || !(link.length > RADAR_LARGE_BYTES)) return false;
+    var radar = String((feature.properties || {}).data_id).replace(/\d{8}T?\d{4,6}/g, '');
+    if (Date.now() - (radarLargeFetched.get(radar) || 0) < RADAR_LARGE_EVERY_MS) return true;
+    radarLargeFetched.set(radar, Date.now());
+    if (radarLargeFetched.size > RADAR_MAX) radarLargeFetched.delete(radarLargeFetched.keys().next().value);
+    return false;
+}
+
+// RMI sends reflectivity and velocity under different headings (PAGW, PAGY, PAHZ):
+// a heading whose file held no reflectivity isn't downloaded again
+const radarNoReflectivity = new Set();
+
+function radarHeading(feature) {
+    var gts = (feature.properties || {}).gts;
+    return gts && gts.ttaaii ? `${gts.ttaaii} ${gts.cccc}` : null;
+}
+
+function plotRadar(job, scan) {
+    if (!scan) {
+        var heading = radarHeading(job.feature);
+        if (heading && radarNoReflectivity.size < 1000) radarNoReflectivity.add(heading);
+        return;
+    }
+    if (!map.getLayer('points') || !decodeEnabled.has('radar')) return;
+    var src = scan.source || {};
+    var site = src.NOD || src.RAD || src.WMO || `${scan.lat},${scan.lon}`;
+    var d = String(scan.date || ''), t = String(scan.time || '').padStart(6, '0');
+    var time = Date.parse(`${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}T${t.slice(0, 2)}:${t.slice(2, 4)}:${t.slice(4, 6)}Z`) || Date.now();
+    var existing = radars.get(site);
+    // Filtered reflectivity (DBZH) beats unfiltered (TH) from the same radar, unless it has gone stale
+    if (existing && (time < existing.time
+        || (scan.quantity !== 'DBZH' && existing.quantity === 'DBZH' && time - existing.time < RADAR_STALE_MS))) return;
+    var { url, coordinates } = renderRadar(scan);
+    var id = existing ? existing.id : `radar-${radarIds++}`;
+    if (existing) {
+        map.getSource(id).updateImage({ url, coordinates });
+    } else {
+        map.addSource(id, { type: 'image', url, coordinates });
+        // Under the coverage, tracks and points
+        var before = ['swaths-fill', 'tracks', 'points'].find((l) => map.getLayer(l));
+        map.addLayer({ id, type: 'raster', source: id, paint: { 'raster-opacity': 0.75, 'raster-fade-duration': 0 },
+            layout: { visibility: effectiveHidden().includes('radar') ? 'none' : 'visible' } }, before);
+    }
+    radars.delete(site);  // Re-insert so the least recently updated is first
+    radars.set(site, { id, time, quantity: scan.quantity, updated: Date.now() });
+    if (radars.size > RADAR_MAX) removeRadar(radars.keys().next().value);
+    decodePlotted.radar++;
+    updateMapKey();
+}
+
+function removeRadar(site) {
+    var r = radars.get(site);
+    radars.delete(site);
+    if (map.getLayer(r.id)) map.removeLayer(r.id);
+    if (map.getSource(r.id)) map.removeSource(r.id);
+}
+
+setInterval(() => {
+    for (var [site, r] of [...radars]) {
+        if (Date.now() - r.updated > RADAR_STALE_MS) removeRadar(site);
+    }
+    updateMapKey();
+}, 60 * 1000);
 
 // Citypage forecasts come in English and French for each site and are reissued
 // through the day: keep one point per site, the latest, preferring English
