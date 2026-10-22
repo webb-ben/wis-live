@@ -234,7 +234,8 @@ const LAYER_GROUPS = [
                 color: 'linear-gradient(90deg, #99e9f2, #22b8cf, #1971c2, #5f3dc4)',
                 title: 'Each aircraft drawn in the air at its altitude: a path coloured by height (light low, dark high), chevrons pointing the way it is flying, and a red arrowhead at its latest report. Tilt the map to see it in 3D. Off: every report is a point on the ground.' }] : []),
         ]),
-        { key: 'wis2gts', label: 'WIS2-to-GTS (decode required)', color: COLORS.wis2gts, optIn: true,
+        // Listed once a WIS2-to-GTS centre has published something (see revealGatewayRows)
+        { key: 'wis2gts', label: 'WIS2-to-GTS (decode required)', color: COLORS.wis2gts,
             title: 'Download and decode the BUFR that WIS2 centres pass on to the GTS (centres ending -wis2-to-gts), and plot the reports inside' },
     ] },
     { key: 'space', label: 'Satellites', subtitle: 'Space-based observations from WIS2 and the GTS', layers: [
@@ -4442,11 +4443,12 @@ let decodeQueue = [];
 let decodeBusy = false;
 const decodeSeen = new Set();
 
-// Shows the GTS Aircraft and the Satellites rows once such a file has been
-// announced, even though it isn't downloaded while the row is off
+// Shows the GTS Aircraft, Satellites, radar and WIS2-to-GTS rows once such a file
+// has been announced, even though it isn't downloaded while the row is off
 function revealGatewayRows(topic, feature) {
     if (!seenLayers.has('satellite') && isSpaceBased(topic)) showLegendRow('satellite');
     if (!seenLayers.has('radar') && DECODE_LAYERS.radar(topic, feature)) showLegendRow('radar');
+    if (!seenLayers.has('wis2gts') && WIS2_GTS_TOPIC.test(topic)) showLegendRow('wis2gts');
     if (!seenLayers.has('gts-aircraft') && GATEWAY_AIRCRAFT.test(topic)) showLegendRow('gts-aircraft');
 }
 
