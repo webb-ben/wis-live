@@ -718,7 +718,10 @@ function observedAt(record) {
 function addPoint(record) {
     var existing = byDataId.get(record.props.data_id);
     if (existing && records.has(existing.id)) {
-        if (existing.channel === 'cache' || record.channel !== 'cache') return existing;
+        // An update replaces the data published earlier under its data_id; the caches'
+        // copies of the same update (same pubtime) are skipped like any other copy
+        var newer = record.update && Date.parse(record.props.pubtime || '') > Date.parse(existing.props.pubtime || '');
+        if (!newer && (existing.channel === 'cache' || record.channel !== 'cache')) return existing;
         removePoint(existing);
     }
     if (record.props.data_id) byDataId.set(record.props.data_id, record);
@@ -1153,7 +1156,7 @@ function closeInfo() {
 
 function buildPopup(record) {
     var props = record.props;
-    var canonical = record.links.find((l) => l.rel == 'canonical');
+    var canonical = record.links.find((l) => isDataLink(l));
     var oscar = record.links.find((l) => l.rel == 'via' && /oscar/.test(l.href));
     var image = record.webcam && canonical;
     var wis2box = record.external ? null : wis2boxOf(record);
@@ -2855,10 +2858,20 @@ const filters = { text: '', centres: new Set(), format: '', disciplines: new Set
 // Each filter either keeps only what matches ('only') or hides what matches ('hide')
 const filterModes = { text: 'only', centres: 'only', format: 'only', disciplines: 'only' };
 
+// The link to a notification's data: canonical, or update when it replaces data
+// published earlier under the same data_id (WIS2 Notification Message, 9.x)
+function isDataLink(link) {
+    return link.rel == 'canonical' || link.rel == 'update';
+}
+
+function isUpdate(feature) {
+    return (feature.links || []).some((l) => l.rel == 'update');
+}
+
 // File type of a notification's data, from the canonical link's media type,
 // falling back to the file extension for generic types
 function formatOf(feature) {
-    var link = (feature.links || []).find((l) => l.rel == 'canonical');
+    var link = (feature.links || []).find((l) => isDataLink(l));
     if (!link) return 'other';
     var type = (link.type || '').toLowerCase();
     var ext = ((link.href || '').split(/[?#]/)[0].match(/\.([a-z0-9]+)$/i) || [])[1] || '';
@@ -2871,7 +2884,22 @@ function formatOf(feature) {
     if (/^image\//.test(type) || /^(jpe?g|png|gif|webp)$/.test(ext)) return 'image';
     if (/hdf|netcdf/.test(type) || /^(h5|hdf5?|nc)$/.test(ext)) return 'hdf';
     if (/^text\//.test(type) || ext === 'txt') return 'text';
+    // GTS bulletins often come with a generic type and no extension (DWD's relays, NCM's
+    // numbered copies), but the heading's T1 says what they are (WMO-No. 386, table A)
+    var t1 = (gtsHeading(feature) || '')[0];
+    if (/[IJ]/.test(t1)) return 'bufr';
+    if (/[DGHOY]/.test(t1)) return 'grib';
+    if (/[LX]/.test(t1)) return 'xml';
+    if (/[ABCFKNSTUVW]/.test(t1)) return 'text';
     return 'other';
+}
+
+// TTAAii of a GTS bulletin, from the notification or its data_id (…/INCX50EUMP191659_C_EDZW…)
+function gtsHeading(feature) {
+    var props = feature.properties || {};
+    if (props.gts && props.gts.ttaaii) return props.gts.ttaaii;
+    var match = /(?:^|[/_])([A-Z]{4}\d{2})[A-Z]{4}\d{6}/.exec(props.data_id || '');
+    return match ? match[1] : null;
 }
 const centres = new Map();  // centre-id -> its item in the picker
 let centreList, centreSearch, centreToggle, centreChips;
@@ -3242,15 +3270,23 @@ function queueMessage(topic, message, record, feature) {
         discipline: disciplineOf(t),
         format: feature ? formatOf(feature) : 'other',
         dataId: feature && feature.properties ? feature.properties.data_id : null,
-        // The decode layer this message goes to, when that layer is on
-        decodeKind: feature && !record ? Object.keys(DECODE_LAYERS).find((k) => decodeEnabled.has(k) && DECODE_LAYERS[k](topic, feature) && !satelliteSkipped(k, topic)) : null,
+        decodeKey: feature ? decodeKey(topic, feature) : null,
+        // The decode layer this message goes to, when that layer is on. Origin copies
+        // aren't downloaded, but are linked to what their cache copy decodes to.
+        decodeKind: feature && !record ? Object.keys(DECODE_LAYERS).find((k) => decodeEnabled.has(k)
+            && DECODE_LAYERS[k](topic.replace(/^origin\//, 'cache/'), feature) && !satelliteSkipped(k, topic)) : null,
         message: message,
         wis2box: wis2boxVersion(feature),
         record: record,
         row: null,
     };
     queueTotal++;
-    if (entry.decodeKind && entry.dataId) awaitDecode(entry);
+    if (entry.decodeKind && entry.decodeKey) {
+        // A cache that announces the file after it has been decoded links straight away
+        var decoded = decodedFirst.get(entry.decodeKey);
+        if (decoded && records.has(decoded.id)) entry.record = decoded;
+        else awaitDecode(entry);
+    }
     if (centreList && !centres.has(entry.centre)) addCentreOption(entry.centre);
     recent.push(entry);
     if (recent.length > RECENT_MAX) recent.shift();
@@ -3443,25 +3479,40 @@ function currentRecord(entry) {
     return latest && records.has(latest.id) ? latest : null;
 }
 
-// Entries waiting for their file to be decoded, by data_id. Kept apart from
+// Entries waiting for their file to be decoded, by decodeKey. Kept apart from
 // the recent list, which busy brokers cycle through in seconds, so a row still
 // on screen can be linked however long decoding takes.
 const DECODE_WAITING_MAX = 5000;
 const decodeWaiting = new Map();
+const decodedFirst = new Map();  // decodeKey -> first report plotted from that file
+
+// The same GTS bulletin is relayed by more than one gateway (DWD and JMA) under
+// different data_ids, so gateway files are known by their abbreviated heading
+// (TTAAii CCCC YYGGgg, plus BBB for amendments) and decoded once
+function decodeKey(topic, feature) {
+    var props = feature.properties || {}, dataId = props.data_id;
+    var heading = GATEWAY_TOPIC.test(topic) && /([A-Z]{4}\d{2}[A-Z]{4}\d{6}(?:[A-Z]{3})?)(?=[_/]|$)/.exec(dataId || '');
+    var key = heading ? `gts:${heading[1]}` : dataId;
+    // An update reuses its data_id, but is a new file to decode
+    return key && isUpdate(feature) ? `${key}@${props.pubtime}` : key;
+}
 
 function awaitDecode(entry) {
-    var list = decodeWaiting.get(entry.dataId) || [];
+    var list = decodeWaiting.get(entry.decodeKey) || [];
     list.push(entry);
-    decodeWaiting.set(entry.dataId, list);
+    decodeWaiting.set(entry.decodeKey, list);
     if (decodeWaiting.size > DECODE_WAITING_MAX) decodeWaiting.delete(decodeWaiting.keys().next().value);
 }
 
 // Once reports decoded from a message are plotted, link its sidebar entries
 // to the first of them and repaint their rows
-function linkDecoded(dataId, record) {
-    var waiting = dataId && decodeWaiting.get(dataId);
+function linkDecoded(key, record) {
+    if (!key) return;
+    decodedFirst.set(key, record);
+    if (decodedFirst.size > DECODE_WAITING_MAX) decodedFirst.delete(decodedFirst.keys().next().value);
+    var waiting = decodeWaiting.get(key);
     if (!waiting) return;
-    decodeWaiting.delete(dataId);
+    decodeWaiting.delete(key);
     for (var entry of waiting) {
         if (entry.record) continue;
         entry.record = record;
@@ -3714,6 +3765,7 @@ function onMessage(topic, feature, replay) {
         format: formatOf(feature),
         color: COLORS.origin,
         source: webcam ? null : bufrSource(feature, props),
+        update: isUpdate(feature),
         notification: feature,
         decoded: null,
         replay: !!replay,
@@ -4002,7 +4054,7 @@ const NOT_BUFR = ['grib', 'xml', 'csv', 'json', 'image', 'hdf', 'text'];
 const DECODE_LAYERS = {
     gts: (topic, feature) => topic.startsWith('cache/') && GTS_TOPIC.test(topic),
     wis2gts: (topic, feature) => topic.startsWith('cache/') && WIS2_GTS_TOPIC.test(topic) && !NOT_BUFR.includes(formatOf(feature))
-        && !(feature.links || []).some((l) => l.rel == 'canonical' && l.length > DECODE_FILE_MAX_BYTES),
+        && !(feature.links || []).some((l) => isDataLink(l) && l.length > DECODE_FILE_MAX_BYTES),
     // Gateway centres belong to their own layers above
     files: (topic, feature) => topic.startsWith('cache/') && !GATEWAY_TOPIC.test(topic) && decodableFile(topic, feature),
 };
@@ -4010,7 +4062,7 @@ const DECODE_LAYERS = {
 function decodableFile(topic, feature) {
     return !feature.geometry
         && (!NOT_BUFR.includes(formatOf(feature)) || (formatOf(feature) === 'xml' && /citypage/i.test(topic + JSON.stringify(feature.links || []))))
-        && (feature.links || []).some((l) => l.rel == 'canonical' && l.length > 0 && l.length <= DECODE_FILE_MAX_BYTES);
+        && (feature.links || []).some((l) => isDataLink(l) && l.length > 0 && l.length <= DECODE_FILE_MAX_BYTES);
 }
 
 const DECODE_FETCH_TIMEOUT_MS = 20000;
@@ -4038,22 +4090,25 @@ function satelliteSkipped(kind, topic) {
 }
 
 function queueDecode(kind, topic, feature) {
-    var props = feature.properties || {};
-    var link = (feature.links || []).find((l) => l.rel == 'canonical' && corsFriendly(l.href));
-    // Each cache republishes the file; take the first copy a browser can download
-    if (!link || decodeSeen.has(props.data_id)) return;
+    var key = decodeKey(topic, feature);
+    // Each cache republishes the file; take the first copy a browser can download,
+    // falling back on any link already seen for it (e.g. the origin's) when this
+    // cache's own server blocks browser downloads
+    var link = (feature.links || []).find((l) => isDataLink(l) && corsFriendly(l.href));
+    var href = link ? link.href : [...(dataLinks.get((feature.properties || {}).data_id) || [])].find(corsFriendly);
+    if (!href || !key || decodeSeen.has(key)) return;
     if (satelliteSkipped(kind, topic)) return;
-    decodeSeen.add(props.data_id);
+    decodeSeen.add(key);
     if (decodeSeen.size > DATA_LINKS_MAX) decodeSeen.delete(decodeSeen.values().next().value);
     // XML needs no decoder, so it skips the queue rather than waiting behind BUFR
     if (formatOf(feature) === 'xml') {
-        fetch(link.href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) })
+        fetch(href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) })
             .then((response) => (response.ok ? response.text() : null))
-            .then((xml) => xml && decodeEnabled.has(kind) && plotCitypage({ kind, topic, feature, href: link.href }, xml))
-            .catch((err) => console.debug(`Could not fetch ${link.href}: ${err.message}`));
+            .then((xml) => xml && decodeEnabled.has(kind) && plotCitypage({ kind, key, topic, feature, href }, xml))
+            .catch((err) => console.debug(`Could not fetch ${href}: ${err.message}`));
         return;
     }
-    decodeQueue.push({ kind, topic, feature, href: link.href });
+    decodeQueue.push({ kind, key, topic, feature, href });
     if (decodeQueue.length > DECODE_QUEUE_MAX) decodeQueue.shift();
     pumpDecode();
 }
@@ -4079,6 +4134,7 @@ async function fetchForDecode(job) {
         var bytes = bufrPart(new Uint8Array(await response.arrayBuffer()));
         if (bytes) decodeReady.push({ job, bytes });
     } catch (err) {
+        decodeSeen.delete(job.key);  // Let another cache's copy try
         console.debug(`Could not fetch ${job.href}: ${err.message}`);
     }
     decodeFetching--;
@@ -4135,6 +4191,7 @@ function plotDecodedReport(job, rows, profile, index, total) {
         webcam: false,
         decodedLayer: job.kind,
         subLayer: subLayer,
+        update: isUpdate(job.feature),
         track: trackKey(subLayer, values),
         observed: Date.parse(reportTime(values) || '') || Date.now(),
         props: {
@@ -4161,7 +4218,11 @@ function plotDecodedReport(job, rows, profile, index, total) {
     addPoint(record);
     if (record.track) tracksDirty = true;
     decodePlotted[job.kind]++;
-    if (!index) linkDecoded(props.data_id, record);
+    // The first report with a location stands for the file; report 0 may have none
+    if (!job.linked) {
+        job.linked = true;
+        linkDecoded(job.key, record);
+    }
 }
 
 // Citypage forecasts come in English and French for each site and are reissued
@@ -4209,7 +4270,7 @@ function plotCitypage(job, xml) {
         born: Date.now(),
     });
     decodePlotted[job.kind]++;
-    linkDecoded(props.data_id, record);
+    linkDecoded(job.key, record);
 }
 
 // ---------- Colouring stations, ships and buoys by a measured value. Values come from
@@ -5082,7 +5143,7 @@ function rememberLinks(dataId, links) {
     if (!dataId) return;
     var hrefs = dataLinks.get(dataId) || new Set();
     for (var link of links) {
-        if (link.rel == 'canonical') hrefs.add(link.href);
+        if (isDataLink(link)) hrefs.add(link.href);
     }
     dataLinks.delete(dataId);  // Re-insert to keep recently used ids
     dataLinks.set(dataId, hrefs);
@@ -5095,7 +5156,7 @@ function bufrSource(feature, props) {
     var content = props.content && props.content.encoding === 'base64' ? props.content.value : null;
     // Any canonical link may hold BUFR or text; fetchData checks the content
     var urls = (feature.links || [])
-        .filter((l) => l.rel == 'canonical' && !(l.length > 5e6))
+        .filter((l) => isDataLink(l) && !(l.length > 5e6))
         .map((l) => l.href);
     if (!content && !urls.length) return null;
     return { content: content, dataId: props.data_id, urls: urls, cap: props.cap_info || null };
@@ -5134,8 +5195,14 @@ function isText(bytes) {
     return sample.length > 0 && printable / sample.length > 0.95;
 }
 
+// Hosts that let a browser download their files: the S3-backed global caches and
+// JMA's own server (which JMA's GTS-to-WIS2 bulletins link to). DWD, KMA, CMA and
+// NCM send no CORS headers.
+const CORS_HOSTS = ['www.wis-jma.go.jp'];
+
 function corsFriendly(url) {
-    return hostname(url).endsWith('.amazonaws.com') ? 1 : 0;
+    var host = hostname(url);
+    return host.endsWith('.amazonaws.com') || CORS_HOSTS.includes(host) ? 1 : 0;
 }
 
 // GTS bulletins put an abbreviated heading (e.g. "IUAG04 VHHH 141200") before
