@@ -1727,7 +1727,8 @@
   opacity: 1;
 }
 
-/* Other sources (NOAA): their own section colour, and squares for symbols */
+/* Other sources (Global Replay, airports): their own section colour, and squares
+   for symbols, on the map and here */
 .legend-section-other {
   --accent: #495057;
   --tint: #f8f9fa;
