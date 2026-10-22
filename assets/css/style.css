@@ -1892,3 +1892,132 @@
   background-color: #edf2ff;
   color: #3b5bdb;
 }
+
+/* WIS2 data policy, from the Global Discovery Catalogue */
+.pp-badge.pp-policy-core {
+  background-color: #e3f4dc;
+  color: #2f6b1d;
+}
+.pp-badge.pp-policy-recommended {
+  background-color: #fff3bf;
+  color: #8a6100;
+}
+
+/* The dataset a point belongs to, at the end of its popup */
+.pp-dataset {
+  margin-top: 10px;
+}
+.pp-dataset[hidden] {
+  display: none;
+}
+.pp-dataset-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-weight: 600;
+}
+.pp-dataset-by {
+  color: #6c757d;
+  font-size: 12px;
+}
+.pp-dataset-by:empty {
+  display: none;
+}
+/* Descriptions run long: three lines, the rest in the catalogue */
+.pp-dataset-text {
+  display: -webkit-box;
+  margin: 4px 0 6px;
+  overflow: hidden;
+  color: #495057;
+  font-size: 12px;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+.pp-dataset-text:empty {
+  display: none;
+}
+.pp-dataset-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  font-size: 12px;
+}
+
+/* The Datasets tab: search the catalogue; the results scroll under the search box */
+.queue-pane-datasets {
+  display: flex;
+  flex-direction: column;
+}
+.gdc-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.gdc-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #dddddd;
+}
+.gdc-status {
+  padding: 4px 8px 0;
+}
+.gdc-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.gdc-row {
+  padding: 6px 8px;
+  border-bottom: 1px solid #f1f3f5;
+}
+.gdc-title {
+  display: block;
+  color: #212529;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.gdc-title:hover {
+  text-decoration: underline;
+}
+.gdc-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  margin-top: 2px;
+  color: #6c757d;
+  font-size: 11px;
+}
+.gdc-meta strong {
+  color: #495057;
+  font-weight: 600;
+}
+.gdc-meta .gdc-show {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  font-size: 11px;
+  line-height: inherit;
+  white-space: nowrap;
+}
+.gdc-more {
+  display: block;
+  margin: 8px auto;
+}
+/* What Show on map found, under the dataset it was asked of */
+.gdc-note,
+.pp-dataset-note {
+  margin-top: 4px;
+  color: #495057;
+}
+.gdc-note[hidden],
+.pp-dataset-note[hidden] {
+  display: none;
+}
+.gdc-more[hidden] {
+  display: none;
+}
