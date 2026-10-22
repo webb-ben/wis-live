@@ -39,6 +39,7 @@ const OBS_CLASSES = {
     buoy: { label: 'Buoys and floats', color: '#f76707', title: 'Ocean observations from buoys, floats and moorings' },
     gnss: { label: 'Ground-based GNSS', color: '#a5662b', title: 'Atmospheric path delays and water vapour from GNSS receivers (e.g. E-GVAP), not weather observations' },
     satellite: { label: 'Space-based (satellites)', color: '#9c36b5', title: 'Observations from satellites (winds, radiances, occultations)' },
+    lightning: { label: 'Lightning', color: '#e64980', cacheOnly: true, title: 'Lightning flashes located by detection networks (e.g. the Met Office LEELA network)' },
     webcam: { label: 'Webcam images', color: '#fcc419', cacheOnly: true, title: 'Camera images' },
     warning: { label: 'Warnings and alerts', color: '#e03131', cacheOnly: true, title: 'Weather warnings, alerts and advisories, including CAP messages and Environment Canada city forecasts' },
     other: { label: 'Other', color: '#868e96', title: 'Anything not in the groups above' },
@@ -845,6 +846,8 @@ function topicClass(record) {
     if (record.webcam) return 'webcam';
     if (record.props.cap_info || /warning|alert|advisor|\/cap(\/|$)/.test(t)) return 'warning';
     if (/space-based-observations/.test(t)) return 'satellite';
+    // Before upper air: the Met Office publishes under upper-air-observations/lightning
+    if (/lightning/.test(t)) return 'lightning';
     if (/aircraft|amdar|aviation/.test(t)) return 'aircraft';
     if (/upper-air|radiosonde|\/temp(\/|$)|\/pilot(\/|$)|profil/.test(t)) return 'upperair';
     if (/gnss|gpsmet|\/ztd(\/|$)/.test(t)) return 'gnss';
@@ -4281,7 +4284,8 @@ const DECODE_LAYERS = {
 
 function decodableFile(topic, feature) {
     return !feature.geometry
-        && (!NOT_BUFR.includes(formatOf(feature)) || (formatOf(feature) === 'xml' && /citypage/i.test(topic + JSON.stringify(feature.links || []))))
+        && (!NOT_BUFR.includes(formatOf(feature)) || (formatOf(feature) === 'xml' && /citypage/i.test(topic + JSON.stringify(feature.links || [])))
+            || (formatOf(feature) === 'text' && /lightning/i.test(topic)))
         && (feature.links || []).some((l) => isDataLink(l) && l.length > 0 && l.length <= DECODE_FILE_MAX_BYTES);
 }
 
@@ -4325,6 +4329,14 @@ function queueDecode(kind, topic, feature) {
         fetch(href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) })
             .then((response) => (response.ok ? response.text() : null))
             .then((xml) => xml && decodeEnabled.has(kind) && plotCitypage({ kind, key, topic, feature, href }, xml))
+            .catch((err) => console.debug(`Could not fetch ${href}: ${err.message}`));
+        return;
+    }
+    // And text lightning reports, which are a short CSV
+    if (formatOf(feature) === 'text') {
+        fetch(href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) })
+            .then((response) => (response.ok ? response.text() : null))
+            .then((text) => text && decodeEnabled.has(kind) && plotLightningText({ kind, key, topic, feature, href }, text))
             .catch((err) => console.debug(`Could not fetch ${href}: ${err.message}`));
         return;
     }
@@ -4403,9 +4415,11 @@ function plotDecodedReport(job, rows, profile, index, total) {
     // the identifiers: buoys and ships with WIGOS ids would otherwise read as weather stations
     if (!GATEWAY_TOPIC.test(job.topic)) {
         var fromTopic = topicClass({ topic: job.topic, webcam: false, props });
-        if (fromTopic !== 'other' && !OBS_CLASSES[fromTopic].cacheOnly) cls = fromTopic;
+        // Lightning is cache-only too, but does come as BUFR
+        if (fromTopic !== 'other' && (fromTopic === 'lightning' || !OBS_CLASSES[fromTopic].cacheOnly)) cls = fromTopic;
     }
     var subLayer = job.kind === 'gts' || job.kind === 'gts-satellite' ? `gts-${cls}` : job.kind === 'files' || job.kind === 'cache-satellite' ? `cache-${cls}` : null;
+    if (cls === 'lightning' && seenFlash(flashTime(values), lat, lon)) return;
     if (subLayer && subLayer.endsWith('-satellite') && effectiveHidden().includes(subLayer)) return;
     var record = {
         id: nextId++,
@@ -4581,6 +4595,74 @@ setInterval(() => {
     }
     updateMapKey();
 }, 60 * 1000);
+
+// ---------- Lightning. The Met Office sends each batch of flashes as BUFR (one
+// subset per flash: its position, then the sensors that located it) and as a
+// CSV; both are plotted, so a flash seen in one is skipped in the other.
+const FLASHES_MAX = 5000;
+const flashesSeen = new Set();
+
+function seenFlash(time, lat, lon) {
+    var key = `${Math.round(time / 100)}:${lat.toFixed(2)},${lon.toFixed(2)}`;
+    if (flashesSeen.has(key)) return true;
+    flashesSeen.add(key);
+    if (flashesSeen.size > FLASHES_MAX) flashesSeen.delete(flashesSeen.values().next().value);
+    return false;
+}
+
+// Time of a BUFR flash to the millisecond (seconds are 004006)
+function flashTime(values) {
+    var [y, mo, d, h, mi, sec] = [4001, 4002, 4003, 4004, 4005, 4006].map((id) => values.get(id));
+    return Date.UTC(y, mo - 1, d, h, mi || 0) + Math.round((sec || 0) * 1000);
+}
+
+// date,time,microseconds,FLP ID,quality,latitude,longitude,error
+// 19/10/2026,04:20:48,286057,1,G,50.206,-1.228,10.62
+function plotLightningText(job, text) {
+    var props = job.feature.properties || {};
+    var [channel, t] = job.topic.split('/a/wis2/');
+    var line = /^(\d{2})\/(\d{2})\/(\d{4}),(\d{2}):(\d{2}):(\d{2}),(\d+),[^,]*,([^,]*),(-?[\d.]+),(-?[\d.]+)/;
+    var first = null;
+    text.split('\n').forEach((row, i) => {
+        var m = line.exec(row.trim());
+        if (!m) return;
+        var [, d, mo, y, h, mi, sec, micro, quality] = m;
+        var lat = Number(m[9]), lon = Number(m[10]);
+        if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return;
+        var time = Date.UTC(y, mo - 1, d, h, mi, sec) + Math.round(Number(micro) / 1000);
+        if (seenFlash(time, lat, lon)) return;
+        var rows = [
+            [4001, 'Year', Number(y), 'a'], [4002, 'Month', Number(mo), 'mon'], [4003, 'Day', Number(d), 'd'],
+            [4004, 'Hour', Number(h), 'h'], [4005, 'Minute', Number(mi), 'min'], [4006, 'Second', Number(sec) + Number(micro) / 1e6, 's'],
+            [5001, 'Latitude', lat, 'deg'], [6001, 'Longitude', lon, 'deg'],
+            [0, 'Quality', quality, ''],  // The CSV's error column has no stated unit, so it's left out
+        ];
+        var record = addPoint({
+            id: nextId++,
+            coords: [lon, lat],
+            topic: job.topic,
+            channel: channel,
+            centre: t.split('/', 1)[0],
+            path: t.slice(t.indexOf('/') + 1),
+            discipline: disciplineOf(t),
+            webcam: false,
+            decodedLayer: job.kind,
+            subLayer: 'cache-lightning',
+            observed: time,
+            props: { data_id: `${props.data_id}#${i}`, pubtime: props.pubtime, datetime: new Date(time).toISOString() },
+            links: job.feature.links || [],
+            notification: job.feature,
+            wsi: null,
+            format: 'text',
+            color: OBS_CLASSES.lightning.color,
+            source: null,
+            decoded: { subsets: 1, index: 0, rows: rows, profile: null },
+            born: Date.now(),
+        });
+        decodePlotted[job.kind]++;
+        if (!first) linkDecoded(job.key, first = record);
+    });
+}
 
 // Citypage forecasts come in English and French for each site and are reissued
 // through the day: keep one point per site, the latest, preferring English
