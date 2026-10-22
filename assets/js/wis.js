@@ -3123,7 +3123,11 @@ class QueueControl {
             <div class="queue-pane queue-pane-layers" data-pane="layers"></div>
             <div class="queue-pane queue-pane-messages" data-pane="messages" hidden>
                 <div class="queue-controls">
-                    <label class="form-check-label"><input type="checkbox" class="form-check-input queue-mapped"> On map only</label>
+                    <select class="form-select form-select-sm queue-mapped" aria-label="Messages to list">
+                        <option value="">All messages</option>
+                        <option value="on">On map</option>
+                        <option value="off">Not on map</option>
+                    </select>
                     <span class="queue-count"></span>
                     <button type="button" class="btn btn-sm btn-outline-secondary queue-pause">Pause</button>
                 </div>
@@ -3257,7 +3261,7 @@ function queueMessage(topic, message, record, feature) {
 }
 
 function matchesQueueFilter(entry) {
-    if (queueMapped && queueMapped.checked && !entry.record) return false;
+    if (queueMapped && queueMapped.value && (queueMapped.value === 'on') !== !!entry.record) return false;
     return matchesFilters(entry);
 }
 

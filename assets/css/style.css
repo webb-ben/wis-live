@@ -224,6 +224,9 @@
 .queue-controls .form-check-label {
   white-space: nowrap;
 }
+.queue-controls .queue-mapped {
+  width: auto;
+}
 .queue-topic {
   color: #666666;
   font-family: monospace;
