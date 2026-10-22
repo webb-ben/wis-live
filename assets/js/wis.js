@@ -250,11 +250,11 @@ const LAYER_GROUPS = [
             title: 'Past WIS2 core-data notifications for the view, from the Global Replay service (wis2-grep.weather.gc.ca). Starts once the decoder has loaded and fills in a few at a time, newest first; how far back is set by the slider below, and older points are fainter.' },
         // Replayed messages sorted like the cache's, each row shown once something arrives in it
         ...Object.entries(OBS_CLASSES).filter(([key]) => key !== 'satellite').map(([key, c]) => ({ key: `replay-${key}`, parent: 'replay', label: c.label, color: c.color, title: c.title })),
-        { key: 'airports', label: 'Airports worldwide (METAR)', color: OBS_CLASSES.station.color, optIn: true,
-            title: 'The latest METAR from every airport the Iowa Environmental Mesonet collects, refreshed every 20 minutes. The airports nearest the view load first.' },
+        { key: 'airports', label: 'METAR', color: OBS_CLASSES.station.color, optIn: true,
+            title: 'Airport weather reports: the latest METAR from every airport the Iowa Environmental Mesonet collects, refreshed every 20 minutes, nearest the view first. An airport that also reports through WIS2 is shown once, as the WIS2 station, with its METAR linked.' },
     ] },
 ];
-// Off at first: radar, the Global Replay, airports, WIS2-to-GTS, satellites, aircraft and ground-based GNSS (cache, GTS and replay), and aircraft tracks
+// Off at first: radar, the Global Replay, METAR, WIS2-to-GTS, satellites, aircraft and ground-based GNSS (cache, GTS and replay), and aircraft tracks
 const hiddenLayers = new Set(['radar', 'replay', 'cache-gnss', 'gts-gnss', 'replay-gnss', 'airports', 'wis2gts', 'satellite', 'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks']);
 // How far back the Global Replay reaches, set by a continuous slider on a log scale:
 // 12 hours ago at the left, 5 minutes at the right, so time runs left to right and
@@ -833,6 +833,7 @@ function addPoint(record) {
     if (!reduceMotion && !feature.properties.superseded && !record.external && !record.replay) pulses.push(feature);
     if (!seenLayers.has(feature.properties.layer)) showLegendRow(feature.properties.layer);
     if (feature.properties.sat) addSatelliteRow(feature.properties.sat);
+    indexTwin(record);
     // Other sources are bounded by their own station lists, and stay put
     if (record.external) return record;
 
@@ -896,6 +897,7 @@ function removePoint(record) {
     if (record.track) tracksDirty = true;
     if (record.fileKey) swathsDirty = true;
     records.delete(record.id);
+    unindexTwin(record);
     pools[poolOf(record)].delete(record.id);
     if (byDataId.get(record.props.data_id) === record) byDataId.delete(record.props.data_id);
     if (record.track && latestOnTrack.get(record.track) === record) latestOnTrack.delete(record.track);
@@ -1200,7 +1202,7 @@ function updateMapKey() {
     var shape = (kind, color, label) => `<span class="key-shape">${symbol(kind, color)}${label}</span>`;
     // Other sources are squares: the Global Replay (its rows are replay-station and so on) and airports
     var squares = [!hidden.includes('replay') && [...seenLayers].some((k) => k.startsWith('replay-')) && 'Replay',
-        drawn('airports') && 'Airports'].filter(Boolean);
+        drawn('airports') && 'METAR'].filter(Boolean);
     rows.push(`<div class="key-shapes">${shape('circle', '#adb5bd', 'WIS2')}${drawn('origin') ? shape('ring', COLORS.origin, 'WIS2 origin') : ''}${shape('diamond', '#adb5bd', 'GTS')}${squares.length ? shape('square', '#adb5bd', squares.join(', ')) : ''}<button type="button" class="btn btn-link btn-sm map-key-edit">Edit layers</button></div>`);
     mapKeyBody.innerHTML = rows.join('');
 }
@@ -1273,6 +1275,8 @@ function buildPopup(record) {
     var oscar = record.links.find((l) => l.rel == 'via' && /oscar/.test(l.href));
     var image = record.webcam && canonical;
     var wis2box = record.external ? null : wis2boxOf(record);
+    // A WIS2 or GTS station that is also an airport links its METAR
+    var twinAirport = twinKind(record) === 'station' ? twinsNear(record, 'airport')[0] : null;
 
     var div = document.createElement('div');
     div.className = 'pp';
@@ -1293,7 +1297,8 @@ function buildPopup(record) {
         <dl class="pp-meta">
             ${record.wsi ? `<dt>Station</dt><dd>${oscar
                 ? `<a href="${esc(oscar.href)}" target="_blank" rel="noopener">${esc(record.wsi)}</a>`
-                : esc(record.wsi)}</dd>` : ''}
+                : esc(record.wsi)}${twinAirport
+                ? ` · METAR <a href="#" class="pp-twin" title="The same station's latest METAR">${esc(twinAirport.wsi)}</a>` : ''}</dd>` : ''}
             ${props.datetime ? `<dt>Observed</dt><dd>${esc(new Date(props.datetime).toLocaleString())} (${timeAgo(props.datetime)})</dd>` : ''}
             <dt>Topic</dt><dd class="pp-mono">${esc(record.path)}</dd>
             ${wis2box ? `<dt>wis2box</dt><dd>${[wis2box.version && esc(wis2box.version), wis2box.url
@@ -1311,6 +1316,11 @@ function buildPopup(record) {
 
     var title = div.querySelector('.pp-title');
     title.textContent = record.wsi || props.metadata_id || record.centre;
+    var twin = div.querySelector('.pp-twin');
+    if (twin) twin.addEventListener('click', (e) => {
+        e.preventDefault();
+        openPopup(twinAirport);
+    });
 
     var actions = div.querySelector('.pp-actions');
     var out = div.querySelector('.pp-decoded');
@@ -3127,7 +3137,9 @@ function applyMapFilter() {
     var square = ['any', ['==', ['get', 'ext'], true], ['==', ['get', 'replay'], true]];
     map.setFilter('points', [...shown, ['!=', ['get', 'gateway'], true], ['!', square]]);
     map.setFilter('points-gts', [...shown, ['==', ['get', 'gateway'], true], ['!', square]]);
-    map.setFilter('points-ext', [...shown, square]);
+    // An airport with a twin station (WIS2 or GTS) is only drawn while every layer with one is off
+    var twinShown = ['all', ...TWIN_LAYERS.filter((l) => !effectiveHidden().includes(l)).map((l) => ['!=', ['get', `twin_${l}`], true])];
+    map.setFilter('points-ext', [...shown, square, twinShown]);
     map.setFilter('pulses', [...(tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr), ...notInSwath]);
     map.setFilter('swaths-fill', !coverage ? ['boolean', false] : expr.length > 1 ? expr : null);
     var trackExpr = coverage ? expr : [...expr, ['!=', ['get', 'kind'], 'satellite']];
@@ -5305,6 +5317,65 @@ function addSatelliteRow(key) {
         after = sibling;
     }
     after.after(row);
+}
+
+// ---------- One point per station: many airports also report as weather stations,
+// through WIS2 or the GTS (synops with WMO or WIGOS ids), with no identifier in
+// common with the METAR. An airport within TWIN_KM of such a station (WIS2 cache,
+// GTS or replay) is taken to be the same station: the station's point stays, the
+// airport square is hidden while any layer with a twin of it is on (see
+// applyMapFilter), and the station's popup links the METAR.
+const TWIN_KM = 2;
+const TWIN_CELL = 0.05;  // Grid cell in degrees (about 5 km), so lookups only look next door
+const TWIN_LAYERS = ['cache-station', 'gts-station', 'replay-station'];
+const twinGrid = new Map();  // cell -> Set of airport and station records
+
+function twinKind(record) {
+    if (record.subLayer === 'airports') return 'airport';
+    return !record.external && TWIN_LAYERS.includes(layerOf(record)) ? 'station' : null;
+}
+
+function twinCell([lon, lat], dx = 0, dy = 0) {
+    return `${Math.floor(lon / TWIN_CELL) + dx},${Math.floor(lat / TWIN_CELL) + dy}`;
+}
+
+// Records of a kind within TWIN_KM, nearest first
+function twinsNear(record, kind) {
+    var near = [];
+    for (var dx = -1; dx <= 1; dx++) {
+        for (var dy = -1; dy <= 1; dy++) {
+            for (var other of twinGrid.get(twinCell(record.coords, dx, dy)) || []) {
+                if (other === record || twinKind(other) !== kind || !records.has(other.id)) continue;
+                var km = distanceKm(record.coords, other.coords);
+                if (km <= TWIN_KM) near.push([km, other]);
+            }
+        }
+    }
+    return near.sort((a, b) => a[0] - b[0]).map(([, other]) => other);
+}
+
+// Flags an airport with each station layer that has a twin of it (twin_gts-station and so on)
+function markTwins(airport) {
+    var layers = new Set(twinsNear(airport, 'station').map(layerOf));
+    setFeatureProperties(airport, Object.fromEntries(TWIN_LAYERS.map((l) => [`twin_${l}`, layers.has(l)])));
+}
+
+function indexTwin(record) {
+    var kind = twinKind(record);
+    if (!kind || !record.coords) return;
+    var cell = twinCell(record.coords);
+    if (!twinGrid.has(cell)) twinGrid.set(cell, new Set());
+    twinGrid.get(cell).add(record);
+    if (kind === 'airport') markTwins(record);
+    else twinsNear(record, 'airport').forEach(markTwins);
+}
+
+// A station that goes may leave its airport with no twin, and so shown again
+function unindexTwin(record) {
+    var cell = record.coords && twinGrid.get(twinCell(record.coords));
+    if (!cell || !cell.delete(record)) return;
+    if (!cell.size) twinGrid.delete(twinCell(record.coords));
+    if (twinKind(record) === 'station') twinsNear(record, 'airport').forEach(markTwins);
 }
 
 // Adds a station from another source, or refreshes the readings of one already on the map
