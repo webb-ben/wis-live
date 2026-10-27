@@ -103,8 +103,10 @@ first, roughly in this order:
 After the core, each feature is its own section headed `// ---------- <name>`
 (grep for that to list them): GeoMet model fields, Environment Canada
 citypage forecasts, satellite reports, model forecasts and observation vs
-forecast, the Skew-T sounding viewer, URL state, weather radar, text SYNOPs,
-lightning, colouring by measured value, per-satellite layers, station
+forecast, the sounding viewer (Skew-T with a wind chart beside it) and
+radar wind profiles (time-height barbs, sharing `drawBarb` with the
+soundings), URL state, weather radar, text SYNOPs, lightning, colouring by
+measured value (origin stations too, via `isColourable`), per-satellite layers, station
 merging, Global Replay, the Global Discovery Catalogue (Datasets tab: rows
 are kept sorted by when each dataset was last seen, via `sortDatasetRows`),
 airport METARs, satellite coverage and tracks.

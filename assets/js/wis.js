@@ -184,13 +184,26 @@ const COLOURABLE = [...['station', 'ship', 'buoy'].flatMap((k) => [`cache-${k}`,
 const SATELLITE_LAYERS = ['cache-satellite', 'gts-satellite', 'replay-satellite'];
 const IS_STATION = ['in', ['get', 'layer'], ['literal', COLOURABLE]];
 
+// Origin copies are one layer; the kinds of them coloured like the stations above
+const ORIGIN_COLOURABLE = ['station', 'ship', 'buoy'];
+
 // The layers a measure colours (stations, ships and buoys unless it says satellites)
 function colourTargets(m) {
     return m && m.targets === 'satellite' ? SATELLITE_LAYERS : COLOURABLE;
 }
 
 function isColourTarget() {
-    return ['in', ['get', 'layer'], ['literal', colourTargets(METRICS[colourBy])]];
+    var m = METRICS[colourBy];
+    var target = ['in', ['get', 'layer'], ['literal', colourTargets(m)]];
+    if (m && m.targets === 'satellite') return target;
+    return ['any', target, ['all', ['==', ['get', 'layer'], 'origin'], ['in', ['get', 'kind'], ['literal', ORIGIN_COLOURABLE]]]];
+}
+
+// A record a measure colours, as isColourTarget decides for points on the map
+function isColourable(record, m) {
+    var layer = layerOf(record);
+    if (m && m.targets === 'satellite') return SATELLITE_LAYERS.includes(layer);
+    return COLOURABLE.includes(layer) || (layer === 'origin' && ORIGIN_COLOURABLE.includes(topicClass(record)));
 }
 const IS_AIRCRAFT = ['in', ['get', 'layer'], ['literal', ['cache-aircraft', 'gts-aircraft', 'replay-aircraft']]];
 const NO_VALUE_COLOR = '#ced4da';
@@ -818,6 +831,7 @@ function addPoint(record) {
             born: record.born,
             order: record.id,
             layer: layerOf(record),
+            kind: layerOf(record) === 'origin' ? topicClass(record) : '',  // So origin stations can be coloured
             format: record.format,
             channel: record.channel,
             centre: record.centre,
@@ -1214,22 +1228,22 @@ function updateMapKey() {
         rows.push('<div class="key-note"><span class="key-arrow">➜</span>Arrows point the way the wind blows; longer is stronger. Zoom in for more.</div>');
         rows.push(`<div class="key-note">${symbol('ring', m.stops[0][1])}Calm</div>`);
     }
-    rows.push('<div class="key-note">Pulses mark new arrivals; points fade over an hour</div>');
     // How each source is drawn: WIS2 cache circles, WIS2 origin rings, GTS diamonds
     // Each symbol stays on one line with its label
     var shape = (kind, color, label) => `<span class="key-shape">${symbol(kind, color)}${label}</span>`;
     // Other sources are squares: the Global Replay (its rows are replay-station and so on) and airports
     var squares = [!hidden.includes('replay') && [...seenLayers].some((k) => k.startsWith('replay-')) && 'Replay',
         drawn('airports') && 'METAR'].filter(Boolean);
+    rows.push(`<div class="key-shapes">${shape('circle', '#adb5bd', 'WIS2')}${drawn('origin') ? shape('ring', COLORS.origin, 'WIS2 origin') : ''}${shape('diamond', '#adb5bd', 'GTS')}${squares.length ? shape('square', '#adb5bd', squares.join(', ')) : ''}</div>`);
     // The Global Broker messages come from, and whether it is connected
     var broker = brokerState.host ? esc(brokerState.host) : '';
     rows.push(`<div class="key-note key-broker" title="WIS2 Global Broker the live messages come from"><span class="broker-dot broker-${brokerState.state}"></span>${{
         connected: `Broker: ${broker}`,
         reconnecting: `Reconnecting to ${broker}…`,
-        connecting: 'Connecting to a Global Broker…',
+        connecting: 'Connecting to a broker…',
         retrying: 'No Global Broker reachable, retrying…',
-    }[brokerState.state]}</div>`);
-    rows.push(`<div class="key-shapes">${shape('circle', '#adb5bd', 'WIS2')}${drawn('origin') ? shape('ring', COLORS.origin, 'WIS2 origin') : ''}${shape('diamond', '#adb5bd', 'GTS')}${squares.length ? shape('square', '#adb5bd', squares.join(', ')) : ''}<button type="button" class="btn btn-link btn-sm map-key-edit">Edit layers</button></div>`);
+    }[brokerState.state]}
+    <button type="button" class="btn btn-link btn-sm map-key-edit">Layers</button></div>`);
     mapKeyBody.innerHTML = rows.join('');
 }
 
@@ -2027,10 +2041,10 @@ function renderDecoded(out, title, result) {
     if (marine && marine.spectrum && marine.spectrum.peak) {
         renderWaveSpectrum(out.querySelector('.wave-spectrum'), marine.spectrum, { width: 300, height: 190 });
     }
-    if (winds) renderWindProfile(out.querySelector('.wind-profile'), winds, { width: 300, height: 260 });
+    if (winds) showWindProfiles(out.querySelector('.wind-profile'), result, winds);
     if (sounding) {
         var label = name || (title && title.textContent) || 'Sounding';
-        renderSkewT(out.querySelector('.sounding'), profile, { width: 300, height: 390, time: soundingTime(values) });
+        showSoundingCharts(out.querySelector('.sounding'), profile, { width: 300, height: 390, time: soundingTime(values) });
         out.querySelector('.sounding-expand').addEventListener('click', () => openSounding(profile, label, values));
     }
 }
@@ -2790,6 +2804,7 @@ function windProfileLevels(rows) {
         }
     }
     levels = levels.filter((l) => l.speed !== null).sort((a, b) => a.height - b.height);
+    levels.station = typeof station === 'number' ? station : null;  // So heights can be drawn above the site
     return levels.length >= 2 ? levels : null;
 }
 
@@ -2810,23 +2825,123 @@ function windProfileTiles(levels, values) {
     return tiles;
 }
 
-// Height up the side, wind speed across, and an arrow at each level pointing the
-// way the wind blows (as on the map)
-function renderWindProfile(container, levels, opts) {
+// Wind speed in 5 kt bins, calm to 60 kt and over, as on profiler time-height plots
+const BARB_COLORS = ['#000080', '#0000f0', '#0040ff', '#0090ff', '#00e5f8', '#4dffaa',
+    '#a4ff53', '#f0ff00', '#ffb000', '#ff5900', '#f00000', '#800000'];
+const KNOTS = 1.943844;  // Per m/s
+const WIND_PROFILE_COLUMNS = 12;  // Reports from one site drawn side by side...
+const WIND_PROFILE_HOURS = 24;    // ...within this long of the one opened
+
+function barbColor(knots) {
+    return BARB_COLORS[Math.max(0, Math.min(BARB_COLORS.length - 1, Math.floor(knots / 5)))];
+}
+
+// A wind barb with its base at 0,0 and its staff pointing north, to be rotated to
+// where the wind comes from: pennants 50 kt, barbs 10, half barbs 5. Null when calm.
+function barbShape(knots, L) {
+    var n = Math.round(knots / 5) * 5;
+    if (!n) return null;
+    var fx = L * 0.42, fy = L * 0.16, step = L * 0.19;
+    var lines = `M0 0V${-L}`, flags = '', y = -L;
+    for (; n >= 50; n -= 50, y += step * 1.5) flags += `M0 ${y}L${fx} ${y - fy}L0 ${y + step * 1.2}Z`;
+    for (; n >= 10; n -= 10, y += step) lines += `M0 ${y}L${fx} ${y - fy}`;
+    // A half barb on its own sits a step in from the tip, so it isn't read as a full one
+    if (n >= 5) lines += `M0 ${y === -L ? y + step : y}L${fx / 2} ${(y === -L ? y + step : y) - fy / 2}`;
+    return { lines, flags };
+}
+
+// Draws a barb coloured by speed at x, y; false when there's no direction to draw it in
+function drawBarb(parent, x, y, speed, dir, L) {
+    var knots = speed * KNOTS, color = barbColor(knots), shape = barbShape(knots, L);
+    if (!shape) {
+        svgEl('circle', { cx: x, cy: y, r: L * 0.18, class: 'windprof-barb', stroke: color }, parent);
+        return true;
+    }
+    if (dir === null) return false;
+    var g = svgEl('g', { transform: `translate(${x} ${y}) rotate(${dir})`, stroke: color, fill: color }, parent);
+    svgEl('path', { d: shape.lines, class: 'windprof-barb' }, g);
+    if (shape.flags) svgEl('path', { d: shape.flags, stroke: 'none' }, g);
+    return true;
+}
+
+function reportSite(rows) {
+    var get = (ids) => (rows.find((r) => ids.includes(r[0]) && typeof r[2] === 'number') || [])[2];
+    var lat = get([5001, 5002]), lon = get([6001, 6002]);
+    return lat === undefined || lon === undefined ? null : [lon, lat];
+}
+
+function profileTime(rows) {
+    var values = new Map();
+    rows.forEach(([id, , value, unit]) => { if (!values.has(id)) values.set(id, [value, unit]); });
+    var time = soundingTime(values);
+    return time ? time.getTime() : null;
+}
+
+// The report opened, with the site's other reports on the map either side of it in
+// time; those not decoded yet are downloaded and decoded one at a time
+function showWindProfiles(container, result, levels) {
+    var record = byDataId.get(result.key);
+    var opened = record ? observedAt(record) : Date.now();
+    var columns = [{ time: profileTime(result.rows) || opened, levels }];
+    var draw = (status) => renderWindProfile(container, columns, { width: 300, height: 280, status });
+    var site = reportSite(result.rows);
+    var others = !record ? [] : [...records.values()].filter((r) => r !== record && r.source
+            && (record.wsi ? r.wsi === record.wsi : r.topic === record.topic && distanceKm(r.coords, record.coords) < 5)
+            && Math.abs(observedAt(r) - opened) < WIND_PROFILE_HOURS * 3600e3)
+        .sort((a, b) => Math.abs(observedAt(a) - opened) - Math.abs(observedAt(b) - opened))
+        .slice(0, WIND_PROFILE_COLUMNS - 1);
+    draw(others.length ? 'Adding this site’s other reports…' : '');
+    if (!others.length) return;
+    (async () => {
+        for (var r of others) {
+            if (!container.isConnected) return;  // The popup moved on
+            try {
+                if (!r.decoded) {
+                    var data = await fetchData(r.source);
+                    if (!data.bufr) continue;
+                    var key = r.source.dataId || data.url;
+                    var decoded = JSON.parse(await callDecoder('decode_bufr', data.bytes, r.wsi || '', key));
+                    decoded.key = key;
+                    r.decoded = decoded;
+                    setFeatureProperties(r, metricValues(r));
+                }
+                var rows = r.decoded.rows || [];
+                var more = windProfileLevels(rows), where = reportSite(rows);
+                var time = profileTime(rows) || observedAt(r);
+                // A file can hold several sites; keep only this one's, once per time
+                if (!more || (site && where && distanceKm(site, where) > 5) || columns.some((c) => c.time === time)) continue;
+                columns.push({ time, levels: more });
+                if (container.isConnected) draw('Adding this site’s other reports…');
+            } catch (err) {
+                console.debug(`Could not decode a wind profile: ${err.message}`);
+            }
+        }
+        if (container.isConnected) draw('');
+    })();
+}
+
+// Time across and height up the side, with a barb at each level coloured by the
+// wind's speed, as profiler plots draw them
+function renderWindProfile(container, columns, opts) {
     var W = opts.width, H = opts.height;
-    var m = { top: 10, right: 40, bottom: 30, left: 40 };
+    var m = { top: 20, right: 42, bottom: 32, left: 34 };
     var w = W - m.left - m.right, h = H - m.top - m.bottom;
-    var lo = levels[0].height, hi = levels[levels.length - 1].height;
-    var pad = Math.max(100, (hi - lo) * 0.06);
-    var hMin = Math.max(0, lo - pad), hMax = hi + pad;
-    var vMax = Math.max(...levels.map((l) => l.speed));
-    var vStep = [2, 5, 10, 20].find((s) => vMax / s <= 5) || 25;
-    vMax = Math.max(vStep, Math.ceil(vMax * 1.05 / vStep) * vStep);
-    var x = (v) => m.left + w * v / vMax;
+    columns = columns.slice().sort((a, b) => a.time - b.time);
+    // Heights above the site, where every report says how high it is
+    var agl = columns.every((c) => c.levels.station !== null);
+    var above = (c, l) => l.height - (agl ? c.levels.station : 0);
+    var heights = columns.flatMap((c) => c.levels.map((l) => above(c, l)));
+    var lo = Math.min(...heights), hi = Math.max(...heights);
+    var hMin = Math.min(0, lo), hMax = hi + Math.max(100, (hi - lo) * 0.04);
     var y = (z) => m.top + h * (hMax - z) / (hMax - hMin);
+    var t0 = columns[0].time, t1 = columns[columns.length - 1].time;
+    var tPad = columns.length > 1 ? (t1 - t0) / (columns.length - 1) / 2 : 30 * 60e3;
+    var x = (t) => m.left + w * (t - t0 + tPad) / (t1 - t0 + 2 * tPad);
+    var L = Math.max(10, Math.min(18, w / columns.length * 0.85));  // Barb length
+    var hhmm = (t) => new Date(t).toISOString().slice(11, 16);
 
     var svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: 'windprof', role: 'img',
-        'aria-label': 'Wind speed and direction by height' });
+        'aria-label': 'Wind barbs by height and time, coloured by speed' });
     svgEl('rect', { x: 0, y: 0, width: W, height: H, class: 'skewt-bg' }, svg);
 
     // Height lines every 0.1 to 2 km, whichever gives no more than six
@@ -2836,42 +2951,64 @@ function renderWindProfile(container, levels, opts) {
         svgEl('text', { x: m.left - 5, y: y(z) + 3.5, class: 'skewt-label', 'text-anchor': 'end' }, svg).textContent = Number((z / 1000).toFixed(2));
     }
     svgEl('text', { x: 0, y: 0, class: 'skewt-label', 'text-anchor': 'middle',
-        transform: `translate(9 ${m.top + h / 2}) rotate(-90)` }, svg).textContent = 'Height (km)';
-    for (var v = 0; v <= vMax; v += vStep) {
-        if (v) svgEl('line', { x1: x(v), x2: x(v), y1: m.top, y2: m.top + h, class: 'skewt-isobar' }, svg);
-        svgEl('text', { x: x(v), y: m.top + h + 14, class: 'skewt-label', 'text-anchor': 'middle' }, svg).textContent = v;
-    }
-    svgEl('text', { x: m.left + w / 2, y: H - 3, class: 'skewt-axis', 'text-anchor': 'middle' }, svg).textContent = 'Wind speed (m/s)';
+        transform: `translate(9 ${m.top + h / 2}) rotate(-90)` }, svg).textContent = agl ? 'Height (km above site)' : 'Height (km)';
+    svgEl('text', { x: m.left + w / 2, y: H - 3, class: 'skewt-axis', 'text-anchor': 'middle' }, svg).textContent = 'Time (UTC)';
 
-    svgEl('polyline', { points: levels.map((l) => `${x(l.speed)},${y(l.height)}`).join(' '), class: 'windprof-line' }, svg);
-    levels.forEach((l) => svgEl('circle', { cx: x(l.speed), cy: y(l.height), r: 2.5, class: 'windprof-dot' }, svg));
+    // A line up each report's time, labelled where there's room
+    var lastLabel = -Infinity;
+    for (var c of columns) {
+        var cx = x(c.time);
+        svgEl('line', { x1: cx, x2: cx, y1: m.top, y2: m.top + h, class: 'windprof-col' }, svg);
+        if (cx - lastLabel < 32) continue;
+        lastLabel = cx;
+        svgEl('text', { x: cx, y: m.top + h + 13, class: 'skewt-label', 'text-anchor': 'middle' }, svg).textContent = hhmm(c.time);
+    }
+
+    // Barbs from the base of each column's line, thinned where levels crowd
+    var drawn = [];
+    for (var col of columns) {
+        var lastY = Infinity;
+        for (var l of col.levels) {
+            var cy = y(above(col, l));
+            if (lastY - cy < L * 0.3) continue;
+            var bx = x(col.time);
+            if (!drawBarb(svg, bx, cy, l.speed, l.dir, L)) continue;
+            lastY = cy;
+            drawn.push({ col, l, x: bx, y: cy });
+        }
+    }
     svgEl('rect', { x: m.left, y: m.top, width: w, height: h, class: 'skewt-frame' }, svg);
 
-    // Arrows to the right of the chart, thinned so they don't overlap
-    var ax = m.left + w + m.right / 2, lastY = Infinity;
-    for (var l of levels) {
-        if (l.dir === null || lastY - y(l.height) < 11) continue;
-        lastY = y(l.height);
-        svgEl('path', { d: 'M0 6V-5M-3.5 -1.5L0 -5.5L3.5 -1.5', class: 'windprof-arrow',
-            transform: `translate(${ax} ${lastY}) rotate(${(l.dir + 180) % 360})` }, svg);
+    // The colour scale, in knots
+    var sx = m.left + w + 8, kMax = BARB_COLORS.length * 5;
+    var sy = (k) => m.top + h * (1 - k / kMax);
+    BARB_COLORS.forEach((c, i) => svgEl('rect', { x: sx, y: sy((i + 1) * 5), width: 8, height: h / BARB_COLORS.length + 0.5, fill: c }, svg));
+    svgEl('rect', { x: sx, y: m.top, width: 8, height: h, class: 'skewt-frame' }, svg);
+    for (var k = 0; k <= kMax; k += 10) {
+        svgEl('text', { x: sx + 11, y: sy(k) + 3.5, class: 'skewt-label' }, svg).textContent = k;
     }
+    svgEl('text', { x: sx + 4, y: m.top - 6, class: 'skewt-label', 'text-anchor': 'middle' }, svg).textContent = 'kt';
 
-    // Hover readout for the level nearest the pointer
-    var guide = svgEl('line', { x1: m.left, x2: m.left + w, y1: -10, y2: -10, class: 'skewt-guide' }, svg);
-    var readout = svgEl('text', { x: m.left + w - 4, y: m.top + 12, class: 'skewt-readout', 'text-anchor': 'end' }, svg);
+    // Hover readout for the barb nearest the pointer; otherwise how loading is going
+    var guide = svgEl('circle', { cx: -20, cy: -20, r: L * 0.35, class: 'windprof-guide' }, svg);
+    var readout = svgEl('text', { x: m.left, y: 13, class: 'skewt-readout' }, svg);
+    readout.textContent = opts.status || '';
     svg.addEventListener('mousemove', (e) => {
+        if (!drawn.length) return;
         var box = svg.getBoundingClientRect();
-        var py = (e.clientY - box.top) * H / box.height;
-        var near = levels.reduce((a, b) => (Math.abs(y(b.height) - py) < Math.abs(y(a.height) - py) ? b : a));
-        guide.setAttribute('y1', y(near.height));
-        guide.setAttribute('y2', y(near.height));
-        readout.textContent = [`${(near.height / 1000).toFixed(2)} km`, `${near.speed} m/s`,
-            near.dir !== null ? `from ${Math.round(near.dir)}°` : null, near.w !== null ? `w ${near.w} m/s` : null].filter(Boolean).join(' · ');
+        var px = (e.clientX - box.left) * W / box.width, py = (e.clientY - box.top) * H / box.height;
+        var near = drawn.reduce((a, b) => (Math.hypot(b.x - px, b.y - py) < Math.hypot(a.x - px, a.y - py) ? b : a));
+        guide.setAttribute('cx', near.x);
+        guide.setAttribute('cy', near.y);
+        var l = near.l;
+        readout.textContent = [hhmm(near.col.time), `${(above(near.col, l) / 1000).toFixed(2)} km`,
+            `${Math.round(l.speed * KNOTS)} kt (${l.speed} m/s)`, l.dir !== null ? `from ${Math.round(l.dir)}°` : null,
+            l.w !== null ? `w ${l.w} m/s` : null].filter(Boolean).join(' · ');
     });
     svg.addEventListener('mouseleave', () => {
-        guide.setAttribute('y1', -10);
-        guide.setAttribute('y2', -10);
-        readout.textContent = '';
+        guide.setAttribute('cx', -20);
+        guide.setAttribute('cy', -20);
+        readout.textContent = opts.status || '';
     });
 
     container.replaceChildren(svg);
@@ -2981,6 +3118,112 @@ function renderSkewT(container, profile, opts) {
     container.replaceChildren(svg);
 }
 
+// The levels of a sounding with a wind, lowest first, each with a height: as reported,
+// interpolated in log pressure between levels that report one, or else from the
+// standard atmosphere
+function soundingWinds(profile) {
+    var sorted = profile.slice().sort((a, b) => b[0] - a[0]);
+    var known = sorted.filter((l) => l[1] !== null);
+    var height = (l) => {
+        if (l[1] !== null) return l[1];
+        var below = known.filter((k) => k[0] > l[0]).pop(), above = known.find((k) => k[0] < l[0]);
+        if (below && above) return below[1] + (above[1] - below[1]) * Math.log(below[0] / l[0]) / Math.log(below[0] / above[0]);
+        return 44330 * (1 - Math.pow(l[0] / 1013.25, 0.1903));
+    };
+    return sorted.filter((l) => l[5] !== null).map((l) => ({ p: l[0], z: height(l), speed: l[5], dir: l[4] }));
+}
+
+// Winds up through a sounding: speed, and the direction they come from, against
+// height, with barbs coloured by speed (as on the wind profiles) down the right
+function renderSoundingWind(container, profile, opts) {
+    var W = opts.width, H = opts.height;
+    var m = { top: 40, right: 6, bottom: 34, left: 40 };
+    var w = W - m.left - m.right, h = H - m.top - m.bottom;
+    var strip = 28, gap = 10, pw = (w - strip - gap * 2) / 2;
+    var levels = soundingWinds(profile);
+    var zMin = Math.min(0, ...levels.map((l) => l.z)), zMax = Math.max(...levels.map((l) => l.z));
+    zMax += Math.max(200, (zMax - zMin) * 0.03);
+    var y = (z) => m.top + h * (zMax - z) / (zMax - zMin);
+    var vMax = Math.max(...levels.map((l) => l.speed));
+    var vStep = [5, 10, 20, 25].find((s) => vMax / s <= 4) || 50;
+    vMax = Math.max(vStep, Math.ceil(vMax * 1.05 / vStep) * vStep);
+    var ax = m.left, bx = m.left + pw + gap;
+    var xs = (v) => ax + pw * v / vMax;
+    var xd = (d) => bx + pw * d / 360;
+    var barbX = bx + pw + gap + strip / 2;
+
+    var svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: 'skewt', role: 'img',
+        'aria-label': 'Wind speed and direction against height' });
+    svgEl('rect', { x: 0, y: 0, width: W, height: H, class: 'skewt-bg' }, svg);
+    svgEl('text', { x: m.left + w / 2, y: 15, class: 'skewt-title', 'text-anchor': 'middle' }, svg).textContent = 'Winds';
+    if (opts.time) {
+        var stamp = opts.time.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+        svgEl('text', { x: m.left + w / 2, y: 30, class: 'skewt-title', 'text-anchor': 'middle' }, svg).textContent = stamp;
+    }
+
+    // Height lines across both panels, labelled in km
+    var zStep = [500, 1000, 2000, 5000].find((s) => (zMax - zMin) / s <= 8) || 10000;
+    for (var z = Math.ceil(zMin / zStep) * zStep; z <= zMax; z += zStep) {
+        [ax, bx].forEach((x0) => svgEl('line', { x1: x0, x2: x0 + pw, y1: y(z), y2: y(z), class: 'skewt-isobar' }, svg));
+        svgEl('text', { x: m.left - 6, y: y(z) + 3.5, class: 'skewt-label', 'text-anchor': 'end' }, svg).textContent = z / 1000;
+    }
+    svgEl('text', { x: 0, y: 0, class: 'skewt-axis', 'text-anchor': 'middle',
+        transform: `translate(11 ${m.top + h / 2}) rotate(-90)` }, svg).textContent = 'Height (km)';
+    var tick = (x, text) => {
+        svgEl('line', { x1: x, x2: x, y1: m.top, y2: m.top + h, class: 'skewt-isobar' }, svg);
+        svgEl('text', { x, y: m.top + h + 14, class: 'skewt-label', 'text-anchor': 'middle' }, svg).textContent = text;
+    };
+    for (var v = 0; v <= vMax; v += vStep) tick(xs(v), v);
+    for (var d = 0; d <= 360; d += 90) tick(xd(d), d);
+    svgEl('text', { x: ax + pw / 2, y: H - 4, class: 'skewt-axis', 'text-anchor': 'middle' }, svg).textContent = 'Speed (m/s)';
+    svgEl('text', { x: bx + pw / 2, y: H - 4, class: 'skewt-axis', 'text-anchor': 'middle' }, svg).textContent = 'From (°)';
+    svgEl('text', { x: barbX, y: H - 4, class: 'skewt-axis', 'text-anchor': 'middle' }, svg).textContent = 'kt';
+
+    // Speed as a line; direction as dots, since it wraps from 360° to 0°
+    svgEl('polyline', { points: levels.map((l) => `${xs(l.speed).toFixed(1)},${y(l.z).toFixed(1)}`).join(' '), class: 'sounding-speed' }, svg);
+    levels.filter((l) => l.dir !== null).forEach((l) => svgEl('circle', { cx: xd(l.dir), cy: y(l.z), r: 1.8, class: 'sounding-dir' }, svg));
+    [ax, bx].forEach((x0) => svgEl('rect', { x: x0, y: m.top, width: pw, height: h, class: 'skewt-frame' }, svg));
+
+    // Barbs, thinned so they don't overlap
+    var lastY = Infinity;
+    for (var l of levels) {
+        var cy = y(l.z);
+        if (lastY - cy < 9) continue;
+        if (drawBarb(svg, barbX, cy, l.speed, l.dir, 13)) lastY = cy;
+    }
+
+    // Hover readout
+    var readout = svgEl('text', { x: m.left + 4, y: m.top + h - 6, class: 'skewt-readout' }, svg);
+    var guide = svgEl('line', { x1: m.left, x2: m.left + w, class: 'skewt-guide', visibility: 'hidden' }, svg);
+    svg.addEventListener('mousemove', (e) => {
+        var box = svg.getBoundingClientRect();
+        var py = (e.clientY - box.top) * H / box.height;
+        var level = levels.reduce((a, b) => (Math.abs(y(b.z) - py) < Math.abs(y(a.z) - py) ? b : a));
+        guide.setAttribute('y1', y(level.z));
+        guide.setAttribute('y2', y(level.z));
+        guide.setAttribute('visibility', 'visible');
+        readout.textContent = [`${(level.z / 1000).toFixed(2)} km`, `${formatPressure(level.p)} hPa`,
+            `${level.speed.toFixed(0)} m/s (${Math.round(level.speed * KNOTS)} kt)`,
+            level.dir !== null ? `from ${Math.round(level.dir)}°` : null].filter(Boolean).join(' · ');
+    });
+    svg.addEventListener('mouseleave', () => {
+        guide.setAttribute('visibility', 'hidden');
+        readout.textContent = '';
+    });
+
+    container.replaceChildren(svg);
+}
+
+// The Skew-T with the winds beside it, when the sounding has winds to show; they
+// wrap one above the other where there isn't room (as in a popup)
+function showSoundingCharts(container, profile, opts) {
+    container.innerHTML = '<div class="sounding-pair"><div></div><div></div></div>';
+    var [skewT, wind] = container.querySelectorAll('.sounding-pair > div');
+    renderSkewT(skewT, profile, opts);
+    if (soundingWinds(profile).length >= 2) renderSoundingWind(wind, profile, opts);
+    else wind.remove();
+}
+
 // Launch time from the report's year/month/day/hour/minute, or null
 function soundingTime(values) {
     var time = [4001, 4002, 4003, 4004, 4005].map((id) => values.get(id) && values.get(id)[0]);
@@ -3024,8 +3267,10 @@ function openSounding(profile, label, values) {
         </div>`;
     dialog.querySelector('strong').textContent = label;
     dialog.querySelector('.btn-close').addEventListener('click', () => dialog.close());
-    var width = Math.min(480, window.innerWidth - 48);
-    renderSkewT(dialog.querySelector('.sounding-chart'), profile, { width: width, height: Math.round(width * 1.3), time: launched });
+    // Two charts abreast where the window allows, else each the full width
+    var room = window.innerWidth - 48;
+    var width = room >= 700 ? Math.min(440, (room - 16) / 2) : Math.min(480, room);
+    showSoundingCharts(dialog.querySelector('.sounding-chart'), profile, { width: width, height: Math.round(width * 1.3), time: launched });
     dialog.showModal();
 }
 
@@ -5418,7 +5663,8 @@ function setColourBy(key, legend) {
             kept, ['get', 'color'],
             NO_VALUE_COLOR];
         swathColor = ['case', ['all', target, ['has', `m_${key}`]], scaled, ['get', 'color']];
-        originRing = ['case', kept, ['get', 'color'], NO_VALUE_COLOR];
+        // Origin points are rings, so the ring itself takes the value's colour
+        originRing = color;
         // Outlines follow the same scale, darkened
         var outline = ['case',
             ['all', target, ['has', `m_${key}`]], ['interpolate', ['linear'], value, ...m.stops.flatMap(([v, c]) => [v, darken(c)])],
@@ -5471,24 +5717,23 @@ function setColourBy(key, legend) {
 function showColourStatus(legend) {
     var el = legend.querySelector('.legend-colour-status');
     if (colourBy === 'kind') { el.hidden = true; return; }
-    var targets = colourTargets(METRICS[colourBy]);
-    var points = [...records.values()].filter((r) => targets.includes(layerOf(r)));
+    var points = [...records.values()].filter((r) => isColourable(r, METRICS[colourBy]));
     var known = points.filter((r) => r.feature && r.feature.properties[`m_${colourBy}`] !== undefined).length;
     el.hidden = false;
     var waiting = metricQueue.length + replayMetricQueue.length;
     el.textContent = `${known.toLocaleString()} of ${points.length.toLocaleString()} have a value` + (waiting ? ` · decoding ${waiting.toLocaleString()}` : '');
 }
 
-// Cache stations, ships and buoys without decoded data, newest first
+// Cache and origin stations, ships and buoys without decoded data, newest first
 function queueStationDecodes() {
-    var waiting = [...pools.wis2.values()].filter((r) => !r.decoded && r.source && !r.metricTried && COLOURABLE.includes(layerOf(r)));
+    var waiting = [...pools.wis2.values()].filter((r) => !r.decoded && r.source && !r.metricTried && isColourable(r));
     metricQueue = waiting.filter((r) => !r.replay).slice(-METRIC_QUEUE_MAX);
     replayMetricQueue = waiting.filter((r) => r.replay).sort((a, b) => b.born - a.born).slice(0, REPLAY_DECODE_MAX);
     pumpStationDecodes();
 }
 
 function queueStationDecode(record) {
-    if (colourBy === 'kind' || record.decoded || !record.source || !COLOURABLE.includes(layerOf(record))) return;
+    if (colourBy === 'kind' || record.decoded || !record.source || !isColourable(record)) return;
     if (record.replay) {
         // Replays arrive newest first, so once the queue is full the rest are older still
         if (replayMetricQueue.length < REPLAY_DECODE_MAX) replayMetricQueue.push(record);
