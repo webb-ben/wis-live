@@ -582,21 +582,20 @@
   height: auto;
   font-family: system-ui, sans-serif;
 }
-.windprof-line {
-  fill: none;
-  stroke: #f59f00;  /* OBS_CLASSES.radarwind */
-  stroke-width: 1.6;
-  stroke-linejoin: round;
+.windprof-col {
+  stroke: #000000;
+  stroke-width: 0.7;
 }
-.windprof-dot {
-  fill: #f59f00;
-}
-.windprof-arrow {
+.windprof-barb {
   fill: none;
-  stroke: #212529;
-  stroke-width: 1.5;
+  stroke-width: 1.2;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+.windprof-guide {
+  fill: none;
+  stroke: #495057;
+  stroke-dasharray: 2 2;
 }
 .pp-section {
   margin: 10px 0 4px;
@@ -802,6 +801,15 @@
 .skewt-dewpoint {
   stroke: #008a2e;
 }
+.sounding-speed {
+  fill: none;
+  stroke: #e41a1c;
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+}
+.sounding-dir {
+  fill: #1f4fb4;
+}
 .skewt-title {
   fill: #000000;
   font-size: 13px;
@@ -831,8 +839,23 @@
   stroke: #ffffff;
   stroke-width: 3px;
 }
+.sounding-pair {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 16px;
+  align-items: flex-start;
+}
+/* Charts are drawn at a fixed width, narrower than the info panel; centre them in it */
+.hourly,
+.forecast,
+.wavespec,
+.windprof,
+.skewt {
+  margin-inline: auto;
+}
 .sounding-dialog {
-  max-width: min(960px, calc(100vw - 24px));
+  max-width: min(1400px, calc(100vw - 24px));
   padding: 16px;
   border: none;
   border-radius: 10px;
@@ -1562,7 +1585,14 @@
 }
 /* The Global Broker in use: green connected, amber reconnecting, grey connecting, red retrying */
 .key-broker {
-  overflow-wrap: anywhere;
+  margin-top: 2px;
+}
+.key-broker-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .broker-dot {
   flex: none;
@@ -1582,9 +1612,11 @@
   background-color: #e03131;
 }
 .map-key-edit {
-  margin-left: auto;
+  flex: none;
+  margin-left: 8px;
   padding: 0;
   font-size: 11px;
+  white-space: nowrap;
 }
 .legend-dot.key-diamond {
   border-radius: 2px;
