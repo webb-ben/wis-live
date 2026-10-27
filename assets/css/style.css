@@ -573,6 +573,31 @@
   fill: #1c9bb5;
   fill-opacity: 0.75;
 }
+.wind-profile {
+  margin-bottom: 8px;
+}
+.windprof {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  font-family: system-ui, sans-serif;
+}
+.windprof-line {
+  fill: none;
+  stroke: #f59f00;  /* OBS_CLASSES.radarwind */
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+}
+.windprof-dot {
+  fill: #f59f00;
+}
+.windprof-arrow {
+  fill: none;
+  stroke: #212529;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .pp-section {
   margin: 10px 0 4px;
   color: #6c757d;
@@ -1534,6 +1559,27 @@
   align-items: center;
   margin-right: 8px;
   white-space: nowrap;
+}
+/* The Global Broker in use: green connected, amber reconnecting, grey connecting, red retrying */
+.key-broker {
+  overflow-wrap: anywhere;
+}
+.broker-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background-color: #adb5bd;
+}
+.broker-dot.broker-connected {
+  background-color: #2f9e44;
+}
+.broker-dot.broker-reconnecting {
+  background-color: #f59f00;
+}
+.broker-dot.broker-retrying {
+  background-color: #e03131;
 }
 .map-key-edit {
   margin-left: auto;

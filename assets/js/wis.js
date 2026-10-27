@@ -33,16 +33,17 @@ const COLORS = {
 // Colours follow the domain (land green, sky cyan, sea navy, buoy orange,
 // space purple, alert red) and are spread across hues to stay distinct
 const OBS_CLASSES = {
-    station: { label: 'Weather stations', color: '#2f9e44', title: 'Surface observations from fixed stations' },
-    upperair: { label: 'Upper-air soundings', color: '#7048e8', title: 'Profiles through the atmosphere (radiosondes, TEMP)' },
-    aircraft: { label: 'Aircraft', color: '#15aabf', title: 'Observations from aircraft (AMDAR, AIREP)' },
     ship: { label: 'Ships', color: '#1c3d8f', title: 'Observations from ships and other mobile stations' },
+    aircraft: { label: 'Aircraft', color: '#15aabf', title: 'Observations from aircraft (AMDAR, AIREP)' },
+    station: { label: 'Weather stations', color: '#2f9e44', title: 'Surface observations from fixed stations' },
+    radarwind: { label: 'Radar wind profiles', color: '#f59f00', title: 'Winds at heights above a radar, measured from the ground by wind profilers and other radars (e.g. weather radar VAD winds), not soundings' },
     buoy: { label: 'Buoys and floats', color: '#f76707', title: 'Ocean observations from buoys, floats and moorings' },
     gnss: { label: 'Ground-based GNSS', color: '#a5662b', title: 'Atmospheric path delays and water vapour from GNSS receivers (e.g. E-GVAP), not weather observations' },
-    satellite: { label: 'Space-based (satellites)', color: '#9c36b5', title: 'Observations from satellites (winds, radiances, occultations)' },
-    lightning: { label: 'Lightning', color: '#e64980', cacheOnly: true, title: 'Lightning flashes located by detection networks (e.g. the Met Office LEELA network)' },
-    webcam: { label: 'Webcam images', color: '#fcc419', cacheOnly: true, title: 'Camera images' },
     warning: { label: 'Warnings and alerts', color: '#e03131', cacheOnly: true, title: 'Weather warnings, alerts and advisories, including CAP messages and Environment Canada city forecasts' },
+    lightning: { label: 'Lightning', color: '#e64980', cacheOnly: true, title: 'Lightning flashes located by detection networks (e.g. the Met Office LEELA network)' },
+    satellite: { label: 'Space-based (satellites)', color: '#9c36b5', title: 'Observations from satellites (winds, radiances, occultations)' },
+    upperair: { label: 'Upper-air soundings', color: '#7048e8', title: 'Profiles through the atmosphere from balloons (radiosondes, TEMP, PILOT)' },
+    webcam: { label: 'Webcam images', color: '#fcc419', cacheOnly: true, title: 'Camera images' },
     other: { label: 'Other', color: '#868e96', title: 'Anything not in the groups above' },
 };
 // ---------- Model fields from ECCC GeoMet (WMS). GeoMet serves its default time,
@@ -209,6 +210,7 @@ let metricBusy = false;
 const GTS_OPT_IN = ['aircraft'];
 // Satellites from every source share one row (and one row per satellite) in their
 // own section. Each report keeps its source's layer (SATELLITE_LAYERS), which sits under that row.
+const OWN_SECTION = ['satellite'];
 
 // Legend rows, grouped by source; each can be switched on and off. Rows other
 // than opt-in ones stay hidden until a point of that kind has arrived. Opt-in
@@ -218,15 +220,15 @@ const LAYER_GROUPS = [
         { key: 'origin', label: 'Origin', color: COLORS.origin, ring: true },
         { key: 'obs', label: 'Cache', color: OBS_CLASSES.station.color, optIn: true },  // Always listed
         // Sublayers sit under their parent and are off whenever it is off
-        ...Object.entries(OBS_CLASSES).filter(([key]) => key !== 'satellite').map(([key, c]) => ({ key: `cache-${key}`, parent: 'obs', label: c.label, color: c.color, title: c.title })),
+        ...Object.entries(OBS_CLASSES).filter(([key]) => !OWN_SECTION.includes(key)).map(([key, c]) => ({ key: `cache-${key}`, parent: 'obs', label: c.label, color: c.color, title: c.title })),
         { key: 'radar', parent: 'obs', label: 'Weather radar', color: COLORS.radar,
-            title: 'Reflectivity from the lowest scan of each radar volume (ODIM HDF5) in the cache, drawn around the radar; downloaded only while this is on' },
+            title: 'Reflectivity from the lowest scan of each radar volume (ODIM HDF5) in the cache (e.g. RMI, Belgium), drawn around the radar; downloaded only while this is on' },
     ] },
     { key: 'gts', label: 'GTS gateways', subtitle: 'Bulletins relayed with the GTS', layers: [
         { key: 'gts', label: 'GTS-to-WIS2 (decode required)', color: COLORS.gts, optIn: true,
             title: 'Download and decode the BUFR bulletins republished from the GTS into WIS2 (centres ending -gts-to-wis2), and plot the reports inside' },
         // Each decoded report is sorted by the identifiers it carries (see reportClass)
-        ...Object.entries(OBS_CLASSES).filter(([key, c]) => !c.cacheOnly && key !== 'satellite').flatMap(([key, c]) => [
+        ...Object.entries(OBS_CLASSES).filter(([key, c]) => !c.cacheOnly && !OWN_SECTION.includes(key)).flatMap(([key, c]) => [
             { key: `gts-${key}`, parent: 'gts', label: c.label, color: c.color,
                 title: c.title + (GTS_OPT_IN.includes(key) ? '; downloaded only while this is on' : '') },
             // Aircraft can be drawn as flight paths; shown once the Aircraft row is
@@ -249,7 +251,7 @@ const LAYER_GROUPS = [
         { key: 'replay', label: 'Global Replay', color: COLORS.replay, optIn: true,
             title: 'Past WIS2 core-data notifications for the view, from the Global Replay service (wis2-grep.weather.gc.ca). Starts once the decoder has loaded and fills in a few at a time, newest first; how far back is set by the slider below, and older points are fainter.' },
         // Replayed messages sorted like the cache's, each row shown once something arrives in it
-        ...Object.entries(OBS_CLASSES).filter(([key]) => key !== 'satellite').map(([key, c]) => ({ key: `replay-${key}`, parent: 'replay', label: c.label, color: c.color, title: c.title })),
+        ...Object.entries(OBS_CLASSES).filter(([key]) => !OWN_SECTION.includes(key)).map(([key, c]) => ({ key: `replay-${key}`, parent: 'replay', label: c.label, color: c.color, title: c.title })),
         { key: 'airports', label: 'METAR', color: OBS_CLASSES.station.color, optIn: true,
             title: 'Airport weather reports: the latest METAR from every airport the Iowa Environmental Mesonet collects, refreshed every 20 minutes, nearest the view first. An airport that also reports through WIS2 is shown once, as the WIS2 station, with its METAR linked.' },
     ] },
@@ -355,7 +357,12 @@ const map = new maplibregl.Map({
                 attribution: 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ',
             },
         },
-        layers: [{ id: 'basemap', type: 'raster', source: 'basemap' }],
+        // The background is the globe's surface while tiles load; with the basemap off both go,
+        // leaving the globe see-through
+        layers: [
+            { id: 'background', type: 'background', paint: { 'background-color': '#e4e9ee' } },
+            { id: 'basemap', type: 'raster', source: 'basemap' },
+        ],
         projection: { type: projection },
         // Atmosphere halo around the globe, fading out as you zoom in, and a
         // pale sky above the horizon when the map is tilted
@@ -888,7 +895,9 @@ function topicClass(record) {
     // Before upper air: the Met Office publishes under upper-air-observations/lightning
     if (/lightning/.test(t)) return 'lightning';
     if (/aircraft|amdar|aviation/.test(t)) return 'aircraft';
-    if (/upper-air|radiosonde|\/temp(\/|$)|\/pilot(\/|$)|profil/.test(t)) return 'upperair';
+    // Before upper air: wind profilers publish under upper-air-observations too
+    if (/profil/.test(t)) return 'radarwind';
+    if (/upper-air|radiosonde|\/temp(\/|$)|\/pilot(\/|$)/.test(t)) return 'upperair';
     if (/gnss|gpsmet|\/ztd(\/|$)/.test(t)) return 'gnss';
     if (/\/ship/.test(t)) return 'ship';
     if (/buoy|float|argo|glider|mooring|tide-gauge|ocean\//.test(t)) return 'buoy';
@@ -1097,7 +1106,10 @@ function selectQueueTab(tab) {
     document.querySelectorAll('.queue-tabs button').forEach((b) => b.setAttribute('aria-selected', b.dataset.tab === tab));
     document.querySelectorAll('.queue-pane').forEach((pane) => { pane.hidden = pane.dataset.pane !== tab; });
     if (tab === 'messages') flushQueue();
-    if (tab === 'datasets' && !gdcSearched) searchCatalogue();
+    if (tab === 'datasets') {
+        if (!gdcSearched) searchCatalogue();
+        else sortDatasetRows();
+    }
 }
 
 // The key on the map. On top, how points are styled: what they're coloured by,
@@ -1209,6 +1221,14 @@ function updateMapKey() {
     // Other sources are squares: the Global Replay (its rows are replay-station and so on) and airports
     var squares = [!hidden.includes('replay') && [...seenLayers].some((k) => k.startsWith('replay-')) && 'Replay',
         drawn('airports') && 'METAR'].filter(Boolean);
+    // The Global Broker messages come from, and whether it is connected
+    var broker = brokerState.host ? esc(brokerState.host) : '';
+    rows.push(`<div class="key-note key-broker" title="WIS2 Global Broker the live messages come from"><span class="broker-dot broker-${brokerState.state}"></span>${{
+        connected: `Broker: ${broker}`,
+        reconnecting: `Reconnecting to ${broker}…`,
+        connecting: 'Connecting to a Global Broker…',
+        retrying: 'No Global Broker reachable, retrying…',
+    }[brokerState.state]}</div>`);
     rows.push(`<div class="key-shapes">${shape('circle', '#adb5bd', 'WIS2')}${drawn('origin') ? shape('ring', COLORS.origin, 'WIS2 origin') : ''}${shape('diamond', '#adb5bd', 'GTS')}${squares.length ? shape('square', '#adb5bd', squares.join(', ')) : ''}<button type="button" class="btn btn-link btn-sm map-key-edit">Edit layers</button></div>`);
     mapKeyBody.innerHTML = rows.join('');
 }
@@ -1948,9 +1968,11 @@ function renderDecoded(out, title, result) {
     // Satellite profiles (e.g. radio occultations) aren't radiosonde soundings, so no Skew-T for them
     var sounding = profile && profile.length >= 2 && !values.has(1007);
     var satellite = values.has(1007);
-    var marine = sounding ? null : marineDetails(result.rows, satellite);
-    var tiles = sounding ? soundingTiles(profile) : satellite ? satelliteTiles(result.rows, values) : [];
-    for (var key of sounding || satellite ? [] : KEY_VALUES) {
+    // Wind profilers and radar VAD winds: heights without pressure
+    var winds = !sounding && !satellite ? windProfileLevels(result.rows) : null;
+    var marine = sounding || winds ? null : marineDetails(result.rows, satellite);
+    var tiles = sounding ? soundingTiles(profile) : satellite ? satelliteTiles(result.rows, values) : winds ? windProfileTiles(winds, values) : [];
+    for (var key of sounding || satellite || winds ? [] : KEY_VALUES) {
         var id = key.ids.find((i) => values.has(i));
         if (!id || (key.unless && key.unless.some((i) => values.has(i)))) continue;
         if (key.wind) {
@@ -1977,6 +1999,7 @@ function renderDecoded(out, title, result) {
         ${sounding ? `
         <div class="sounding"></div>
         <button type="button" class="btn btn-sm btn-outline-secondary sounding-expand">Expand sounding</button>` : ''}
+        ${winds ? '<div class="wind-profile"></div>' : ''}
         ${tiles.length ? `<div class="pp-tiles">${tiles.join('')}</div>` : ''}
         ${marine ? `
         <div class="pp-section">${satellite ? 'Sea state from space' : marine.ship ? 'Sea state and ship' : 'Sea state'}</div>
@@ -2004,6 +2027,7 @@ function renderDecoded(out, title, result) {
     if (marine && marine.spectrum && marine.spectrum.peak) {
         renderWaveSpectrum(out.querySelector('.wave-spectrum'), marine.spectrum, { width: 300, height: 190 });
     }
+    if (winds) renderWindProfile(out.querySelector('.wind-profile'), winds, { width: 300, height: 260 });
     if (sounding) {
         var label = name || (title && title.textContent) || 'Sounding';
         renderSkewT(out.querySelector('.sounding'), profile, { width: 300, height: 390, time: soundingTime(values) });
@@ -2745,6 +2769,112 @@ function soundingTiles(profile) {
 
 function formatPressure(p) {
     return p >= 10 ? Math.round(p) : p.toFixed(1);
+}
+
+// Wind profiles from wind profilers and weather radars (VAD): winds at
+// heights above the site, without pressure, so no Skew-T. Each level starts at a
+// height: above sea level (007007), geopotential (007009) or above the station (007006).
+// Levels without a wind are dropped. Returns null when fewer than two are left.
+function windProfileLevels(rows) {
+    var station = (rows.find((r) => r[0] === 7030 || r[0] === 7001) || [])[2];
+    var levels = [], level = null;
+    for (var [id, , value] of rows) {
+        if ([7007, 7009, 7006].includes(id)) {
+            var height = typeof value === 'number' ? value + (id === 7006 ? station || 0 : 0) : null;
+            level = height === null ? null : { height, dir: null, speed: null, w: null };
+            if (level) levels.push(level);
+        } else if (level && typeof value === 'number') {
+            if (id === 11001 && level.dir === null) level.dir = value;
+            if (id === 11002 && level.speed === null) level.speed = value;
+            if (id === 11006 && level.w === null) level.w = value;
+        }
+    }
+    levels = levels.filter((l) => l.speed !== null).sort((a, b) => a.height - b.height);
+    return levels.length >= 2 ? levels : null;
+}
+
+function windProfileTiles(levels, values) {
+    var tile = (label, text) => `<div class="pp-tile"><div>${esc(label)}</div><strong>${esc(text)}</strong></div>`;
+    var km = (m) => `${(m / 1000).toFixed(1)} km`;
+    var windy = levels.reduce((a, b) => (b.speed > a.speed ? b : a));
+    var equipment = { 3: 'Radar', 6: 'Wind profiler' }[(values.get(2003) || [])[0]];
+    var mhz = (values.get(2121) || [])[0];
+    var tiles = [];
+    if (equipment) tiles.push(tile('Measured by', typeof mhz === 'number' ? `${equipment}, ${Math.round(mhz / 1e6)} MHz` : equipment));
+    tiles.push(tile('Heights', `${km(levels[0].height)} to ${km(levels[levels.length - 1].height)}`));
+    tiles.push(tile('Strongest wind', `${windy.speed.toFixed(0)} m/s at ${km(windy.height)}`));
+    // A time period (004025) after "time averaged" (008021 = 2) is how long the winds are averaged over
+    var period = (values.get(4025) || [])[0];
+    if ((values.get(8021) || [])[0] === 2 && typeof period === 'number' && period) tiles.push(tile('Averaged over', `${Math.abs(period)} min`));
+    tiles.push(tile('Levels', levels.length.toLocaleString()));
+    return tiles;
+}
+
+// Height up the side, wind speed across, and an arrow at each level pointing the
+// way the wind blows (as on the map)
+function renderWindProfile(container, levels, opts) {
+    var W = opts.width, H = opts.height;
+    var m = { top: 10, right: 40, bottom: 30, left: 40 };
+    var w = W - m.left - m.right, h = H - m.top - m.bottom;
+    var lo = levels[0].height, hi = levels[levels.length - 1].height;
+    var pad = Math.max(100, (hi - lo) * 0.06);
+    var hMin = Math.max(0, lo - pad), hMax = hi + pad;
+    var vMax = Math.max(...levels.map((l) => l.speed));
+    var vStep = [2, 5, 10, 20].find((s) => vMax / s <= 5) || 25;
+    vMax = Math.max(vStep, Math.ceil(vMax * 1.05 / vStep) * vStep);
+    var x = (v) => m.left + w * v / vMax;
+    var y = (z) => m.top + h * (hMax - z) / (hMax - hMin);
+
+    var svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: 'windprof', role: 'img',
+        'aria-label': 'Wind speed and direction by height' });
+    svgEl('rect', { x: 0, y: 0, width: W, height: H, class: 'skewt-bg' }, svg);
+
+    // Height lines every 0.1 to 2 km, whichever gives no more than six
+    var zStep = [100, 200, 250, 500, 1000, 2000].find((s) => (hMax - hMin) / s <= 6) || 5000;
+    for (var z = Math.ceil(hMin / zStep) * zStep; z <= hMax; z += zStep) {
+        svgEl('line', { x1: m.left, x2: m.left + w, y1: y(z), y2: y(z), class: 'skewt-isobar' }, svg);
+        svgEl('text', { x: m.left - 5, y: y(z) + 3.5, class: 'skewt-label', 'text-anchor': 'end' }, svg).textContent = Number((z / 1000).toFixed(2));
+    }
+    svgEl('text', { x: 0, y: 0, class: 'skewt-label', 'text-anchor': 'middle',
+        transform: `translate(9 ${m.top + h / 2}) rotate(-90)` }, svg).textContent = 'Height (km)';
+    for (var v = 0; v <= vMax; v += vStep) {
+        if (v) svgEl('line', { x1: x(v), x2: x(v), y1: m.top, y2: m.top + h, class: 'skewt-isobar' }, svg);
+        svgEl('text', { x: x(v), y: m.top + h + 14, class: 'skewt-label', 'text-anchor': 'middle' }, svg).textContent = v;
+    }
+    svgEl('text', { x: m.left + w / 2, y: H - 3, class: 'skewt-axis', 'text-anchor': 'middle' }, svg).textContent = 'Wind speed (m/s)';
+
+    svgEl('polyline', { points: levels.map((l) => `${x(l.speed)},${y(l.height)}`).join(' '), class: 'windprof-line' }, svg);
+    levels.forEach((l) => svgEl('circle', { cx: x(l.speed), cy: y(l.height), r: 2.5, class: 'windprof-dot' }, svg));
+    svgEl('rect', { x: m.left, y: m.top, width: w, height: h, class: 'skewt-frame' }, svg);
+
+    // Arrows to the right of the chart, thinned so they don't overlap
+    var ax = m.left + w + m.right / 2, lastY = Infinity;
+    for (var l of levels) {
+        if (l.dir === null || lastY - y(l.height) < 11) continue;
+        lastY = y(l.height);
+        svgEl('path', { d: 'M0 6V-5M-3.5 -1.5L0 -5.5L3.5 -1.5', class: 'windprof-arrow',
+            transform: `translate(${ax} ${lastY}) rotate(${(l.dir + 180) % 360})` }, svg);
+    }
+
+    // Hover readout for the level nearest the pointer
+    var guide = svgEl('line', { x1: m.left, x2: m.left + w, y1: -10, y2: -10, class: 'skewt-guide' }, svg);
+    var readout = svgEl('text', { x: m.left + w - 4, y: m.top + 12, class: 'skewt-readout', 'text-anchor': 'end' }, svg);
+    svg.addEventListener('mousemove', (e) => {
+        var box = svg.getBoundingClientRect();
+        var py = (e.clientY - box.top) * H / box.height;
+        var near = levels.reduce((a, b) => (Math.abs(y(b.height) - py) < Math.abs(y(a.height) - py) ? b : a));
+        guide.setAttribute('y1', y(near.height));
+        guide.setAttribute('y2', y(near.height));
+        readout.textContent = [`${(near.height / 1000).toFixed(2)} km`, `${near.speed} m/s`,
+            near.dir !== null ? `from ${Math.round(near.dir)}°` : null, near.w !== null ? `w ${near.w} m/s` : null].filter(Boolean).join(' · ');
+    });
+    svg.addEventListener('mouseleave', () => {
+        guide.setAttribute('y1', -10);
+        guide.setAttribute('y2', -10);
+        readout.textContent = '';
+    });
+
+    container.replaceChildren(svg);
 }
 
 function svgEl(name, attrs, parent) {
@@ -3896,6 +4026,7 @@ function renderQueueRow(entry) {
 const hosts = [
     'wss://globalbroker.meteo.fr:443/mqtt',
     'wss://globalbroker.inmet.gov.br:443/mqtt',
+    'wss://wis2broker.globaldata.nws.noaa.gov:443/mqtt',
 ];
 const topics = ['origin/a/wis2/#', 'cache/a/wis2/#'];
 const options = {
@@ -3909,9 +4040,19 @@ const options = {
 
 let client = null;
 
+// Which Global Broker the page is on, shown in the map key: connecting (racing them all),
+// connected, reconnecting (to the same one), or retrying (none could be reached)
+let brokerState = { state: 'connecting', host: null };
+
+function setBrokerState(state, host) {
+    brokerState = { state, host: host === undefined ? brokerState.host : host };
+    updateMapKey();
+}
+
 // Race all brokers and keep the first one that connects and subscribes
 function connectFastest() {
     console.log('Connecting mqtt client');
+    setBrokerState('connecting', null);
     let failures = 0;
 
     hosts.forEach((host) => {
@@ -3925,6 +4066,7 @@ function connectFastest() {
             candidate.end(true);
             if (!client && ++failures === hosts.length) {
                 console.log('All brokers failed, retrying...');
+                setBrokerState('retrying', null);
                 setTimeout(connectFastest, 5000);
             }
         };
@@ -3943,8 +4085,13 @@ function connectFastest() {
                     var feature = parseMessage(topic, message);
                     queueMessage(topic, message, feature && onMessage(topic, feature), feature);
                 });
-                client.on('reconnect', () => console.log('Reconnecting...'));
+                client.on('reconnect', () => {
+                    console.log('Reconnecting...');
+                    setBrokerState('reconnecting');
+                });
+                client.on('connect', () => setBrokerState('connected'));  // After a reconnect
                 console.log(`Connected to ${host}!`);
+                setBrokerState('connected', new URL(host).host);
             });
         });
 
@@ -4017,7 +4164,6 @@ window.addEventListener('resize', () => { panelPadding = ''; updateMapPadding();
 connectFastest();
 
 const ignoredTopics = [
-    '/a/wis2/de-dwd-gts-to-wis2/',
     '/a/wis2/ca-eccc-msc/data/core/weather/prediction',
 ];
 const regex = /(?!WIGOS_)(\d-\d+-\d-[\d0-9a-zA-Z]+)/g;
@@ -4518,7 +4664,7 @@ function callDecoderOn(lane, fn, ...args) {
 // file and plot each report.
 // GTS-to-WIS2: every BUFR bulletin series (T1 = I); reports are sorted into
 // sublayers once decoded
-const GTS_TOPIC = /\/a\/wis2\/[^/]+-gts-to-wis2\/data\/core\/I\//;
+const GTS_TOPIC = /\/a\/wis2\/[^/]+-gts-to-wis2\/data\//;
 // WIS2-to-GTS: whatever BUFR those centres pass on (any size limit the link states applies)
 const WIS2_GTS_TOPIC = /\/a\/wis2\/[^/]+-wis2-to-gts\//;
 // Files: any other small cached file without geometry that may be BUFR, plus
@@ -4691,7 +4837,7 @@ function plotDecodedReport(job, rows, profile, index, total) {
     var [channel, t] = job.topic.split('/a/wis2/');
     // GTS reports join GTS-to-WIS2's groups and decoded cache files join Cache's
     // The bulletin header says what it holds for aircraft (IUA) and satellites (IN, IE)
-    var cls = GATEWAY_AIRCRAFT.test(job.topic) ? 'aircraft' : GATEWAY_SATELLITE.test(job.topic) ? 'satellite' : reportClass(values, profile);
+    var cls = GATEWAY_AIRCRAFT.test(job.topic) ? 'aircraft' : GATEWAY_SATELLITE.test(job.topic) ? 'satellite' : reportClass(values, profile, rows);
     // Upper-air bulletins (IU…: TEMP, PILOT, wind profiler) carry station numbers, but aren't weather stations
     if (cls === 'station' && GATEWAY_UPPER_AIR.test(job.topic)) cls = 'upperair';
     // WIS2 topics say what they hold (…/moored-buoys-and-moorings), which beats guessing from
@@ -5639,16 +5785,41 @@ async function loadReplay() {
 // is, shown in a point's popup (looked up by its notification's metadata_id), and a
 // search over every dataset in the sidebar's Datasets tab
 // The three Global Discovery Catalogues hold the same records. Searches, lookups and links
-// go to the one nearest the visitor (going by their time zone, see guessCentre), and on
-// to the next if it can't be reached.
+// go to the one that answered a small request fastest (see rankGdcs), and on to the next
+// if it can't be reached.
 const GDCS = [
-    { name: 'ECCC, Canada', api: 'https://wis2-gdc.weather.gc.ca/collections/wis2-discovery-metadata/items', at: [-75.7, 45.4] },
-    { name: 'CMA, China', api: 'https://gdc.wis.cma.cn/collections/wis2-discovery-metadata/items', at: [116.4, 39.9] },
-    { name: 'DWD, Germany', api: 'https://wis2.dwd.de/gdc/collections/wis2-discovery-metadata/items', at: [8.8, 50.1] },
-].sort((a, b) => distanceKm(guessCentre(), a.at) - distanceKm(guessCentre(), b.at));
+    { name: 'ECCC, Canada', api: 'https://wis2-gdc.weather.gc.ca/collections/wis2-discovery-metadata/items' },
+    { name: 'CMA, China', api: 'https://gdc.wis.cma.cn/collections/wis2-discovery-metadata/items' },
+    { name: 'DWD, Germany', api: 'https://wis2.dwd.de/gdc/collections/wis2-discovery-metadata/items' },
+];
+const GDC_PROBE_MS = 8000;
+let gdcRanked = null;
 
-// A catalogue request (a path under the records), from the nearest catalogue that answers
+// Time one record from each catalogue, all at once, and order GDCS by how long each took
+// (those that failed or timed out last). Done once, on the first catalogue request.
+function rankGdcs() {
+    if (!gdcRanked) {
+        gdcRanked = Promise.all(GDCS.map(async (gdc) => {
+            var abort = new AbortController();
+            var timer = setTimeout(() => abort.abort(), GDC_PROBE_MS);
+            var start = performance.now();
+            try {
+                var response = await fetch(`${gdc.api}?f=json&limit=1`, { signal: abort.signal });
+                await response.arrayBuffer();
+                gdc.ms = response.ok ? performance.now() - start : Infinity;
+            } catch (err) {
+                gdc.ms = Infinity;
+            } finally {
+                clearTimeout(timer);
+            }
+        })).then(() => { GDCS.sort((a, b) => a.ms - b.ms); });
+    }
+    return gdcRanked;
+}
+
+// A catalogue request (a path under the records), from the fastest catalogue that answers
 async function gdcFetch(path, options) {
+    await rankGdcs();
     var lastError = null;
     for (var gdc of GDCS) {
         try {
@@ -5866,6 +6037,7 @@ function initCatalogue(sidebar) {
         typing = setTimeout(() => searchCatalogue(), 400);
     });
     gdcEls.more.addEventListener('click', () => searchCatalogue(gdcNext));
+    setInterval(() => sortDatasetRows(), 5000);
 }
 
 async function searchCatalogue(next) {
@@ -5887,11 +6059,8 @@ async function searchCatalogue(next) {
         var response = url ? await fetch(url, { signal: abort.signal }) : await gdcFetch(`?${params}`, { signal: abort.signal });
         if (!response.ok) throw new Error(`it answered ${response.status}`);
         var page = await response.json();
-        // Datasets seen arriving first, most recent first; the rest in the catalogue's order
-        var seen = (d) => datasetSeen.get(d.id) || 0;
-        (page.features || []).map(describeDataset)
-            .map((d, i) => [d, i]).sort(([a, i], [b, j]) => seen(b) - seen(a) || i - j)
-            .forEach(([d]) => gdcEls.list.appendChild(datasetRow(d)));
+        (page.features || []).map(describeDataset).forEach((d) => gdcEls.list.appendChild(datasetRow(d)));
+        sortDatasetRows(true);
         var shown = gdcEls.list.children.length, total = page.numberMatched;
         gdcEls.baseStatus = (!shown ? 'No datasets match'
             : `${shown.toLocaleString()}${total !== undefined ? ` of ${total.toLocaleString()}` : ''} datasets`)
@@ -5925,11 +6094,29 @@ function filterDatasetRows() {
     gdcEls.status.textContent = gdcEls.baseStatus + (hidden ? ` · ${hidden.toLocaleString()} hidden by the filters` : '');
 }
 
+// Datasets seen arriving first, most recently seen at the top; the rest in the catalogue's
+// order. Kept up as notifications arrive, but not while the pointer or focus is in the list,
+// so a row doesn't move out from under a click.
+function sortDatasetRows(force) {
+    if (!gdcEls || !gdcEls.list.children.length) return;
+    if (!force && (gdcEls.pane.hidden || gdcEls.list.matches(':hover, :focus-within'))) return;
+    var rows = [...gdcEls.list.children];
+    rows.forEach(showDatasetSeen);
+    var seen = (row) => datasetSeen.get(row.gdc.id) || 0;
+    var sorted = rows.slice().sort((a, b) => seen(b) - seen(a) || a.order - b.order);
+    if (sorted.some((row, i) => row !== rows[i])) gdcEls.list.append(...sorted);
+}
+
+function showDatasetSeen(row) {
+    var seen = datasetSeen.get(row.gdc.id);
+    row.querySelector('.gdc-seen').textContent = seen ? `seen ${timeAgo(new Date(seen).toISOString())}` : 'not seen yet';
+}
+
 function datasetRow(d) {
     var row = document.createElement('li');
     row.className = 'gdc-row';
     row.gdc = d;
-    var seen = datasetSeen.get(d.id);
+    row.order = gdcEls.list.children.length;  // Its place in the catalogue's answer (pages are appended)
     row.innerHTML = `
         <a class="gdc-title" target="_blank" rel="noopener" title="Open the dataset's record in the catalogue"></a>
         <div class="gdc-meta"><strong></strong>${policyBadge(d.policy)}<span class="gdc-seen"></span>${d.channel
@@ -5939,7 +6126,7 @@ function datasetRow(d) {
     title.href = gdcPage(d.id);
     title.textContent = d.title;
     row.querySelector('.gdc-meta strong').textContent = d.centre;
-    row.querySelector('.gdc-seen').textContent = seen ? `seen ${timeAgo(new Date(seen).toISOString())}` : 'not seen yet';
+    showDatasetSeen(row);
     var show = row.querySelector('.gdc-show'), note = row.querySelector('.gdc-note');
     if (show) show.addEventListener('click', () => showDatasetOnMap(d, (text) => {
         note.hidden = false;
@@ -6457,11 +6644,17 @@ function trackRoute(reports) {
 
 // Which GTS sublayer a report belongs to, from the identifiers it carries.
 // Order matters: satellite and aircraft reports can also carry station-like ids.
-function reportClass(values, profile) {
+function reportClass(values, profile, rows) {
     if (values.has(1007)) return 'satellite';
     if (values.has(1008) || values.has(1006) || values.has(7010) || values.has(8009) || values.has(8004)) return 'aircraft';
+    // Wind profilers are 6 in code table 0 02 003. Radar (3) only says some radar measured the
+    // winds (e.g. weather radar VAD winds, which Norway sends as IUPD bulletins), so it counts
+    // only with winds at heights
+    if (values.get(2003) === 6 || (values.get(2003) === 3 && rows && windProfileLevels(rows))) return 'radarwind';
     if (profile && profile.length >= 2) return 'upperair';
-    // Wind profilers and PILOTs name their equipment, even with no levels to report
+    // Radars that sent no winds this time (e.g. Clee Hill's IUPA, Hannover's IUPD) aren't soundings either
+    if (values.get(2003) === 3) return 'other';
+    // PILOTs name their equipment, even with no levels to report
     if (values.has(2003)) return 'upperair';
     if (values.has(1011)) return 'ship';
     if (values.has(1087) || values.has(1005) || values.has(2149)) return 'buoy';
