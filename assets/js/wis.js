@@ -909,8 +909,9 @@ function topicClass(record) {
     // Before upper air: the Met Office publishes under upper-air-observations/lightning
     if (/lightning/.test(t)) return 'lightning';
     if (/aircraft|amdar|aviation/.test(t)) return 'aircraft';
-    // Before upper air: wind profilers publish under upper-air-observations too
-    if (/profil/.test(t)) return 'radarwind';
+    // Before upper air: wind profilers publish under upper-air-observations too.
+    // Ocean profilers (e.g. ocean/.../drifting-ocean-profilers, Argo floats) are buoys
+    if (/profil/.test(t) && !/\/ocean\//.test(t)) return 'radarwind';
     if (/upper-air|radiosonde|\/temp(\/|$)|\/pilot(\/|$)/.test(t)) return 'upperair';
     if (/gnss|gpsmet|\/ztd(\/|$)/.test(t)) return 'gnss';
     if (/\/ship/.test(t)) return 'ship';
