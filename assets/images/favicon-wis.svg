@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- A cloud across the globe: white and charcoal, with one orange observation point -->
+  <defs><clipPath id="globe"><circle cx="256" cy="256" r="170"/></clipPath></defs>
+  <rect width="512" height="512" rx="96" fill="#17191c"/>
+  <circle cx="256" cy="256" r="170" fill="#ffffff"/>
+  <g clip-path="url(#globe)" fill="none" stroke="#17191c" stroke-width="12" opacity="0.18">
+    <ellipse cx="256" cy="256" rx="70" ry="170"/>
+    <path d="M86 196H426M86 316H426"/>
+  </g>
+  <path d="M120 300a50 50 0 0 1 4-100 74 74 0 0 1 140-14 58 58 0 0 1 106 30 42 42 0 0 1 12 84z" fill="#17191c"
+    transform="translate(256 248) scale(0.8) translate(-251 -240)"/>
+  <circle cx="300" cy="364" r="26" fill="#ff7a1a"/>
+</svg>
