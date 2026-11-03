@@ -109,7 +109,9 @@ soundings), URL state, weather radar, text SYNOPs, lightning, colouring by
 measured value (origin stations too, via `isColourable`), per-satellite layers, station
 merging, Global Replay, the Global Discovery Catalogue (Datasets tab: rows
 are kept sorted by when each dataset was last seen, via `sortDatasetRows`),
-airport METARs, satellite coverage and tracks.
+airport METARs, satellite coverage (each swath file is packed into `swathFiles`
+and adds to running per-cell totals, not points; a report becomes a record only
+when clicked, via `swathRecord`) and tracks.
 
 Topic structure: `<channel>/a/wis2/<centre>/data/core/<discipline>/...`, where
 channel is `origin` or `cache`.

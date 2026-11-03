@@ -12,7 +12,7 @@ String.prototype.hexDecode = function(){
 // Map
 const MAX_POINTS = 100000;        // Oldest points are dropped beyond this...
 const MAX_DECODED_POINTS = 30000;  // ...with reports decoded from files capped separately so they can't crowd out the rest,
-const MAX_SATELLITE_POINTS = 100000;  // ...and satellites apart again, so passes stay up long enough to build coverage
+const MAX_SATELLITE_POINTS = 100000;  // ...and satellite points apart again: small files, and swaths while coverage is off (see SWATH_FILES_MAX)
 const SATELLITE_ROWS_MAX = 200;  // Decoded values kept per satellite report (IASI has thousands of channels)
 const FADE_MS = 4 * 60 * 60 * 1000;  // Points fade over four hours
 const PULSE_MS = 1600;           // Length of the ripple on new arrivals
@@ -751,7 +751,9 @@ map.on('load', () => {
     map.on('click', 'tracks', (e) => {
         // Points take precedence where both are under the pointer
         if (nearestPoint(e.point)) return;
-        openPopup(records.get(e.features[0].properties.recordId || e.features[0].properties.lastId));
+        var p = e.features[0].properties;
+        var file = p.swathFile && swathFiles.get(p.swathFile);
+        openPopup(file ? swathRecord(file, p.swathIndex) : records.get(p.recordId || p.lastId));
     });
     map.on('mousemove', 'tracks', (e) => {
         if (map.queryRenderedFeatures(e.point, { layers: POINT_LAYERS }).length) return;
@@ -840,7 +842,6 @@ function addPoint(record) {
             via: record.decodedLayer || '',
             gateway: isGateway(record),
             sat: satelliteKey(record),
-            inSwath: !!record.inSwath,
             ext: !!record.external,
             replay: !!record.replay,
             outline: darken(record.color),
@@ -854,7 +855,8 @@ function addPoint(record) {
     if (record.track && record.track.startsWith('aircraft:')) feature.properties.tracked = true;
     record.feature = feature;
     toAdd.push(feature);
-    if (!reduceMotion && !feature.properties.superseded && !record.external && !record.replay) pulses.push(feature);
+    // Swath reports drawn as points arrive a whole file at a time, too many to pulse
+    if (!reduceMotion && !feature.properties.superseded && !record.external && !record.replay && !record.swath) pulses.push(feature);
     if (!seenLayers.has(feature.properties.layer)) showLegendRow(feature.properties.layer);
     if (feature.properties.sat) addSatelliteRow(feature.properties.sat);
     indexTwin(record);
@@ -922,7 +924,6 @@ function topicClass(record) {
 
 function removePoint(record) {
     if (record.track) tracksDirty = true;
-    if (record.fileKey) swathsDirty = true;
     records.delete(record.id);
     unindexTwin(record);
     pools[poolOf(record)].delete(record.id);
@@ -944,13 +945,12 @@ function flushPoints() {
         toAdd = [];
         toRemove = [];
         toUpdate = [];
+        mapKeyDirty = true;
     }
     var now = Date.now();
-    if (swathsDirty && now - swathsBuilt > TRACK_REBUILD_MS) {
-        swathsDirty = false;
-        swathsBuilt = now;
-        map.getSource('swaths').setData({ type: 'FeatureCollection', features: buildSwaths() });
-    }
+    // The key lists what is drawn, so it follows points arriving and going, at most every few seconds
+    if (mapKeyDirty && now - mapKeyBuilt > TRACK_REBUILD_MS) updateMapKey();
+    if (now - swathsBuilt > SWATH_FLUSH_MS) flushSwaths(now);
     if (tracksDirty && now - tracksBuilt > TRACK_REBUILD_MS) {
         tracksDirty = false;
         tracksBuilt = now;
@@ -1153,6 +1153,9 @@ class MapKey {
     }
 }
 let mapKeyBody = null;
+let mapKeyHtml = '';
+let mapKeyDirty = false;
+let mapKeyBuilt = 0;
 let stylePanel = null;
 
 // Color by and the options that go with it, at the top of the map key
@@ -1196,10 +1199,42 @@ function buildStylePanel() {
     return stylePanel;
 }
 
+// Layers with a point drawn on the map now: switched on, and passing the same
+// filters as applyMapFilter. The decode options a report came through (via) count too
+function drawnLayers() {
+    var hidden = new Set(effectiveHidden());
+    var test = (key, active, matches) => !active || (filterModes[key] === 'hide' ? !matches : matches);
+    var m = colouredOnly && METRICS[colourBy];
+    var out = new Set();
+    var passes = (p) => !(hidden.has(p.layer) || hidden.has(p.via) || hidden.has(p.sat) || (p.replay && hidden.has('replay')))
+        && test('centres', filters.centres.size, filters.centres.has(p.centre))
+        && test('format', filters.format, p.format === filters.format)
+        && test('disciplines', filters.disciplines.size, filters.disciplines.has(p.discipline) || (filters.disciplines.has('space-weather') && p.space))
+        && test('text', filters.text, p.topic.includes(filters.text));
+    var mark = (p) => {
+        out.add(p.layer);
+        if (p.via) out.add(p.via);
+    };
+    for (var record of records.values()) {
+        var p = record.feature.properties;
+        if (out.has(p.layer) && (!p.via || out.has(p.via))) continue;
+        if (!passes(p) || (m && !(isColourable(record, m) && p[`m_${colourBy}`] != null))) continue;
+        mark(p);
+    }
+    if (!hidden.has('sat-coverage')) {
+        for (var file of swathFiles.values()) {
+            if (passes(file.props) && !(m && !(isColourable(file.template, m) && file.means[colourBy] != null))) mark(file.props);
+        }
+    }
+    return out;
+}
+
 function updateMapKey() {
     if (!mapKeyBody) return;
     var hidden = effectiveHidden();
-    var drawn = (key) => seenLayers.has(key) && !hidden.includes(key);
+    var shown = drawnLayers();
+    var drawn = (key) => shown.has(key);
+    var drawnAny = (prefix) => [...shown].some((k) => k.startsWith(prefix));
     var symbol = (shape, color) => `<span class="legend-dot${shape === 'diamond' ? ' key-diamond' : ''}${shape === 'square' ? ' key-square' : ''}${shape === 'ring' ? ' legend-ring' : ''}" style="--color: ${color}; --outline: ${darken(color)}"></span>`;
     var rows = [];
     var m = METRICS[colourBy];
@@ -1209,11 +1244,11 @@ function updateMapKey() {
         if (!colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}No value, or not measured</div>`);
     } else {
         for (var [key, c] of Object.entries(OBS_CLASSES)) {
-            var shapes = [drawn(`cache-${key}`) && 'circle', drawn(`gts-${key}`) && 'diamond'].filter(Boolean);
+            var shapes = [drawn(`cache-${key}`) && 'circle', drawn(`gts-${key}`) && 'diamond', drawn(`replay-${key}`) && 'square'].filter(Boolean);
             if (shapes.length) rows.push(`<div class="key-row">${shapes.map((shape) => symbol(shape, c.color)).join('')}${esc(c.label)}</div>`);
         }
     }
-    if (drawn('satellite') && !hidden.includes('sat-coverage') && swathMembers.size) {
+    if (SATELLITE_LAYERS.some(drawn) && !hidden.includes('sat-coverage') && swathCells.size) {
         rows.push(`<div class="key-row"><span class="legend-dot key-swath"></span>Satellite coverage${colourBy === 'cloudAmount' ? ', darker = cloudier' : ''}</div>`);
     }
     if (drawn('wis2gts')) rows.push(`<div class="key-row">${symbol('diamond', COLORS.wis2gts)}WIS2-to-GTS</div>`);
@@ -1221,7 +1256,7 @@ function updateMapKey() {
         rows.push(`<div class="key-title">Radar reflectivity (dBZ)</div>`);
         rows.push(`<div class="legend-scale"><span>5</span><i style="background: linear-gradient(90deg, ${RADAR_COLORS.map(([, c]) => c).join(', ')})"></i><span>65</span></div>`);
     }
-    if (!hidden.includes('gts-tracks') && seenLayers.has('gts-aircraft')) {
+    if (!hidden.includes('gts-tracks') && drawn('gts-aircraft')) {
         rows.push(`<div class="key-row"><span class="legend-dot legend-line" style="--color: linear-gradient(90deg, #99e9f2, #22b8cf, #1971c2, #5f3dc4)"></span>Aircraft tracks by altitude</div>`);
     }
     if (modelFieldOn && m && m.wms) rows.push(`<div class="key-note">Base layer: ECCC model ${esc(m.label.toLowerCase())}</div>`);
@@ -1233,9 +1268,10 @@ function updateMapKey() {
     // Each symbol stays on one line with its label
     var shape = (kind, color, label) => `<span class="key-shape">${symbol(kind, color)}${label}</span>`;
     // Other sources are squares: the Global Replay (its rows are replay-station and so on) and airports
-    var squares = [!hidden.includes('replay') && [...seenLayers].some((k) => k.startsWith('replay-')) && 'Replay',
-        drawn('airports') && 'METAR'].filter(Boolean);
-    rows.push(`<div class="key-shapes">${shape('circle', '#adb5bd', 'WIS2')}${drawn('origin') ? shape('ring', COLORS.origin, 'WIS2 origin') : ''}${shape('diamond', '#adb5bd', 'GTS')}${squares.length ? shape('square', '#adb5bd', squares.join(', ')) : ''}</div>`);
+    var squares = [drawnAny('replay-') && 'Replay', drawn('airports') && 'METAR'].filter(Boolean);
+    var shapes = [drawnAny('cache-') && shape('circle', '#adb5bd', 'WIS2'), drawn('origin') && shape('ring', COLORS.origin, 'WIS2 origin'),
+        drawnAny('gts-') && shape('diamond', '#adb5bd', 'GTS'), squares.length && shape('square', '#adb5bd', squares.join(', '))].filter(Boolean);
+    if (shapes.length) rows.push(`<div class="key-shapes">${shapes.join('')}</div>`);
     // The Global Broker messages come from, and whether it is connected
     var broker = brokerState.host ? esc(brokerState.host) : '';
     // One line: a long host name is cut short (it's in full on hover), the Layers link kept whole
@@ -1247,7 +1283,11 @@ function updateMapKey() {
     }[brokerState.state];
     rows.push(`<div class="key-note key-broker"><span class="broker-dot broker-${brokerState.state}"></span><span class="key-broker-text" title="WIS2 Global Broker the live messages come from: ${status}">${status}</span>
     <button type="button" class="btn btn-link btn-sm map-key-edit">Layers</button></div>`);
-    mapKeyBody.innerHTML = rows.join('');
+    // Refreshed as points come and go; left alone when nothing changed, so a click on Layers isn't lost
+    var html = rows.join('');
+    if (html !== mapKeyHtml) mapKeyBody.innerHTML = mapKeyHtml = html;
+    mapKeyDirty = false;
+    mapKeyBuilt = Date.now();
 }
 
 function showLegendRow(key) {
@@ -1405,7 +1445,7 @@ function buildPopup(record) {
 
 async function decodeRecord(record, out, title) {
     try {
-        record.decoded = await decodeSource(record.source, record.wsi, out);
+        record.decoded = await decodeSource(record.source, record.wsi, out, record.subsetIndex);
         setFeatureProperties(record, metricValues(record));
         showDecoded(out, title, record.decoded);
         var forecast = out.parentNode && out.parentNode.querySelector('.pp-forecast');
@@ -1428,7 +1468,8 @@ function showDecodeError(out, err, retry) {
 
 // Downloads and decodes a message's data: BUFR is decoded, text (e.g. a GTS
 // bulletin) is returned as-is
-async function decodeSource(source, wsi, out) {
+// index picks one report in a file of many, such as a satellite swath
+async function decodeSource(source, wsi, out, index) {
     out.innerHTML = '<div class="pp-status">Downloading data…</div>';
     try {
         var data = await fetchData(source);
@@ -1447,7 +1488,7 @@ async function decodeSource(source, wsi, out) {
 
     out.innerHTML = `<div class="pp-status">${decoderReady ? 'Decoding…' : 'Loading decoder (first time only)…'}</div>`;
     var key = source.dataId || data.url || String(Date.now());
-    var result = JSON.parse(await callDecoder('decode_bufr', data.bytes, wsi || '', key));
+    var result = JSON.parse(await callDecoder('decode_bufr', data.bytes, wsi || '', key, index ?? -1));
     result.key = key;
     return result;
 }
@@ -3543,11 +3584,10 @@ function applyMapFilter() {
     // With aircraft tracks on, tracked aircraft are drawn in the air instead of on the ground
     // Optionally only the points coloured by the selected measure
     if (colouredOnly && METRICS[colourBy]) expr.push(['all', isColourTarget(), ['has', `m_${colourBy}`]]);
-    // Satellite reports drawn as part of a swath aren't drawn as points as well,
-    // unless coverage is switched off and every report is a point
+    // Swath reports are only points while coverage is switched off (see syncSwathPoints)
     var coverage = !effectiveHidden().includes('sat-coverage');
-    var notInSwath = coverage ? [['!=', ['get', 'inSwath'], true]] : [];
-    var shown = [...(tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr), ...notInSwath];
+    syncSwathPoints();
+    var shown = tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr;
     var arrows = windArrows();
     map.setFilter('points-arrow', arrows ? [...shown, isArrow()] : ['boolean', false]);
     if (arrows) shown = [...shown, ['!', isArrow()]];
@@ -3558,7 +3598,7 @@ function applyMapFilter() {
     // An airport with a twin station (WIS2 or GTS) is only drawn while every layer with one is off
     var twinShown = ['all', ...TWIN_LAYERS.filter((l) => !effectiveHidden().includes(l)).map((l) => ['!=', ['get', `twin_${l}`], true])];
     map.setFilter('points-ext', [...shown, square, twinShown]);
-    map.setFilter('pulses', [...(tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr), ...notInSwath]);
+    map.setFilter('pulses', tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr);
     map.setFilter('swaths-fill', !coverage ? ['boolean', false] : expr.length > 1 ? expr : null);
     var trackExpr = coverage ? expr : [...expr, ['!=', ['get', 'kind'], 'satellite']];
     map.setFilter('tracks', [...trackExpr, ['==', ['geometry-type'], 'LineString']]);
@@ -4014,7 +4054,7 @@ function queueMessage(topic, message, record, feature) {
     if (entry.decodeKind && entry.decodeKey) {
         // A cache that announces the file after it has been decoded links straight away
         var decoded = decodedFirst.get(entry.decodeKey);
-        if (decoded && records.has(decoded.id)) entry.record = decoded;
+        if (decoded && onMap(decoded)) entry.record = decoded;
         else awaitDecode(entry);
     }
     if (centreList && !centres.has(entry.centre)) addCentreOption(entry.centre);
@@ -4204,7 +4244,7 @@ function paintQueueDot(dot, entry) {
 // origin point it was first linked to
 function currentRecord(entry) {
     if (!entry.record) return null;
-    if (records.has(entry.record.id)) return entry.record;
+    if (onMap(entry.record)) return entry.record;
     var latest = byDataId.get(entry.record.props.data_id);
     return latest && records.has(latest.id) ? latest : null;
 }
@@ -4802,10 +4842,12 @@ def radar_scan(data):
 
 def decode_subsets(data, limit=0):
     subsets = _decode(data)
+    indexes = range(len(subsets))
     if limit and len(subsets) > limit:
         # Spread the reports kept across the whole file, e.g. a satellite swath
-        subsets = subsets[::-(-len(subsets) // limit)]
-    return json.dumps([_profile(rows) for rows in subsets])
+        indexes = indexes[::-(-len(subsets) // limit)]
+    # Each report's index in the file too, so it can be decoded again later
+    return json.dumps([_profile(subsets[i]) + (i,) for i in indexes])
 
 def decode_bufr(data, wsi, key, index=-1):
     if key not in _cache:
@@ -5091,7 +5133,11 @@ async function decodeNext() {
             plotRadar(job, JSON.parse(await callDecoder('radar_scan', bytes)));
         } else {
             var subsets = JSON.parse(await callDecoder('decode_subsets', bytes, DECODE_FILE_MAX_REPORTS));
-            subsets.forEach(([rows, profile], i) => plotDecodedReport(job, rows, profile, i, subsets.length));
+            // Satellite files big enough for coverage are kept as one swath, not as points
+            var swath = subsets.length >= SWATH_MIN_REPORTS ? [] : null;
+            subsets.forEach(([rows, profile, index], i) => plotDecodedReport(job, rows, profile, i, index, swath));
+            if (swath && swath.length >= SWATH_MIN_REPORTS) addSwathFile(job, swath);
+            else if (swath) swath.forEach((record) => plotRecord(job, record));
         }
     } catch (err) {
         console.debug(`Could not decode ${job.href}: ${err.message}`);
@@ -5101,7 +5147,7 @@ async function decodeNext() {
     pumpDecode();
 }
 
-function plotDecodedReport(job, rows, profile, index, total) {
+function plotDecodedReport(job, rows, profile, index, fileIndex, swath) {
     var values = new Map();
     for (var [id, name, value] of rows) {
         if (!values.has(id)) values.set(id, value);
@@ -5158,10 +5204,14 @@ function plotDecodedReport(job, rows, profile, index, total) {
     };
     if (subLayer && subLayer.endsWith('-satellite')) {
         record.fileKey = props.data_id;  // Reports from one file make one swath
-        // A file big enough for coverage is drawn as coverage from the start, so its points never flash up
-        if (total >= SWATH_MIN_REPORTS) record.inSwath = true;
-        swathsDirty = true;
+        record.fileIndex = fileIndex;
+        // Gathered up by decodeNext, which decides whether the file is a swath
+        if (swath) { swath.push(record); return; }
     }
+    plotRecord(job, record);
+}
+
+function plotRecord(job, record) {
     addPoint(record);
     if (record.track) tracksDirty = true;
     decodePlotted[job.kind]++;
@@ -5661,7 +5711,8 @@ function formatMetric(value, m) {
 // Feature properties ("m_temp", ...) for the measures a record's decoded data holds
 function metricValues(record) {
     var rows = record.decoded && record.decoded.rows;
-    if (!rows) return {};
+    // Swath reports carry the values their file kept
+    if (!rows) return record.metrics || {};
     var out = {};
     var totals = precipitationTotals(rows);
     for (var [key, m] of Object.entries(METRICS)) {
@@ -5751,9 +5802,19 @@ function showColourStatus(legend) {
     if (colourBy === 'kind') { el.hidden = true; return; }
     var points = [...records.values()].filter((r) => isColourable(r, METRICS[colourBy]));
     var known = points.filter((r) => r.feature && r.feature.properties[`m_${colourBy}`] !== undefined).length;
+    var total = points.length;
+    // Swath reports drawn as coverage, not points
+    if (!swathPointsShown) {
+        for (var file of swathFiles.values()) {
+            if (!isColourable(file.template, METRICS[colourBy])) continue;
+            total += file.n;
+            var values = file.metrics[colourBy];
+            if (values) known += values.filter((v) => !isNaN(v)).length;
+        }
+    }
     el.hidden = false;
     var waiting = metricQueue.length + replayMetricQueue.length;
-    el.textContent = `${known.toLocaleString()} of ${points.length.toLocaleString()} have a value` + (waiting ? ` · decoding ${waiting.toLocaleString()}` : '');
+    el.textContent = `${known.toLocaleString()} of ${total.toLocaleString()} have a value` + (waiting ? ` · decoding ${waiting.toLocaleString()}` : '');
 }
 
 // Cache and origin stations, ships and buoys without decoded data, newest first
@@ -5822,6 +5883,8 @@ function satelliteKey(record) {
 // A WIS2 topic names its satellite (sentinel-6b, geo-kompsat-2a), which beats a
 // number missing from SATELLITE_NAMES; GTS bulletins only have the number
 function satelliteName(record) {
+    // Swath reports may no longer have their decoded values; the file kept the name
+    if (record.satName) return record.satName;
     var row = record.decoded && record.decoded.rows && record.decoded.rows.find((x) => x[0] === 1007);
     if (row && SATELLITE_NAMES[row[2]]) return SATELLITE_NAMES[row[2]];
     var match = /space-based-observations\/([^/]+)/.exec(record.topic);
@@ -6518,11 +6581,26 @@ setInterval(() => { if (airportStations.size) queueAirports(); }, 5 * 60 * 1000)
 // read as one area with no seams, and each cell's opacity is the cloud amount of
 // the reports in it. Files with only a few reports (e.g. a radio occultation)
 // stay as points.
+//
+// A swath file isn't kept as points: its reports are packed into typed arrays,
+// and what it adds to each cell is worked out once, when it arrives, and taken
+// off again when it goes. So coverage can stay up for hours without slowing the
+// map, and a report only becomes a full record when it is clicked (or drawn as a
+// point, with coverage switched off).
 const SWATH_MIN_REPORTS = 5;
 const SWATH_CELL = 2;  // Grid cell size in degrees
-let swathsDirty = false;
+const SWATH_FILES_MAX = 3000;  // Files whose coverage is kept, oldest dropped first...
+const SWATH_KEEP_MS = 12 * 3600e3;  // ...and none older than this
+const SWATH_DETAIL_MAX = 30000;  // Reports whose decoded values are kept, so their popups open at once; older ones are decoded again
+const SWATH_FLUSH_MS = 1000;
+const swathFiles = new Map();  // file data_id -> swath file, oldest first
+const swathCells = new Map();  // satellite + cell -> totals of the files covering it
+const swathDirty = new Set();  // cell ids to redraw
+let swathRemoved = [];  // feature ids of cells no file covers any more
+let swathDetail = 0;  // Reports with their decoded values kept
+let swathFeatureIds = 0;
 let swathsBuilt = 0;
-const swathMembers = new Map();  // swath key -> record ids
+let swathPointsShown = false;  // Coverage switched off: swath reports are drawn as points
 
 // Convex hull (monotone chain) of [lon, lat] points, as a closed ring
 function convexHull(points) {
@@ -6559,124 +6637,269 @@ function inOrNearRing([x, y], ring, margin) {
     return false;
 }
 
-function buildSwaths() {
-    var files = new Map();
-    for (var record of pools.satellite.values()) {
-        if (!record.fileKey || !records.has(record.id)) continue;
-        if (!files.has(record.fileKey)) files.set(record.fileKey, []);
-        files.get(record.fileKey).push(record);
-    }
-    swathMembers.clear();
-    var cells = new Map();  // satellite + cell -> { sums, counts, file means, first record }
-    var metricKeys = Object.keys(METRICS);
-    var valueOf = (r, m) => r.feature && r.feature.properties[`m_${m}`];
-    for (var [key, reports] of files) {
-        if (reports.length < SWATH_MIN_REPORTS) continue;
-        var first = reports[0], sat = satelliteKey(first) || `${first.subLayer}:${key}`;
-        // Longitudes unwrapped around the first report so a pass across ±180 stays whole
-        var lon0 = first.coords[0];
-        var unwrapLon = (lon) => {
-            while (lon - lon0 > 180) lon -= 360;
-            while (lon - lon0 < -180) lon += 360;
-            return lon;
-        };
-        var ring = convexHull(reports.map((r) => [unwrapLon(r.coords[0]), r.coords[1]]));
-        if (!ring) continue;
-        if (!swathMembers.has(sat)) swathMembers.set(sat, []);
-        swathMembers.get(sat).push(...reports.map((r) => r.id));
-        reports.forEach((r) => {
-            if (!r.inSwath) {
-                r.inSwath = true;
-                setFeatureProperties(r, { inSwath: true });
-            }
-        });
-        // The file's own means fill cells it covers that hold none of its reports
-        var fileMeans = {};
-        for (var m of metricKeys) {
-            var vals = reports.map((r) => valueOf(r, m)).filter((v) => typeof v === 'number');
-            if (vals.length) fileMeans[m] = vals.reduce((a, b) => a + b, 0) / vals.length;
-        }
-        var cellOf = (lon, lat) => {
-            var cx = Math.floor((((lon + 180) % 360 + 360) % 360 - 180) / SWATH_CELL) * SWATH_CELL;
-            return `${sat}|${cx}|${Math.floor(lat / SWATH_CELL) * SWATH_CELL}`;
-        };
-        var cellFor = (id) => {
-            if (!cells.has(id)) cells.set(id, { sat, sums: {}, counts: {}, fills: [], first, born: 0, reports: 0 });
-            return cells.get(id);
-        };
-        // Cells the file's footprint covers
-        var xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
-        for (var lat = Math.floor(Math.min(...ys) / SWATH_CELL) * SWATH_CELL; lat < Math.max(...ys); lat += SWATH_CELL) {
-            for (var lon = Math.floor(Math.min(...xs) / SWATH_CELL) * SWATH_CELL; lon < Math.max(...xs); lon += SWATH_CELL) {
-                if (!inOrNearRing([lon + SWATH_CELL / 2, lat + SWATH_CELL / 2], ring, SWATH_CELL * 0.75)) continue;
-                var cell = cellFor(cellOf(lon, lat));
-                cell.fills.push(fileMeans);
-                cell.born = Math.max(cell.born, ...reports.map((r) => r.born));
-            }
-        }
-        // Reports in each cell give it its own values
-        for (var r of reports) {
-            var cell = cellFor(cellOf(r.coords[0], r.coords[1]));
-            cell.reports++;
-            cell.born = Math.max(cell.born, r.born);
-            for (var m of metricKeys) {
-                var v = valueOf(r, m);
-                if (typeof v !== 'number') continue;
-                cell.sums[m] = (cell.sums[m] || 0) + v;
-                cell.counts[m] = (cell.counts[m] || 0) + 1;
-            }
-        }
-    }
-    var features = [];
-    for (var [id, cell] of cells) {
-        var [, cx, cy] = id.split('|').map(Number);
-        var props = {};
-        for (var m of metricKeys) {
-            if (cell.counts[m]) props[`m_${m}`] = cell.sums[m] / cell.counts[m];
-            else {
-                var fills = cell.fills.map((f) => f[m]).filter((v) => typeof v === 'number');
-                if (fills.length) props[`m_${m}`] = fills.reduce((a, b) => a + b, 0) / fills.length;
-            }
-        }
-        var first = cell.first, satRow = first.decoded && first.decoded.rows.find((x) => x[0] === 1007);
-        features.push({
-            type: 'Feature',
-            geometry: { type: 'Polygon', coordinates: [[[cx, cy], [cx + SWATH_CELL, cy], [cx + SWATH_CELL, cy + SWATH_CELL], [cx, cy + SWATH_CELL], [cx, cy]]] },
-            properties: {
-                swath: cell.sat,
-                label: satRow ? SATELLITE_NAMES[satRow[2]] || `Satellite ${satRow[2]}` : 'Satellite',
-                count: (swathMembers.get(cell.sat) || []).length,
-                color: first.color,
-                outline: darken(first.color),
-                born: cell.born,
-                layer: first.subLayer,
-                via: first.decodedLayer || '',
-                gateway: isGateway(first),
-                sat: satelliteKey(first),
-                channel: first.channel,
-                centre: first.centre,
-                format: first.format,
-                discipline: first.discipline,
-                space: isSpaceRecord(first),
-                topic: first.topic.toLowerCase(),
-                ...props,
-            },
-        });
-    }
-    return features;
+function swathCellId(sat, lon, lat) {
+    var cx = Math.floor((((lon + 180) % 360 + 360) % 360 - 180) / SWATH_CELL) * SWATH_CELL;
+    return `${sat}|${cx}|${Math.floor(lat / SWATH_CELL) * SWATH_CELL}`;
 }
 
-// The report in a swath closest to where it was clicked
-function nearestSwathReport(key, lngLat) {
-    var ids = swathMembers.get(key) || [];
-    var best = null, bestKm = Infinity;
-    for (var id of ids) {
-        var r = records.get(id);
-        if (!r) continue;
-        var km = distanceKm(r.coords, [lngLat.lng, lngLat.lat]);
-        if (km < bestKm) { best = r; bestKm = km; }
+// Packs a decoded satellite file's reports into one swath file and adds it to the cells
+function addSwathFile(job, reports) {
+    var first = reports[0], n = reports.length;
+    var sat = satelliteKey(first) || `${first.subLayer}:${first.fileKey}`;
+    // Longitudes unwrapped around the first report so a pass across ±180 stays whole
+    var lon0 = first.coords[0];
+    var unwrapLon = (lon) => {
+        while (lon - lon0 > 180) lon -= 360;
+        while (lon - lon0 < -180) lon += 360;
+        return lon;
+    };
+    var ring = convexHull(reports.map((r) => [unwrapLon(r.coords[0]), r.coords[1]]));
+    // Reports in a line have no area to cover
+    if (!ring) { reports.forEach((r) => plotRecord(job, r)); return; }
+    var old = swathFiles.get(first.fileKey);
+    if (old) removeSwathFile(old);  // An update replaces it
+    var values = reports.map(metricValues);
+    var metrics = {};
+    for (var key of [...Object.keys(METRICS), 'windDir']) {
+        if (values.some((v) => `m_${key}` in v)) metrics[key] = Float32Array.from(values, (v) => v[`m_${key}`] ?? NaN);
     }
-    return best;
+    var file = {
+        key: first.fileKey,
+        sat,
+        n,
+        // What every report shares; swathRecord adds the rest
+        template: { ...first, decoded: null, satName: satelliteName(first) },
+        coords: Float32Array.from(reports.flatMap((r) => r.coords)),
+        observed: Float64Array.from(reports, (r) => r.observed),
+        index: reports.map((r) => r.fileIndex),
+        datetime: reports.map((r) => r.props.datetime),
+        wsi: reports.map((r) => r.wsi),
+        metrics,
+        detail: reports.map((r) => r.decoded),  // Until SWATH_DETAIL_MAX drops it
+        track: first.track,
+        born: Date.now(),
+        // For the same filters as the points
+        props: {
+            layer: first.subLayer, via: first.decodedLayer || '', gateway: isGateway(first), sat: satelliteKey(first),
+            channel: first.channel, centre: first.centre, format: first.format, discipline: first.discipline,
+            space: isSpaceRecord(first), topic: first.topic.toLowerCase(),
+        },
+        means: {},
+        cells: new Map(),  // cell id -> what this file adds to it
+        points: null,
+    };
+    // The file's own means fill cells it covers that hold none of its reports
+    for (var m of Object.keys(METRICS)) {
+        var known = metrics[m] ? metrics[m].filter((v) => !isNaN(v)) : [];
+        if (known.length) file.means[m] = known.reduce((a, b) => a + b, 0) / known.length;
+    }
+    var cellFor = (lon, lat) => {
+        var id = swathCellId(sat, lon, lat);
+        if (!file.cells.has(id)) {
+            var x = Math.floor((((lon + 180) % 360 + 360) % 360 - 180) / SWATH_CELL) * SWATH_CELL;
+            file.cells.set(id, { x, y: Math.floor(lat / SWATH_CELL) * SWATH_CELL, fill: false, sums: {}, counts: {} });
+        }
+        return file.cells.get(id);
+    };
+    // Cells the file's footprint covers
+    var xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
+    for (var lat = Math.floor(Math.min(...ys) / SWATH_CELL) * SWATH_CELL; lat < Math.max(...ys); lat += SWATH_CELL) {
+        for (var lon = Math.floor(Math.min(...xs) / SWATH_CELL) * SWATH_CELL; lon < Math.max(...xs); lon += SWATH_CELL) {
+            if (inOrNearRing([lon + SWATH_CELL / 2, lat + SWATH_CELL / 2], ring, SWATH_CELL * 0.75)) cellFor(lon, lat).fill = true;
+        }
+    }
+    // Reports in each cell give it its own values
+    for (var i = 0; i < n; i++) {
+        var cell = cellFor(reports[i].coords[0], reports[i].coords[1]);
+        for (var [mk, arr] of Object.entries(metrics)) {
+            if (mk === 'windDir' || isNaN(arr[i])) continue;
+            cell.sums[mk] = (cell.sums[mk] || 0) + arr[i];
+            cell.counts[mk] = (cell.counts[mk] || 0) + 1;
+        }
+    }
+    swathFiles.set(file.key, file);
+    swathDetail += n;
+    applySwathFile(file, 1);
+    trimSwathFiles();
+    if (!seenLayers.has(first.subLayer)) showLegendRow(first.subLayer);
+    if (file.props.sat) addSatelliteRow(file.props.sat);
+    if (file.track) tracksDirty = true;
+    decodePlotted[job.kind] += n;
+    if (!job.linked) {
+        job.linked = true;
+        linkDecoded(job.key, swathRecord(file, 0));
+    }
+    if (swathPointsShown) showSwathPoints(file);
+    mapKeyDirty = true;
+}
+
+// Adds a file's share to its cells (sign 1), or takes it off again (-1)
+function applySwathFile(file, sign) {
+    for (var [id, c] of file.cells) {
+        var cell = swathCells.get(id);
+        if (!cell) {
+            if (sign < 0) continue;
+            cell = { fid: ++swathFeatureIds, x: c.x, y: c.y, sat: file.sat, files: new Set(), sums: {}, counts: {}, fillSums: {}, fillCounts: {} };
+            swathCells.set(id, cell);
+        }
+        if (sign > 0) cell.files.add(file);
+        else cell.files.delete(file);
+        for (var m in c.sums) {
+            cell.sums[m] = (cell.sums[m] || 0) + sign * c.sums[m];
+            cell.counts[m] = (cell.counts[m] || 0) + sign * c.counts[m];
+        }
+        if (c.fill) {
+            for (var mf in file.means) {
+                cell.fillSums[mf] = (cell.fillSums[mf] || 0) + sign * file.means[mf];
+                cell.fillCounts[mf] = (cell.fillCounts[mf] || 0) + sign;
+            }
+        }
+        if (cell.files.size) {
+            swathDirty.add(id);
+        } else {
+            swathCells.delete(id);
+            swathDirty.delete(id);
+            swathRemoved.push(cell.fid);
+        }
+    }
+}
+
+function removeSwathFile(file) {
+    swathFiles.delete(file.key);
+    applySwathFile(file, -1);
+    if (file.detail) swathDetail -= file.n;
+    hideSwathPoints(file);
+    if (file.track) tracksDirty = true;
+    mapKeyDirty = true;
+}
+
+// Drops the oldest files beyond the caps, then the oldest decoded values; their
+// reports are decoded again from the file when clicked
+function trimSwathFiles() {
+    var oldest = Date.now() - SWATH_KEEP_MS;
+    for (var file of swathFiles.values()) {
+        if (swathFiles.size <= SWATH_FILES_MAX && file.born >= oldest) break;
+        removeSwathFile(file);
+    }
+    for (var kept of swathFiles.values()) {
+        if (swathDetail <= SWATH_DETAIL_MAX) break;
+        if (!kept.detail) continue;
+        kept.detail = null;
+        swathDetail -= kept.n;
+    }
+}
+
+// Redraws only the cells that changed since last time
+function flushSwaths(now) {
+    trimSwathFiles();
+    if (!swathDirty.size && !swathRemoved.length) return;
+    swathsBuilt = now;
+    var add = [];
+    for (var id of swathDirty) add.push(swathFeature(swathCells.get(id)));
+    swathDirty.clear();
+    map.getSource('swaths').updateData({ add, remove: swathRemoved });
+    swathRemoved = [];
+}
+
+function swathFeature(cell) {
+    var props = {};
+    for (var m of Object.keys(METRICS)) {
+        if (cell.counts[m]) props[`m_${m}`] = cell.sums[m] / cell.counts[m];
+        else if (cell.fillCounts[m]) props[`m_${m}`] = cell.fillSums[m] / cell.fillCounts[m];
+    }
+    var file = cell.files.values().next().value;
+    var born = 0;
+    cell.files.forEach((f) => { born = Math.max(born, f.born); });
+    var { x, y } = cell;
+    return {
+        type: 'Feature',
+        id: cell.fid,
+        geometry: { type: 'Polygon', coordinates: [[[x, y], [x + SWATH_CELL, y], [x + SWATH_CELL, y + SWATH_CELL], [x, y + SWATH_CELL], [x, y]]] },
+        properties: {
+            ...file.props,
+            swath: cell.sat,
+            label: file.template.satName || 'Satellite',
+            color: file.template.color,
+            outline: darken(file.template.color),
+            born,
+            ...props,
+        },
+    };
+}
+
+// A full record for one report in a swath file, made when it's wanted
+function swathRecord(file, i) {
+    var t = file.template, decoded = file.detail && file.detail[i];
+    var metrics = {};
+    for (var [m, values] of Object.entries(file.metrics)) {
+        if (!isNaN(values[i])) metrics[`m_${m}`] = values[i];
+    }
+    return {
+        ...t,
+        id: nextId++,
+        coords: [file.coords[2 * i], file.coords[2 * i + 1]],
+        observed: file.observed[i],
+        props: { ...t.props, data_id: `${file.key}#${i}`, datetime: file.datetime[i] },
+        wsi: file.wsi[i],
+        decoded: decoded || null,
+        // Without its decoded values, the popup decodes the report from the file again
+        source: decoded ? null : bufrSource(t.notification, t.notification.properties || {}),
+        subsetIndex: file.index[i],
+        metrics,
+        swath: true,
+    };
+}
+
+// Whether a record is on the map, as a point or as part of a swath
+function onMap(record) {
+    return records.has(record.id) || (!!record.swath && swathFiles.has(record.fileKey));
+}
+
+// The report in a swath closest to where it was clicked, from the files covering that cell
+function nearestSwathReport(key, lngLat) {
+    var cell = swathCells.get(swathCellId(key, lngLat.lng, lngLat.lat));
+    if (!cell) return null;
+    var best = null, bestKm = Infinity;
+    for (var file of cell.files) {
+        for (var i = 0; i < file.n; i++) {
+            var km = distanceKm([file.coords[2 * i], file.coords[2 * i + 1]], [lngLat.lng, lngLat.lat]);
+            if (km < bestKm) { best = [file, i]; bestKm = km; }
+        }
+    }
+    return best && swathRecord(...best);
+}
+
+// With coverage switched off, every swath report is a point
+function showSwathPoints(file) {
+    file.points = [];
+    for (var i = 0; i < file.n; i++) {
+        var record = swathRecord(file, i);
+        addPoint(record);
+        file.points.push(record);
+    }
+}
+
+function hideSwathPoints(file) {
+    (file.points || []).forEach((r) => records.has(r.id) && removePoint(r));
+    file.points = null;
+}
+
+function syncSwathPoints() {
+    var want = hiddenLayers.has('sat-coverage') && !effectiveHidden().includes('satellite');
+    if (want === swathPointsShown) return;
+    swathPointsShown = want;
+    if (!want) {
+        swathFiles.forEach(hideSwathPoints);
+        return;
+    }
+    // The newest files the satellite pool has room for, added oldest first so it drops the right ones
+    var files = [], total = 0;
+    for (var file of [...swathFiles.values()].reverse()) {
+        if (total + file.n > MAX_SATELLITE_POINTS) break;
+        files.unshift(file);
+        total += file.n;
+    }
+    files.forEach(showSwathPoints);
 }
 
 // ---------- Tracks. Aircraft reports are joined by identifier in time order.
@@ -6747,10 +6970,18 @@ function unwrap(coords) {
 
 function buildTracks() {
     var groups = new Map();
+    var add = (key, item) => {
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(item);
+    };
     for (var record of [...pools.decoded.values(), ...pools.satellite.values()]) {
-        if (!record.track || !records.has(record.id)) continue;
-        if (!groups.has(record.track)) groups.set(record.track, []);
-        groups.get(record.track).push(record);
+        // Swath reports drawn as points are taken from their file below
+        if (record.track && records.has(record.id) && !record.swath) add(record.track, record);
+    }
+    // Swath files' reports, with just what a ground track needs
+    for (var file of swathFiles.values()) {
+        if (!file.track) continue;
+        for (var i = 0; i < file.n; i++) add(file.track, { observed: file.observed[i], coords: [file.coords[2 * i], file.coords[2 * i + 1]], file, i });
     }
     var features = [];
     for (var [key, reports] of groups) {
@@ -6775,7 +7006,8 @@ function buildTracks() {
             }, SATELLITE_MIN_STEPS + 1);
         }
         if (!runs.length) continue;
-        var last = reports[reports.length - 1];
+        var lastItem = reports[reports.length - 1];
+        var last = lastItem.file ? swathRecord(lastItem.file, lastItem.i) : lastItem;
         // Satellite tracks carry the same name and layer key as the satellite's row
         // under Space-based, so switching that row off hides the track too
         var sat = kind === 'satellite' ? satelliteKey(last) : null;
@@ -6785,6 +7017,9 @@ function buildTracks() {
             label: kind === 'aircraft' ? `Aircraft ${key.slice(9)}` : satelliteName(last) || `Satellite ${key.slice(10)}`,
             count: reports.length,
             lastId: last.id,
+            // A swath report isn't a record until it's wanted, so the track says where to find it
+            swathFile: lastItem.file ? lastItem.file.key : '',
+            swathIndex: lastItem.file ? lastItem.i : -1,
             color: last.color,
             born: last.born,
             layer: last.subLayer,
