@@ -172,8 +172,24 @@ const METRICS = {
         stops: GEOMET_STOPS.wind },
     cloudTop: { group: 'Space-based (satellites)', targets: 'satellite', label: 'Cloud-top pressure', unit: 'hPa', ids: [20016], convert: (v) => v / 100,
         stops: [[100, '#fde725'], [250, '#7ad151'], [400, '#22a884'], [550, '#2a788e'], [700, '#414487'], [1000, '#440154']] },
-    brightness: { group: 'Space-based (satellites)', targets: 'satellite', label: 'Brightness temperature', unit: 'K', ids: [12163],
+    // The first channel's: 012163, or 012063 from ATOVS sounders (AMSU-A, MHS)
+    brightness: { group: 'Space-based (satellites)', targets: 'satellite', label: 'Brightness temperature', unit: 'K', ids: [12163, 12063],
         stops: [[180, '#000004'], [210, '#320a5e'], [235, '#781c6d'], [255, '#bc3754'], [270, '#ed6925'], [290, '#fbb61a'], [320, '#fcffa4']] },
+    // The first value is the measurement; an uncertainty can follow under the same descriptor
+    vapour: { group: 'Space-based (satellites)', targets: 'satellite', label: 'Column water vapour', unit: 'kg/m²', ids: [13095, 13016],
+        stops: [[0, '#fff7bc'], [5, '#c7e9b4'], [15, '#7fcdbb'], [25, '#41b6c4'], [40, '#1d91c0'], [55, '#225ea8'], [70, '#0c2c84']] },
+    // Scatterometers (ASCAT): the first of the possible winds
+    seaWind: { group: 'Space-based (satellites)', targets: 'satellite', label: 'Ocean surface wind speed', unit: 'm/s', ids: [11012],
+        stops: GEOMET_STOPS.wind },
+    satWaves: { group: 'Space-based (satellites)', targets: 'satellite', label: 'Wave height (altimeter)', unit: 'm', ids: [22070],
+        stops: GEOMET_STOPS.waves },
+    seaLevel: { group: 'Space-based (satellites)', targets: 'satellite', label: 'Sea-level anomaly', unit: 'cm', ids: [10102], convert: (v) => v * 100,
+        stops: [[-30, '#2166ac'], [-10, '#92c5de'], [0, '#f7f7f7'], [10, '#f4a582'], [30, '#b2182b']] },
+    skinTemp: { group: 'Space-based (satellites)', targets: 'satellite', label: 'Surface (skin) temperature', unit: '°C', ids: [12061], convert: (v) => v - 273.15,
+        stops: GEOMET_STOPS.temp },
+    // Low values purple, so an ozone hole stands out
+    ozone: { group: 'Space-based (satellites)', targets: 'satellite', label: 'Total ozone', unit: 'DU', ids: [15001],
+        stops: [[150, '#3f007d'], [220, '#807dba'], [280, '#c6dbef'], [330, '#ffffbf'], [400, '#fdae61'], [480, '#d7191c']] },
     // Matched to the model's total cloud cover (GeoMet's greyscale style: dark clear, white overcast)
     cloudAmount: { group: 'Space-based (satellites)', targets: 'satellite', wms: 'GDPS_15km_TotalCloudCover', label: 'Cloud amount', unit: '%', ids: [20081],
         stops: [[0, '#202020'], [10, '#292929'], [20, '#454545'], [30, '#575757'], [40, '#737373'], [50, '#868686'],
@@ -1434,6 +1450,11 @@ function buildPopup(record) {
     if (!record.source && !record.decoded) {
         out.innerHTML = '<div class="pp-status">No data to decode for this message.</div>';
     }
+    // A satellite report keeps only its first values; the rest come from decoding it again
+    var fullSource = record.decoded && record.decoded.trimmed && record.notification && bufrSource(record.notification, record.notification.properties || {});
+    if (fullSource && !record.decoded.loadFull) {
+        record.decoded.loadFull = () => decodeSource(fullSource, '', document.createElement('div'), record.fileIndex);
+    }
     // Opening a popup means wanting the data, so decode straight away
     if (record.decoded) {
         showDecoded(out, title, record.decoded);
@@ -1946,9 +1967,14 @@ const COMPASS_POINTS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', '
 // anything else shows its code.
 const SATELLITE_NAMES = { 3: 'Metop-B', 4: 'Metop-A', 5: 'Metop-C', 55: 'Meteosat-8', 56: 'Meteosat-9', 57: 'Meteosat-10',
     70: 'Meteosat-11', 173: 'Himawari-8', 174: 'Himawari-9', 209: 'NOAA-18', 223: 'NOAA-19', 224: 'Suomi NPP',
-    225: 'NOAA-20', 226: 'NOAA-21', 270: 'GOES-16', 271: 'GOES-17', 272: 'GOES-18',
+    225: 'NOAA-20', 226: 'NOAA-21', 524: 'FY-3E', 270: 'GOES-16', 271: 'GOES-17', 272: 'GOES-18',
     750: 'COSMIC-2 E1', 751: 'COSMIC-2 E2', 752: 'COSMIC-2 E3', 753: 'COSMIC-2 E4', 754: 'COSMIC-2 E5', 755: 'COSMIC-2 E6' };
 const INSTRUMENT_NAMES = { 203: 'MHS', 221: 'IASI', 570: 'AMSU-A', 591: 'AVHRR/3', 616: 'VIIRS', 620: 'CrIS', 621: 'ATMS' };
+// Code table 0 02 023: which channel cloud-motion winds were tracked in
+const AMV_METHODS = { 1: 'Infrared', 2: 'Visible', 3: 'Water vapour (cloud)', 4: 'Several channels', 5: 'Water vapour (clear air)',
+    6: 'Ozone', 7: 'Water vapour' };
+// Code table 0 08 072
+const PIXEL_TYPES = { 0: 'Mixed', 1: 'Clear', 2: 'Cloudy', 3: 'Probably clear', 4: 'Probably cloudy', 5: 'Ash' };
 
 function satelliteTiles(rows, values) {
     var tile = (label, html) => `<div class="pp-tile"><div>${esc(label)}</div><strong>${html}</strong></div>`;
@@ -1965,7 +1991,11 @@ function satelliteTiles(rows, values) {
     // What kind of product, from the elements it carries
     var product = count(15037) ? 'Radio occultation'
         : values.has(11002) && (values.has(2023) || values.has(11113)) ? 'Cloud-motion winds'
-        : count(12163) ? 'Radiances'
+        : values.has(11012) && (values.has(21101) || values.has(21119)) ? 'Ocean surface winds'
+        : values.has(15001) ? 'Ozone'
+        : values.has(13095) ? 'Water vapour'
+        : count(12163) || count(12063) ? 'Radiances'
+        : count(14044) || count(14046) ? 'Infrared spectrum'
         : count(12101) > 5 ? 'Temperature and humidity profile'
         : values.has(10081) ? 'Altimetry'
         : values.has(15021) ? 'Trace gases'
@@ -1973,26 +2003,215 @@ function satelliteTiles(rows, values) {
     tiles.push(tile('Product', esc(product)));
     if (number(5040) !== null) tiles.push(tile('Orbit', esc(number(5040).toLocaleString())));
 
-    if (product === 'Cloud-motion winds') tiles.push(...windTiles(values));
+    if (product === 'Cloud-motion winds') {
+        tiles.push(...windTiles(values));
+        var method = number(2023);
+        if (method !== null) tiles.push(tile('Tracked in', esc(AMV_METHODS[method] || `method ${method}`)));
+        // Several confidences can follow (with and without the forecast check); the first is the main one
+        if (number(33007) !== null) tiles.push(tile('Confidence', `${esc(Math.round(number(33007)))} %`));
+    }
+    if (product === 'Ocean surface winds') {
+        // The scatterometer gives several possible winds; 021102 says which one was chosen
+        var pick = Math.max(0, (number(21102) || 1) - 1);
+        var speeds = all(11012), dirs = all(11011);
+        var speed = speeds[pick] ?? speeds[0], dir = dirs[pick] ?? dirs[0];
+        if (speed !== undefined) tiles.push(...windTiles(new Map([[11002, [speed]], ...(dir !== undefined ? [[11001, [dir]]] : [])])));
+        if (speeds.length > 1) tiles.push(tile('Possible winds', `${esc(speeds.length)} <small>this one most likely</small>`));
+    }
+    if (number(15001) !== null) tiles.push(tile('Total ozone', `${esc(Math.round(number(15001)))} DU`));
+    // Column water vapour, then its uncertainty after 008093 (0 = total uncertainty)
+    var vapour = all(13095);
+    if (vapour.length) {
+        var spread = values.has(8093) && vapour.length > 1 ? vapour[1] : null;
+        var doubtful = spread !== null && spread > vapour[0] / 2;
+        tiles.push(tile('Water vapour', `${esc(vapour[0].toFixed(1))} kg/m²${spread !== null ? ` <small>± ${esc(spread.toFixed(1))}${doubtful ? ', low confidence' : ''}</small>` : ''}`));
+    }
+    if (number(8072) !== null && PIXEL_TYPES[number(8072)]) tiles.push(tile('Pixel', esc(PIXEL_TYPES[number(8072)])));
+    if (number(10102) !== null) {
+        var anomaly = number(10102) * 100;
+        tiles.push(tile('Sea-level anomaly', `${anomaly > 0 ? '+' : ''}${esc(anomaly.toFixed(1))} cm <small>vs the long-term mean</small>`));
+    }
     if (number(20016) !== null) tiles.push(tile('Cloud-top pressure', `${esc(Math.round(number(20016) / 100))} hPa`));
     if (number(20014) !== null) tiles.push(tile('Cloud-top height', `${esc((number(20014) / 1000).toFixed(1))} km`));
     if (product === 'Cloud-motion winds' && number(12001) !== null) tiles.push(tile('Cloud temperature', `${esc((number(12001) - 273.15).toFixed(1))} °C`));
     if (number(20081) !== null) tiles.push(tile('Cloud amount', `${esc(Math.round(number(20081)))} %`));
 
-    var bt = all(12163);
+    var bt = all(12163).concat(all(12063));
     if (bt.length) {
         tiles.push(tile('Channels', esc(bt.length)));
         tiles.push(tile('Brightness temperature', `${esc(Math.round(Math.min(...bt)))}–${esc(Math.round(Math.max(...bt)))} K`));
     }
+    // Channel frequencies: microwave in GHz, infrared and visible as wavelengths
+    var freqs = all(2153).filter((f) => f > 0);
+    if (freqs.length) {
+        var lo = Math.min(...freqs), hi = Math.max(...freqs);
+        var fmt = (f) => (f < 1e12 ? `${Number((f / 1e9).toFixed(1))} GHz` : `${Number((3e8 / f * 1e6).toFixed(1))} µm`);
+        var text = lo === hi ? fmt(lo) : lo < 1e12 ? `${Number((lo / 1e9).toFixed(1))}–${fmt(hi)}` : `${Number((3e8 / hi * 1e6).toFixed(1))}–${fmt(lo)}`;
+        tiles.push(tile(freqs.length > 1 ? 'Channels at' : 'Channel', esc(text)));
+    }
     if (number(12061) !== null) tiles.push(tile('Skin temperature', `${esc((number(12061) - 273.15).toFixed(1))} °C`));
     if (product === 'Temperature and humidity profile') tiles.push(tile('Profile levels', esc(count(12101))));
-    if (product === 'Radio occultation') tiles.push(tile('Profile levels', esc(count(15037))));
+    if (product === 'Radio occultation') {
+        tiles.push(tile('Profile levels', esc(count(15037))));
+        var heights = all(7007);
+        if (heights.length > 1) tiles.push(tile('Heights', `${esc((Math.max(0, Math.min(...heights)) / 1000).toFixed(1))}–${esc(Math.round(Math.max(...heights) / 1000))} km`));
+    }
 
     // Where the sun and the satellite were, seen from the ground
     var sun = number(7025);
     if (sun !== null) tiles.push(tile('Sun', `${sun < 90 ? 'Day' : 'Night'} <small>${esc(Math.round(sun))}° from overhead</small>`));
     if (number(7024) !== null) tiles.push(tile('Viewing angle', `${esc(Math.round(number(7024)))}° <small>from overhead</small>`));
     return tiles;
+}
+
+// ---------- Infrared spectra from hyperspectral sounders (CrIS, IASI): each
+// channel's radiance as a brightness temperature against wavenumber, so the
+// CO₂, ozone and water-vapour bands show at a glance.
+const PLANCK_C1 = 1.191042e-5;  // mW m-2 sr-1 (cm-1)-4
+const PLANCK_C2 = 1.4387752;    // K cm
+const IASI_WAVENUMBERS = [645, 0.25];  // cm-1 of channel 1, and the spacing (IASI carries no band edges)
+// Parts of the spectrum named on the chart, in cm-1
+const SPECTRUM_REGIONS = [[650, 770, 'CO₂'], [800, 980, 'Window'], [1000, 1070, 'O₃'], [1300, 1750, 'H₂O'], [2250, 2390, 'CO₂']];
+
+// [{ channel, wn (cm-1), bt (K) }] from CrIS channel radiances (014044, per cm-1, band
+// edges in 008076 groups) or IASI scaled radiances (014046, scale factor per channel
+// range in 025140-025142). Missing radiances aren't in the rows, so those channels are gaps.
+function radianceSpectrum(rows) {
+    var bands = [], scales = [], band = null, range = null, channel = null, raw = [];
+    for (var [id, , value] of rows) {
+        if (typeof value !== 'number') continue;
+        if (id === 8076) bands.push(band = { wn: [] });
+        else if (id === 6029 && band && band.wn.length < 2) band.wn.push(value / 100);  // /m to cm-1
+        else if (id === 25140) range = { start: value };
+        else if (id === 25141 && range) {
+            range.end = value;
+            if (band && band.start === undefined && band.wn.length === 2) Object.assign(band, range);
+        } else if (id === 25142 && range) scales.push({ ...range, factor: value });
+        else if (id === 5042) {
+            // Numbering that starts again is another instrument's channels (e.g. CrIS files
+            // go on to imager radiances), not more of the spectrum
+            if (raw.length && value < raw[raw.length - 1][0]) break;
+            channel = value;
+        } else if (id === 14044 && channel !== null) raw.push([channel, value]);
+        else if (id === 14046 && channel !== null) {
+            var c = channel, s = scales.find((r) => c >= r.start && c <= r.end);
+            // W m-2 sr-1 m (per m-1) to per cm-1
+            if (s) raw.push([channel, value * 10 ** -s.factor * 100]);
+        }
+    }
+    bands = bands.filter((b) => b.wn.length === 2 && b.end > b.start);
+    var wavenumber = (c) => {
+        if (!bands.length) return IASI_WAVENUMBERS[0] + (c - 1) * IASI_WAVENUMBERS[1];
+        var b = bands.find((x) => c >= x.start && c <= x.end);
+        return b ? b.wn[0] + (c - b.start) * (b.wn[1] - b.wn[0]) / (b.end - b.start) : null;
+    };
+    var out = [];
+    for (var [ch, radiance] of raw) {
+        var wn = wavenumber(ch), mw = radiance * 1000;
+        if (!wn || !(mw > 0)) continue;
+        out.push({ channel: ch, wn, bt: PLANCK_C2 * wn / Math.log(1 + PLANCK_C1 * wn ** 3 / mw) });
+    }
+    out.sort((a, b) => a.wn - b.wn);
+    return out.length >= 20 ? out : null;
+}
+
+// Draws what the popup has, then every channel once the report is decoded again in full
+// (satellite reports keep only their first SATELLITE_ROWS_MAX values)
+async function showSpectrum(container, result) {
+    var spectrum = result.fullSpectrum || radianceSpectrum(result.rows);
+    if (spectrum) renderSpectrum(container, spectrum, { width: 300, height: 200 });
+    if (result.fullSpectrum || !result.trimmed || !result.loadFull) return;
+    var note = container.parentNode.insertBefore(document.createElement('div'), container.nextSibling);
+    note.className = 'pp-status';
+    note.textContent = 'Loading every channel…';
+    try {
+        var full = await result.loadFull();
+        result.fullSpectrum = radianceSpectrum(full.rows);
+        note.remove();
+        if (result.fullSpectrum && container.isConnected) renderSpectrum(container, result.fullSpectrum, { width: 300, height: 200 });
+    } catch (err) {
+        note.textContent = `Only the first channels: ${err.message}`;
+    }
+}
+
+function renderSpectrum(container, spectrum, opts) {
+    var W = opts.width, H = opts.height;
+    var m = { top: 16, right: 10, bottom: 30, left: 36 };
+    var w = W - m.left - m.right, bottom = H - m.bottom;
+    var wnMin = spectrum[0].wn, wnMax = spectrum[spectrum.length - 1].wn;
+    var bts = spectrum.map((p) => p.bt);
+    var btMin = Math.floor(Math.min(...bts) / 10) * 10, btMax = Math.ceil(Math.max(...bts) / 10) * 10;
+    if (btMax - btMin < 20) btMax = btMin + 20;
+    var x = (wn) => m.left + w * (wn - wnMin) / (wnMax - wnMin || 1);
+    var y = (bt) => bottom - (bottom - m.top) * (bt - btMin) / (btMax - btMin);
+
+    var svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: 'irspec', role: 'img',
+        'aria-label': 'Infrared spectrum: brightness temperature by wavenumber' });
+    svgEl('rect', { x: 0, y: 0, width: W, height: H, class: 'skewt-bg' }, svg);
+
+    // Named regions behind the line, labelled along the top where there's room
+    var labelEnd = -Infinity;
+    for (var [lo, hi, label] of SPECTRUM_REGIONS) {
+        if (hi < wnMin || lo > wnMax) continue;
+        var x0 = x(Math.max(lo, wnMin)), x1 = x(Math.min(hi, wnMax)), mid = (x0 + x1) / 2, half = label.length * 3;
+        svgEl('rect', { x: x0, y: m.top, width: x1 - x0, height: bottom - m.top, class: label === 'Window' ? 'irspec-window' : 'irspec-band' }, svg);
+        if (mid - half < labelEnd + 4) continue;
+        svgEl('text', { x: mid, y: m.top - 4, class: 'skewt-label', 'text-anchor': 'middle' }, svg).textContent = label;
+        labelEnd = mid + half;
+    }
+
+    // Temperature axis
+    var step = btMax - btMin > 80 ? 20 : 10;
+    for (var t = btMin; t <= btMax; t += step) {
+        svgEl('line', { x1: m.left, x2: m.left + w, y1: y(t), y2: y(t), class: 'skewt-isobar' }, svg);
+        svgEl('text', { x: m.left - 5, y: y(t) + 3.5, class: 'skewt-label', 'text-anchor': 'end' }, svg).textContent = t;
+    }
+    svgEl('text', { x: 0, y: 0, class: 'skewt-label', 'text-anchor': 'middle',
+        transform: `translate(9 ${(m.top + bottom) / 2}) rotate(-90)` }, svg).textContent = 'K';
+
+    // One line per run of channels, broken between bands. Files often carry a selection
+    // of channels, so smaller gaps are bridged
+    var runs = [], run = [];
+    spectrum.forEach((p, i) => {
+        if (i && p.wn - spectrum[i - 1].wn > 40) {
+            runs.push(run);
+            run = [];
+        }
+        run.push(p);
+    });
+    runs.push(run);
+    for (var r of runs) {
+        if (r.length === 1) svgEl('circle', { cx: x(r[0].wn), cy: y(r[0].bt), r: 1, class: 'irspec-dot' }, svg);
+        else svgEl('polyline', { points: r.map((p) => `${x(p.wn).toFixed(1)},${y(p.bt).toFixed(1)}`).join(' '), class: 'irspec-line' }, svg);
+    }
+
+    // Wavenumber axis
+    for (var wn of [700, 1000, 1500, 2000, 2500]) {
+        if (wn < wnMin || wn > wnMax) continue;
+        svgEl('line', { x1: x(wn), x2: x(wn), y1: bottom, y2: bottom + 4, class: 'skewt-tick' }, svg);
+        svgEl('text', { x: x(wn), y: bottom + 14, class: 'skewt-label', 'text-anchor': 'middle' }, svg).textContent = wn;
+    }
+    svgEl('text', { x: m.left + w / 2, y: H - 3, class: 'skewt-axis', 'text-anchor': 'middle' }, svg).textContent = 'Wavenumber (cm⁻¹)';
+    svgEl('rect', { x: m.left, y: m.top, width: w, height: bottom - m.top, class: 'skewt-frame' }, svg);
+
+    // Hover readout for the nearest channel
+    var marker = svgEl('circle', { r: 2.5, class: 'irspec-marker', visibility: 'hidden' }, svg);
+    var readout = svgEl('text', { x: m.left + w - 4, y: bottom - 6, class: 'skewt-readout', 'text-anchor': 'end' }, svg);
+    svg.addEventListener('mousemove', (e) => {
+        var box = svg.getBoundingClientRect();
+        var wn = wnMin + ((e.clientX - box.left) * W / box.width - m.left) / w * (wnMax - wnMin);
+        var p = spectrum.reduce((best, q) => (Math.abs(q.wn - wn) < Math.abs(best.wn - wn) ? q : best));
+        marker.setAttribute('cx', x(p.wn));
+        marker.setAttribute('cy', y(p.bt));
+        marker.setAttribute('visibility', 'visible');
+        readout.textContent = `Ch ${p.channel} · ${p.wn.toFixed(1)} cm⁻¹ (${(1e4 / p.wn).toFixed(2)} µm) · ${p.bt.toFixed(1)} K`;
+    });
+    svg.addEventListener('mouseleave', () => {
+        marker.setAttribute('visibility', 'hidden');
+        readout.textContent = '';
+    });
+
+    container.replaceChildren(svg);
 }
 
 function windTiles(values) {
@@ -2029,6 +2248,8 @@ function renderDecoded(out, title, result) {
     var satellite = values.has(1007);
     // Wind profilers and radar VAD winds: heights without pressure
     var winds = !sounding && !satellite ? windProfileLevels(result.rows) : null;
+    // Hyperspectral sounders: channel radiances, maybe only the first of them for now (see showSpectrum)
+    var spectrum = satellite && (result.fullSpectrum || values.has(14044) || values.has(14046));
     var marine = sounding || winds ? null : marineDetails(result.rows, satellite);
     var tiles = sounding ? soundingTiles(profile) : satellite ? satelliteTiles(result.rows, values) : winds ? windProfileTiles(winds, values) : [];
     for (var key of sounding || satellite || winds ? [] : KEY_VALUES) {
@@ -2060,6 +2281,7 @@ function renderDecoded(out, title, result) {
         <button type="button" class="btn btn-sm btn-outline-secondary sounding-expand">Expand sounding</button>` : ''}
         ${winds ? '<div class="wind-profile"></div>' : ''}
         ${tiles.length ? `<div class="pp-tiles">${tiles.join('')}</div>` : ''}
+        ${spectrum ? '<div class="pp-section">Infrared spectrum</div><div class="pp-spectrum"></div>' : ''}
         ${marine ? `
         <div class="pp-section">${satellite ? 'Sea state from space' : marine.ship ? 'Sea state and ship' : 'Sea state'}</div>
         <div class="pp-marine">
@@ -2087,6 +2309,7 @@ function renderDecoded(out, title, result) {
         renderWaveSpectrum(out.querySelector('.wave-spectrum'), marine.spectrum, { width: 300, height: 190 });
     }
     if (winds) showWindProfiles(out.querySelector('.wind-profile'), result);
+    if (spectrum) showSpectrum(out.querySelector('.pp-spectrum'), result);
     if (sounding) {
         var label = name || (title && title.textContent) || 'Sounding';
         showSoundingCharts(out.querySelector('.sounding'), profile, { width: 300, height: 390, time: soundingTime(values) });
@@ -5173,6 +5396,7 @@ function plotDecodedReport(job, rows, profile, index, fileIndex, swath) {
     var subLayer = job.kind === 'gts' || job.kind === 'gts-satellite' ? `gts-${cls}` : job.kind === 'files' || job.kind === 'cache-satellite' ? `cache-${cls}` : null;
     if (cls === 'lightning' && seenFlash(flashTime(values), lat, lon)) return;
     if (subLayer && subLayer.endsWith('-satellite') && effectiveHidden().includes(subLayer)) return;
+    var kept = subLayer && subLayer.endsWith('-satellite') ? trimRows(rows) : rows;
     var record = {
         id: nextId++,
         coords: [lon, lat],
@@ -5198,7 +5422,7 @@ function plotDecodedReport(job, rows, profile, index, fileIndex, swath) {
         format: 'bufr',
         color: subLayer ? OBS_CLASSES[cls].color : COLORS[job.kind],
         source: null,
-        decoded: { subsets: 1, index: 0, rows: subLayer && subLayer.endsWith('-satellite') ? trimRows(rows) : rows, profile: profile },
+        decoded: { subsets: 1, index: 0, rows: kept, profile: profile, trimmed: kept !== rows },
         alt: aircraftAltitude(values, t),
         born: Date.now(),
     };
@@ -6845,6 +7069,7 @@ function swathRecord(file, i) {
         // Without its decoded values, the popup decodes the report from the file again
         source: decoded ? null : bufrSource(t.notification, t.notification.properties || {}),
         subsetIndex: file.index[i],
+        fileIndex: file.index[i],
         metrics,
         swath: true,
     };

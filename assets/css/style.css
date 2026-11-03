@@ -573,6 +573,28 @@
   fill: #1c9bb5;
   fill-opacity: 0.75;
 }
+.irspec {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  font-family: system-ui, sans-serif;
+}
+.irspec-band {
+  fill: #e9ecef;
+}
+.irspec-window {
+  fill: #fff3bf;
+  fill-opacity: 0.6;
+}
+.irspec-line {
+  fill: none;
+  stroke: #c2255c;
+  stroke-width: 0.8;
+}
+.irspec-dot,
+.irspec-marker {
+  fill: #c2255c;
+}
 .wind-profile {
   margin-bottom: 8px;
 }
@@ -850,6 +872,7 @@
 .hourly,
 .forecast,
 .wavespec,
+.irspec,
 .windprof,
 .skewt {
   margin-inline: auto;
