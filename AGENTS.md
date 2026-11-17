@@ -17,7 +17,14 @@ https://benwebb.com/wis-live/). The page is not affiliated with WMO.
 
 ```
 index.html                 Page shell: meta tags, analytics, CDN scripts, #map
-src/main.js                The app, an ES module (being split into modules; see below)
+src/main.js                The main page: map, sidebar, popups (being split up; see below)
+src/mqtt.js                connectFastest({ onMessage, onState }): races the Global Brokers
+src/decoder.js             callDecoder(fn, ...args): Pyodide + pybufrkit in Web Workers
+                           (DECODE_PY); onDecoderSettled(fn) once it has started or failed
+src/lib/util.js            esc, darken, svgEl, knots, loadScript
+src/lib/geo.js             distances, hulls, lines across ±180, H3 cells (h3Cell, cellRing)
+src/satellite/names.js     satellite and instrument names from BUFR code tables
+src/satellite/spectrum.js  CrIS/IASI infrared spectra (showSpectrum)
 src/style.css              All custom styles
 public/assets/py/pybufrkit-*.whl  Pure-Python wheel of pybufrkit loaded by Pyodide
 public/assets/data/centre-id.json Snapshot of the WMO centre-id register (fallback)
@@ -103,15 +110,17 @@ bottom; the core comes first, roughly in this order:
    `matchesFilters`) and the dataset list (via `datasetMatchesFilters`).
    Keep all three in sync when adding a filter. Filters, styling and a shown
    dataset are mirrored in the URL (`readFiltersFromUrl`/`writeFiltersToUrl`).
-6. **MQTT** — `connectFastest` races the brokers in `hosts` and keeps the
-   first one that connects and subscribes to `origin/a/wis2/#` and
-   `cache/a/wis2/#`. The `everyone/everyone` credentials are public.
+6. **MQTT** (`src/mqtt.js`) — `connectFastest` races the brokers in `hosts`
+   and keeps the first one that connects and subscribes to `origin/a/wis2/#`
+   and `cache/a/wis2/#`; the page passes `onMessage` and `onState`. The
+   `everyone/everyone` credentials are public.
 7. **Message handling** — `onMessage` parses the WIS2 notification (GeoJSON),
    skips `ignoredTopics`, reduces geometry to a point with `pointFor` (large
    areas are dropped), and builds a record.
-8. **BUFR decoding** — `loadDecoder` lazily starts Web Workers
-   (`DECODER_WORKER`) that load Pyodide, install `bitstring==3.1.9` and
-   `six`, unpack the bundled wheel, and run the embedded `DECODE_PY`.
+8. **BUFR decoding** (`src/decoder.js`) — `callDecoder` lazily starts Web
+   Workers (`DECODER_WORKER`, a classic worker built from a string) that load
+   Pyodide, install `bitstring==3.1.9` and `six`, unpack the bundled wheel, and
+   run the embedded `DECODE_PY`.
    `fetchData` tries inline base64 content, then every canonical link seen
    for the `data_id`, preferring CORS-friendly hosts.
 

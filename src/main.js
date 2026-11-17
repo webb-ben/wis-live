@@ -1,13 +1,11 @@
-String.prototype.hexDecode = function(){
-    var j;
-    var hexes = this.match(/.{1,4}/g) || [];
-    var back = "";
-    for(j = 0; j<hexes.length; j++) {
-        back += String.fromCharCode(parseInt(hexes[j], 16));
-    }
-
-    return back;
-}
+// The main page: the live map, its sidebar and popups. Pieces other pages can use
+// live in their own modules
+import { esc, darken, svgEl, knots, loadScript } from './lib/util.js';
+import { distanceKm, segments, unwrap, convexHull, inOrNearRing, H3_SAMPLE_DEG, h3Cell, cellRing } from './lib/geo.js';
+import { connectFastest, brokerState } from './mqtt.js';
+import { callDecoder, preloadDecoder, decoderReady, decoderGaveUp, onDecoderSettled } from './decoder.js';
+import { SATELLITE_NAMES, INSTRUMENT_NAMES, AMV_METHODS, PIXEL_TYPES } from './satellite/names.js';
+import { showSpectrum } from './satellite/spectrum.js';
 
 // Map
 const MAX_POINTS = 100000;        // Oldest points are dropped beyond this...
@@ -476,13 +474,6 @@ let toRemove = [];
 let toUpdate = [];
 let pulses = [];            // Recent arrivals, drawn as expanding rings
 let animating = false;
-
-// A darker shade of a hex colour, for outlines that match their fill
-function darken(hex, amount = 0.45) {
-    var n = parseInt(hex.trim().slice(1), 16);
-    var channel = (shift) => Math.round(((n >> shift) & 255) * (1 - amount));
-    return `#${[16, 8, 0].map((shift) => channel(shift).toString(16).padStart(2, '0')).join('')}`;
-}
 
 function isGateway(record) {
     return ['gts', 'gts-satellite', 'gts-text', 'wis2gts'].includes(record.decodedLayer);
@@ -2123,16 +2114,6 @@ const COMPASS_POINTS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', '
 // ---------- Satellite reports: what made them and what they measure.
 // Code tables 0 01 007 (satellite) and 0 02 019 (instrument), common entries only;
 // anything else shows its code.
-const SATELLITE_NAMES = { 3: 'Metop-B', 4: 'Metop-A', 5: 'Metop-C', 55: 'Meteosat-8', 56: 'Meteosat-9', 57: 'Meteosat-10',
-    70: 'Meteosat-11', 173: 'Himawari-8', 174: 'Himawari-9', 209: 'NOAA-18', 223: 'NOAA-19', 224: 'Suomi NPP',
-    225: 'NOAA-20', 226: 'NOAA-21', 524: 'FY-3E', 270: 'GOES-16', 271: 'GOES-17', 272: 'GOES-18',
-    750: 'COSMIC-2 E1', 751: 'COSMIC-2 E2', 752: 'COSMIC-2 E3', 753: 'COSMIC-2 E4', 754: 'COSMIC-2 E5', 755: 'COSMIC-2 E6' };
-const INSTRUMENT_NAMES = { 203: 'MHS', 221: 'IASI', 570: 'AMSU-A', 591: 'AVHRR/3', 616: 'VIIRS', 620: 'CrIS', 621: 'ATMS' };
-// Code table 0 02 023: which channel cloud-motion winds were tracked in
-const AMV_METHODS = { 1: 'Infrared', 2: 'Visible', 3: 'Water vapour (cloud)', 4: 'Several channels', 5: 'Water vapour (clear air)',
-    6: 'Ozone', 7: 'Water vapour' };
-// Code table 0 08 072
-const PIXEL_TYPES = { 0: 'Mixed', 1: 'Clear', 2: 'Cloudy', 3: 'Probably clear', 4: 'Probably cloudy', 5: 'Ash' };
 
 function satelliteTiles(rows, values) {
     // id: the descriptor of a value the map can be coloured by (see metricTileAttr)
@@ -2223,156 +2204,6 @@ function satelliteTiles(rows, values) {
     if (sun !== null) tiles.push(tile('Sun', `${sun < 90 ? 'Day' : 'Night'} <small>${esc(Math.round(sun))}° from overhead</small>`));
     if (number(7024) !== null) tiles.push(tile('Viewing angle', `${esc(Math.round(number(7024)))}° <small>from overhead</small>`));
     return tiles;
-}
-
-// ---------- Infrared spectra from hyperspectral sounders (CrIS, IASI): each
-// channel's radiance as a brightness temperature against wavenumber, so the
-// CO₂, ozone and water-vapour bands show at a glance.
-const PLANCK_C1 = 1.191042e-5;  // mW m-2 sr-1 (cm-1)-4
-const PLANCK_C2 = 1.4387752;    // K cm
-const IASI_WAVENUMBERS = [645, 0.25];  // cm-1 of channel 1, and the spacing (IASI carries no band edges)
-// Parts of the spectrum named on the chart, in cm-1
-const SPECTRUM_REGIONS = [[650, 770, 'CO₂'], [800, 980, 'Window'], [1000, 1070, 'O₃'], [1300, 1750, 'H₂O'], [2250, 2390, 'CO₂']];
-
-// [{ channel, wn (cm-1), bt (K) }] from CrIS channel radiances (014044, per cm-1, band
-// edges in 008076 groups) or IASI scaled radiances (014046, scale factor per channel
-// range in 025140-025142). Missing radiances aren't in the rows, so those channels are gaps.
-function radianceSpectrum(rows) {
-    var bands = [], scales = [], band = null, range = null, channel = null, raw = [];
-    for (var [id, , value] of rows) {
-        if (typeof value !== 'number') continue;
-        if (id === 8076) bands.push(band = { wn: [] });
-        else if (id === 6029 && band && band.wn.length < 2) band.wn.push(value / 100);  // /m to cm-1
-        else if (id === 25140) range = { start: value };
-        else if (id === 25141 && range) {
-            range.end = value;
-            if (band && band.start === undefined && band.wn.length === 2) Object.assign(band, range);
-        } else if (id === 25142 && range) scales.push({ ...range, factor: value });
-        else if (id === 5042) {
-            // Numbering that starts again is another instrument's channels (e.g. CrIS files
-            // go on to imager radiances), not more of the spectrum
-            if (raw.length && value < raw[raw.length - 1][0]) break;
-            channel = value;
-        } else if (id === 14044 && channel !== null) raw.push([channel, value]);
-        else if (id === 14046 && channel !== null) {
-            var c = channel, s = scales.find((r) => c >= r.start && c <= r.end);
-            // W m-2 sr-1 m (per m-1) to per cm-1
-            if (s) raw.push([channel, value * 10 ** -s.factor * 100]);
-        }
-    }
-    bands = bands.filter((b) => b.wn.length === 2 && b.end > b.start);
-    var wavenumber = (c) => {
-        if (!bands.length) return IASI_WAVENUMBERS[0] + (c - 1) * IASI_WAVENUMBERS[1];
-        var b = bands.find((x) => c >= x.start && c <= x.end);
-        return b ? b.wn[0] + (c - b.start) * (b.wn[1] - b.wn[0]) / (b.end - b.start) : null;
-    };
-    var out = [];
-    for (var [ch, radiance] of raw) {
-        var wn = wavenumber(ch), mw = radiance * 1000;
-        if (!wn || !(mw > 0)) continue;
-        out.push({ channel: ch, wn, bt: PLANCK_C2 * wn / Math.log(1 + PLANCK_C1 * wn ** 3 / mw) });
-    }
-    out.sort((a, b) => a.wn - b.wn);
-    return out.length >= 20 ? out : null;
-}
-
-// Draws what the popup has, then every channel once the report is decoded again in full
-// (satellite reports keep only their first SATELLITE_ROWS_MAX values)
-async function showSpectrum(container, result) {
-    var spectrum = result.fullSpectrum || radianceSpectrum(result.rows);
-    if (spectrum) renderSpectrum(container, spectrum, { width: 300, height: 200 });
-    if (result.fullSpectrum || !result.trimmed || !result.loadFull) return;
-    var note = container.parentNode.insertBefore(document.createElement('div'), container.nextSibling);
-    note.className = 'pp-status';
-    note.textContent = 'Loading every channel…';
-    try {
-        var full = await result.loadFull();
-        result.fullSpectrum = radianceSpectrum(full.rows);
-        note.remove();
-        if (result.fullSpectrum && container.isConnected) renderSpectrum(container, result.fullSpectrum, { width: 300, height: 200 });
-    } catch (err) {
-        note.textContent = `Only the first channels: ${err.message}`;
-    }
-}
-
-function renderSpectrum(container, spectrum, opts) {
-    var W = opts.width, H = opts.height;
-    var m = { top: 16, right: 10, bottom: 30, left: 36 };
-    var w = W - m.left - m.right, bottom = H - m.bottom;
-    var wnMin = spectrum[0].wn, wnMax = spectrum[spectrum.length - 1].wn;
-    var bts = spectrum.map((p) => p.bt);
-    var btMin = Math.floor(Math.min(...bts) / 10) * 10, btMax = Math.ceil(Math.max(...bts) / 10) * 10;
-    if (btMax - btMin < 20) btMax = btMin + 20;
-    var x = (wn) => m.left + w * (wn - wnMin) / (wnMax - wnMin || 1);
-    var y = (bt) => bottom - (bottom - m.top) * (bt - btMin) / (btMax - btMin);
-
-    var svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: 'irspec', role: 'img',
-        'aria-label': 'Infrared spectrum: brightness temperature by wavenumber' });
-    svgEl('rect', { x: 0, y: 0, width: W, height: H, class: 'skewt-bg' }, svg);
-
-    // Named regions behind the line, labelled along the top where there's room
-    var labelEnd = -Infinity;
-    for (var [lo, hi, label] of SPECTRUM_REGIONS) {
-        if (hi < wnMin || lo > wnMax) continue;
-        var x0 = x(Math.max(lo, wnMin)), x1 = x(Math.min(hi, wnMax)), mid = (x0 + x1) / 2, half = label.length * 3;
-        svgEl('rect', { x: x0, y: m.top, width: x1 - x0, height: bottom - m.top, class: label === 'Window' ? 'irspec-window' : 'irspec-band' }, svg);
-        if (mid - half < labelEnd + 4) continue;
-        svgEl('text', { x: mid, y: m.top - 4, class: 'skewt-label', 'text-anchor': 'middle' }, svg).textContent = label;
-        labelEnd = mid + half;
-    }
-
-    // Temperature axis
-    var step = btMax - btMin > 80 ? 20 : 10;
-    for (var t = btMin; t <= btMax; t += step) {
-        svgEl('line', { x1: m.left, x2: m.left + w, y1: y(t), y2: y(t), class: 'skewt-isobar' }, svg);
-        svgEl('text', { x: m.left - 5, y: y(t) + 3.5, class: 'skewt-label', 'text-anchor': 'end' }, svg).textContent = t;
-    }
-    svgEl('text', { x: 0, y: 0, class: 'skewt-label', 'text-anchor': 'middle',
-        transform: `translate(9 ${(m.top + bottom) / 2}) rotate(-90)` }, svg).textContent = 'K';
-
-    // One line per run of channels, broken between bands. Files often carry a selection
-    // of channels, so smaller gaps are bridged
-    var runs = [], run = [];
-    spectrum.forEach((p, i) => {
-        if (i && p.wn - spectrum[i - 1].wn > 40) {
-            runs.push(run);
-            run = [];
-        }
-        run.push(p);
-    });
-    runs.push(run);
-    for (var r of runs) {
-        if (r.length === 1) svgEl('circle', { cx: x(r[0].wn), cy: y(r[0].bt), r: 1, class: 'irspec-dot' }, svg);
-        else svgEl('polyline', { points: r.map((p) => `${x(p.wn).toFixed(1)},${y(p.bt).toFixed(1)}`).join(' '), class: 'irspec-line' }, svg);
-    }
-
-    // Wavenumber axis
-    for (var wn of [700, 1000, 1500, 2000, 2500]) {
-        if (wn < wnMin || wn > wnMax) continue;
-        svgEl('line', { x1: x(wn), x2: x(wn), y1: bottom, y2: bottom + 4, class: 'skewt-tick' }, svg);
-        svgEl('text', { x: x(wn), y: bottom + 14, class: 'skewt-label', 'text-anchor': 'middle' }, svg).textContent = wn;
-    }
-    svgEl('text', { x: m.left + w / 2, y: H - 3, class: 'skewt-axis', 'text-anchor': 'middle' }, svg).textContent = 'Wavenumber (cm⁻¹)';
-    svgEl('rect', { x: m.left, y: m.top, width: w, height: bottom - m.top, class: 'skewt-frame' }, svg);
-
-    // Hover readout for the nearest channel
-    var marker = svgEl('circle', { r: 2.5, class: 'irspec-marker', visibility: 'hidden' }, svg);
-    var readout = svgEl('text', { x: m.left + w - 4, y: bottom - 6, class: 'skewt-readout', 'text-anchor': 'end' }, svg);
-    svg.addEventListener('mousemove', (e) => {
-        var box = svg.getBoundingClientRect();
-        var wn = wnMin + ((e.clientX - box.left) * W / box.width - m.left) / w * (wnMax - wnMin);
-        var p = spectrum.reduce((best, q) => (Math.abs(q.wn - wn) < Math.abs(best.wn - wn) ? q : best));
-        marker.setAttribute('cx', x(p.wn));
-        marker.setAttribute('cy', y(p.bt));
-        marker.setAttribute('visibility', 'visible');
-        readout.textContent = `Ch ${p.channel} · ${p.wn.toFixed(1)} cm⁻¹ (${(1e4 / p.wn).toFixed(2)} µm) · ${p.bt.toFixed(1)} K`;
-    });
-    svg.addEventListener('mouseleave', () => {
-        marker.setAttribute('visibility', 'hidden');
-        readout.textContent = '';
-    });
-
-    container.replaceChildren(svg);
 }
 
 // metric: the measure the speed tile colours the map by (wind at stations, or a satellite wind)
@@ -2577,10 +2408,6 @@ function marineDetails(rows, satellite) {
 
     var waveDirs = [dominant, ...swellDirs].filter((d) => d !== undefined);
     return { tiles, spectrum, ship: course !== undefined || speed !== undefined, compass: marineCompass(first(11001), waveDirs, speed ? course : undefined) };
-}
-
-function knots(ms) {
-    return Math.round(ms * 1.943844);
 }
 
 // Directional wave spectrum: one entry per frequency band with its energy
@@ -3235,7 +3062,6 @@ function renderForecastChart(container, models, observed, opts) {
 // ---------- Upper-air sounding (TEMP) viewer: Skew-T log-P diagram
 // profile levels: [pressure hPa, height gpm, temperature C, dewpoint C, wind dir, wind m/s, dlat, dlon]
 const STANDARD_LEVELS = [1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10];
-const SVG_NS = 'http://www.w3.org/2000/svg';
 
 function soundingTiles(profile) {
     var tile = (label, text) => `<div class="pp-tile"><div>${esc(label)}</div><strong>${esc(text)}</strong></div>`;
@@ -3509,13 +3335,6 @@ function renderWindProfile(container, columns, opts) {
     });
 
     container.replaceChildren(svg);
-}
-
-function svgEl(name, attrs, parent) {
-    var el = document.createElementNS(SVG_NS, name);
-    for (var k in attrs) el.setAttribute(k, attrs[k]);
-    if (parent) parent.appendChild(el);
-    return el;
 }
 
 // Pressure lines labelled on the chart, and the minor ticks between them
@@ -3829,10 +3648,6 @@ function hostname(href) {
 
 function titleCase(name) {
     return name.toLowerCase().replace(/(^|[\s(\/-])\w/g, (c) => c.toUpperCase());
-}
-
-function esc(value) {
-    return String(value).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
 // Sidebar listing incoming messages, newest first
@@ -4778,94 +4593,6 @@ function renderQueueRow(entry) {
     return row;
 }
 
-// Public WIS2 Global Brokers reachable from a browser (WSS only)
-const hosts = [
-    'wss://globalbroker.meteo.fr:443/mqtt',
-    'wss://globalbroker.inmet.gov.br:443/mqtt',
-    'wss://wis2broker.globaldata.nws.noaa.gov:443/mqtt',
-];
-const topics = ['origin/a/wis2/#', 'cache/a/wis2/#'];
-const options = {
-    username: 'everyone',
-    password: '00650076006500720079006f006e0065'.hexDecode(),
-    keepalive: 60,
-    protocolVersion: 5,
-    reconnectPeriod: 1000,
-    connectTimeout: 30 * 1000,
-};
-
-let client = null;
-
-// Which Global Broker the page is on, shown in the map key: connecting (racing them all),
-// connected, reconnecting (to the same one), or retrying (none could be reached)
-let brokerState = { state: 'connecting', host: null };
-
-function setBrokerState(state, host) {
-    brokerState = { state, host: host === undefined ? brokerState.host : host };
-    updateMapKey();
-}
-
-// Race all brokers and keep the first one that connects and subscribes
-function connectFastest() {
-    console.log('Connecting mqtt client');
-    setBrokerState('connecting', null);
-    let failures = 0;
-
-    hosts.forEach((host) => {
-        const candidate = mqtt.connect(host, { ...options, reconnectPeriod: 0 });
-        candidate.setMaxListeners(10);
-        let failed = false;
-
-        const fail = () => {
-            if (failed || candidate === client) return;
-            failed = true;
-            candidate.end(true);
-            if (!client && ++failures === hosts.length) {
-                console.log('All brokers failed, retrying...');
-                setBrokerState('retrying', null);
-                setTimeout(connectFastest, 5000);
-            }
-        };
-
-        candidate.once('connect', () => {
-            candidate.subscribe(topics, (err, granted) => {
-                if (err || granted.some((g) => g.qos >= 128)) {
-                    console.log(`Subscribe failed on ${host}`);
-                    return fail();
-                }
-                if (client) return candidate.end(true); // Another broker won
-
-                client = candidate;
-                client.options.reconnectPeriod = options.reconnectPeriod;
-                client.on('message', (topic, message) => {
-                    var feature = parseMessage(topic, message);
-                    queueMessage(topic, message, feature && onMessage(topic, feature), feature);
-                });
-                client.on('reconnect', () => {
-                    console.log('Reconnecting...');
-                    setBrokerState('reconnecting');
-                });
-                client.on('connect', () => setBrokerState('connected'));  // After a reconnect
-                console.log(`Connected to ${host}!`);
-                setBrokerState('connected', new URL(host).host);
-            });
-        });
-
-        candidate.on('error', (err) => {
-            console.log(`Connection error (${host}): `, err.message);
-            if (candidate === client) {
-                candidate.end(true);
-                client = null;
-                connectFastest();
-            } else {
-                fail();
-            }
-        });
-
-        candidate.on('close', fail);
-    });
-}
-
 readFiltersFromUrl();  // Before the sidebar is built, so its controls start set
 // The sidebar, opened from the tab on its edge
 new QueueControl().onAdd(map);
@@ -4918,7 +4645,14 @@ if (!PHONE.matches) {
     selectQueueTab('layers');
 }
 
-connectFastest();
+connectFastest({
+    onMessage: (topic, message) => {
+        var feature = parseMessage(topic, message);
+        queueMessage(topic, message, feature && onMessage(topic, feature), feature);
+    },
+    // The map key shows which broker the page is on
+    onState: updateMapKey,
+});
 
 const ignoredTopics = [
     '/a/wis2/ca-eccc-msc/data/core/weather/prediction',
@@ -5033,11 +4767,6 @@ function collectPositions(coords, out) {
     coords.forEach((c) => collectPositions(c, out));
 }
 
-// BUFR decoding in the browser with Pyodide + pybufrkit, loaded on first use
-const PYODIDE_URL = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/';
-// Served from public/ at the site's root; the CDN copy is the same file in the repo
-const PYBUFRKIT_WHEEL = 'assets/py/pybufrkit-0.2.25-py3-none-any.whl';
-const PYBUFRKIT_WHEEL_CDN = 'https://cdn.jsdelivr.net/gh/webb-ben/wis-live@main/public/' + PYBUFRKIT_WHEEL;
 // wis2box names itself and its version in generated_by ("wis2box 1.3.0"), and
 // serves data under <base>/data/<date>/wis/..., so the base of an origin link is
 // the wis2box itself. Cache copies find it through the origin's link for the same data.
@@ -5068,356 +4797,6 @@ function wis2boxOf(record) {
 
 const DATA_LINKS_MAX = 20000;
 const dataLinks = new Map();  // data_id -> hrefs seen from every cache
-const decoderWorkers = {};  // lane ('main' or 'files') -> worker
-let decoderReady = false;
-let decoderGaveUp = false;  // It couldn't start; the Global Replay, which waits for it, goes ahead
-let nextCall = 1;
-const decoderCalls = new Map();  // call id -> { resolve, reject }
-
-const DECODE_PY = `
-import json
-from pybufrkit.decoder import Decoder
-from pybufrkit.descriptors import ElementDescriptor
-
-def _value(v):
-    if isinstance(v, bytes):
-        # All-ones bytes are BUFR's padding (and missing) characters, which would read as ÿ
-        v = v.replace(b'\\xff', b'')
-        try:
-            v = v.decode('utf-8')
-        except UnicodeDecodeError:
-            v = v.decode('latin-1')
-        return v.strip('\\x00 ')
-    return v
-
-def _wsi(rows):
-    v = {d: x for d, _, x, _ in rows}
-    try:
-        if all(k in v for k in (1125, 1126, 1127, 1128)):
-            return f"{v[1125]}-{v[1126]}-{v[1127]}-{v[1128]}"
-        if 1001 in v and 1002 in v:
-            return f"0-20000-0-{int(v[1001]):02d}{int(v[1002]):03d}"
-    except (TypeError, ValueError):
-        return None
-
-_cache = {}  # key -> decoded subsets, so reports can be paged without re-decoding
-
-# Some files hold many BUFR messages back to back (e.g. a 60-message IASI pass),
-# so each is found by the length in its section 0. Big files are sampled: up to
-# _MAX_MESSAGES spread across the file, so one pass can't hold up the decoder.
-_MAX_MESSAGES = 8
-
-def _messages(b):
-    out, start = [], b.find(b'BUFR')
-    while start >= 0:
-        length = int.from_bytes(b[start + 4:start + 7], 'big')
-        if length < 8 or start + length > len(b):
-            out.append(b[start:])
-            break
-        out.append(b[start:start + length])
-        start = b.find(b'BUFR', start + length)
-    if len(out) > _MAX_MESSAGES:
-        out = [out[i * len(out) // _MAX_MESSAGES] for i in range(_MAX_MESSAGES)]
-    return out
-
-def _decode(data):
-    subsets = []
-    for i, b in enumerate(_messages(bytes(data.to_py()))):
-        try:
-            subsets.extend(_decode_message(b))
-        except Exception:
-            if i == 0:
-                raise  # Later messages that fail are skipped
-    return subsets
-
-def _decode_message(b):
-    td = Decoder().process(b).template_data.value
-    subsets = []
-    for descs, vals in zip(td.decoded_descriptors_all_subsets, td.decoded_values_all_subsets):
-        rows = []
-        for d, v in zip(descs, vals):
-            # Skip sequences, operators, replication factors and missing values
-            if not isinstance(d, ElementDescriptor) or v is None or d.id // 1000 == 31:
-                continue
-            v = _value(v)
-            if v == '':
-                continue
-            rows.append((d.id, d.name, v, d.unit))
-        subsets.append(rows)
-    return subsets
-
-# Soundings (TEMP) repeat a block per level: time offset and significance,
-# then pressure, height, drift, temperature, dewpoint and wind. Rather than
-# thousands of rows, return the header rows plus one compact entry per level:
-# [pressure hPa, height gpm, temperature C, dewpoint C, wind dir, wind m/s, dlat, dlon]
-_LEVEL = {10009: 1, 12101: 2, 12103: 3, 11001: 4, 11002: 5, 5015: 6, 6015: 7}
-
-def _profile(rows):
-    if sum(1 for r in rows if r[0] == 7004) < 3:
-        return rows, None
-    header, levels, level = [], [], None
-    for d, name, v, unit in rows:
-        if d == 7004:
-            level = [v / 100, None, None, None, None, None, None, None]
-            levels.append(level)
-        elif level is None:
-            if d not in (4086, 8042):
-                header.append((d, name, v, unit))
-        elif d in _LEVEL and level[_LEVEL[d]] is None and isinstance(v, (int, float)):
-            level[_LEVEL[d]] = round(v - 273.15, 2) if d in (12101, 12103) else v
-    return header, levels
-
-def ready():
-    return 'ok'
-
-# ---- Weather radar (ODIM HDF5 polar volumes). Returns the lowest-elevation
-# reflectivity scan, DBZH before TH, as bytes of (dBZ + 32) * 2, 0 for no echo.
-def _attr(groups, name, default=None):
-    for g in groups:
-        if g is not None and name in g.attrs:
-            v = g.attrs[name]
-            if isinstance(v, bytes):
-                return v.decode()
-            return v.item() if hasattr(v, 'item') else v
-    return default
-
-# GAMIC volumes (scan0, scan1, ... each with moment_N datasets) instead of ODIM's
-# dataset1/data1: values span dyn_range_min..max over 1..2^bits-1 (0 is no data),
-# and each ray's azimuth is in ray_header, so rays are put back on whole degrees
-def _gamic_scan(f, np, base64):
-    best = None
-    for name, s in f.items():
-        if not name.startswith('scan') or 'how' not in s:
-            continue
-        el = _attr([s['how']], 'elevation')
-        for m in s:
-            q = _attr([s[m]], 'moment') if m.startswith('moment_') else None
-            if q in ('Zh', 'UZh') and el is not None:
-                rank = (q != 'Zh', float(el))
-                if best is None or rank < best[0]:
-                    best = (rank, s, s[m], q)
-    if best is None:
-        return None
-    _, s, m, q = best
-    raw = m[()]
-    bits = 16 if raw.dtype == np.uint16 else 8
-    lo, hi = float(_attr([m], 'dyn_range_min')), float(_attr([m], 'dyn_range_max'))
-    dbz = lo + (raw.astype('float32') - 1) * (hi - lo) / (2 ** bits - 2)
-    q8 = np.clip(np.round((dbz + 32) * 2), 1, 254).astype('uint8')
-    q8[raw == 0] = 0
-    rays = s['ray_header'][()]
-    start, stop = rays['azimuth_start'], rays['azimuth_stop']
-    azimuth = (start + ((stop - start) % 360) / 2) % 360
-    out = np.zeros((360, raw.shape[1]), 'uint8')
-    out[azimuth.astype(int) % 360] = q8
-    # Fine range gates (100 m out to 250 km) are thinned to at most 1250 bins
-    step = max(1, -(-raw.shape[1] // 1250))
-    out = np.ascontiguousarray(out[:, ::step])
-    when = str(_attr([f['what']], 'date', ''))
-    how = s['how']
-    return json.dumps({
-        'quantity': 'DBZH' if q == 'Zh' else 'TH',
-        'source': {'NOD': _attr([f.get('how')], 'site_name') or _attr([f.get('how')], 'host_name') or ''},
-        'lat': float(_attr([f['where']], 'lat')),
-        'lon': float(_attr([f['where']], 'lon')),
-        'elangle': float(_attr([how], 'elevation')),
-        'rscale': float(_attr([how], 'range_step')) * step,     # m
-        'rstart': float(_attr([how], 'range_start', 0.0)) / 1000,  # km
-        'nrays': 360,
-        'nbins': int(out.shape[1]),
-        'date': when[:10].replace('-', ''),
-        'time': when[11:19].replace(':', ''),
-        'data': base64.b64encode(out.tobytes()).decode(),
-    })
-
-def radar_scan(data):
-    import io, base64
-    import h5py
-    import numpy as np
-    f = h5py.File(io.BytesIO(bytes(data.to_py())), 'r')
-    if any(k.startswith('scan') for k in f):
-        return _gamic_scan(f, np, base64) or json.dumps(None)
-    best = None
-    for name, ds in f.items():
-        if not name.startswith('dataset') or 'where' not in ds:
-            continue
-        el = _attr([ds['where']], 'elangle')
-        if el is None:
-            continue
-        for dname, d in ds.items():
-            if not dname.startswith('data') or 'data' not in d:
-                continue
-            q = _attr([d.get('what'), ds.get('what')], 'quantity')
-            if q not in ('DBZH', 'TH'):
-                continue
-            rank = (q != 'DBZH', float(el))
-            if best is None or rank < best[0]:
-                best = (rank, ds, d, q)
-    if best is None:
-        return json.dumps(None)
-    _, ds, d, q = best
-    whats = [d.get('what'), ds.get('what'), f.get('what')]
-    raw = d['data'][()]
-    dbz = raw.astype('float32') * float(_attr(whats, 'gain', 1.0)) + float(_attr(whats, 'offset', 0.0))
-    out = np.clip(np.round((dbz + 32) * 2), 1, 254).astype('uint8')
-    for flag in ('nodata', 'undetect'):
-        v = _attr(whats, flag)
-        if v is not None:
-            out[raw == v] = 0
-    where = [ds['where'], f.get('where')]
-    source = _attr([f.get('what')], 'source', '')
-    return json.dumps({
-        'quantity': q,
-        'source': dict(p.split(':', 1) for p in source.split(',') if ':' in p),
-        'lat': float(_attr([f.get('where')], 'lat')),
-        'lon': float(_attr([f.get('where')], 'lon')),
-        'elangle': float(_attr([ds['where']], 'elangle')),
-        'rscale': float(_attr(where, 'rscale')),        # m
-        'rstart': float(_attr(where, 'rstart', 0.0)),   # km
-        'nrays': int(raw.shape[0]),
-        'nbins': int(raw.shape[1]),
-        'date': _attr([ds.get('what'), f.get('what')], 'startdate') or _attr([f.get('what')], 'date'),
-        'time': _attr([ds.get('what'), f.get('what')], 'starttime') or _attr([f.get('what')], 'time'),
-        'data': base64.b64encode(out.tobytes()).decode(),
-    })
-
-def decode_subsets(data, limit=0):
-    subsets = _decode(data)
-    indexes = range(len(subsets))
-    if limit and len(subsets) > limit:
-        # Spread the reports kept across the whole file, e.g. a satellite swath
-        indexes = indexes[::-(-len(subsets) // limit)]
-    # Each report's index in the file too, so it can be decoded again later
-    return json.dumps([_profile(subsets[i]) + (i,) for i in indexes])
-
-def decode_bufr(data, wsi, key, index=-1):
-    if key not in _cache:
-        if data is None:
-            raise ValueError('this file is no longer cached, decode it again')
-        _cache[key] = _decode(data)
-        if len(_cache) > 20:
-            _cache.pop(next(iter(_cache)))
-    subsets = _cache[key]
-    if not 0 <= index < len(subsets):
-        index = next((i for i, rows in enumerate(subsets) if _wsi(rows) == wsi), 0)
-    rows, profile = _profile(subsets[index])
-    return json.dumps({
-        'subsets': len(subsets),
-        'index': index,
-        'rows': rows,
-        'profile': profile,
-    })
-`;
-
-// Pyodide runs in a worker so decoding never blocks the map. The worker is
-// built from a string, which also works when the page is opened from file://
-const DECODER_WORKER = `
-importScripts('${PYODIDE_URL}pyodide.js');
-let ready = null;
-let h5py = null;  // Loaded on the first radar file
-
-async function init(wheelUrls) {
-    const py = await loadPyodide({ indexURL: '${PYODIDE_URL}' });
-    await py.loadPackage('micropip');
-    await py.pyimport('micropip').install(['bitstring==3.1.9', 'six']);
-    // pybufrkit only ships as an sdist, so we serve our own pure-Python wheel,
-    // falling back to the CDN copy when the local one can't be fetched
-    let wheel = null;
-    for (const url of wheelUrls) {
-        try {
-            const response = await fetch(url);
-            if (response.ok) { wheel = await response.arrayBuffer(); break; }
-        } catch (err) {}
-    }
-    if (!wheel) throw new Error('could not download the BUFR decoder');
-    py.unpackArchive(wheel, 'wheel');
-    py.runPython(${JSON.stringify(DECODE_PY)});
-    return py;
-}
-
-onmessage = async (e) => {
-    const { id, fn, args, wheelUrls } = e.data;
-    try {
-        if (!ready) ready = init(wheelUrls);
-        const py = await ready;
-        if (fn === 'radar_scan') await (h5py = h5py || py.loadPackage('h5py'));
-        postMessage({ id, result: py.globals.get(fn)(...args) });
-    } catch (err) {
-        ready = null;  // Allow a retry after a failed start
-        postMessage({ id, error: err.message });
-    }
-};
-`;
-
-// Warm the decoder up once the map is idle so the first Decode is quick.
-// Skipped on data-saver or very slow connections (it's roughly 15 MB on first visit).
-function preloadDecoder() {
-    var connection = navigator.connection;
-    if (connection && (connection.saveData || /2g/.test(connection.effectiveType || ''))) return;
-    var start = () => callDecoder('ready').catch((err) => console.debug(`Decoder preload failed: ${err.message}`));
-    if ('requestIdleCallback' in window) {
-        requestIdleCallback(start, { timeout: 10000 });
-    } else {
-        setTimeout(start, 3000);
-    }
-}
-
-// Two decoders where the device can afford them: whole files (GTS bulletins,
-// satellite swaths, up to half a second each) go to one, so popups and station
-// colouring (a few ms each) never wait behind them. Phones and small devices
-// keep one, since each holds its own copy of Python. The second loads only once
-// the first is ready (loading both at once slows the first), and takes files
-// once it is ready itself.
-let filesDecoderReady = false;
-
-function roomyForTwoDecoders() {
-    return !window.matchMedia('(max-width: 600px)').matches
-        && (navigator.deviceMemory || 8) >= 4 && (navigator.hardwareConcurrency || 4) >= 4;
-}
-
-function decoderLane(fn) {
-    return (fn === 'decode_subsets' || fn === 'radar_scan') && filesDecoderReady ? 'files' : 'main';
-}
-
-function startFilesDecoder() {
-    if (decoderWorkers.files || !roomyForTwoDecoders()) return;
-    callDecoderOn('files', 'ready').then(() => { filesDecoderReady = true; })
-        .catch((err) => console.debug(`Second decoder failed: ${err.message}`));
-}
-
-function callDecoder(fn, ...args) {
-    return callDecoderOn(decoderLane(fn), fn, ...args);
-}
-
-function callDecoderOn(lane, fn, ...args) {
-    var worker = decoderWorkers[lane];
-    if (!worker) {
-        worker = decoderWorkers[lane] = new Worker(URL.createObjectURL(new Blob([DECODER_WORKER], { type: 'text/javascript' })));
-        worker.onmessage = (e) => {
-            var call = decoderCalls.get(e.data.id);
-            decoderCalls.delete(e.data.id);
-            if (e.data.error) {
-                if (lane === 'main' && !decoderReady && !decoderGaveUp) {
-                    decoderGaveUp = true;
-                    scheduleReplay(0);
-                }
-                return call.reject(new Error(e.data.error));
-            }
-            if (lane === 'main' && !decoderReady) {
-                decoderReady = true;
-                startFilesDecoder();
-                scheduleReplay(0);  // Held back until now
-            }
-            call.resolve(e.data.result);
-        };
-    }
-    var wheelUrls = [new URL(PYBUFRKIT_WHEEL, document.baseURI).href, PYBUFRKIT_WHEEL_CDN];
-    return new Promise((resolve, reject) => {
-        var id = nextCall++;
-        decoderCalls.set(id, { resolve, reject });
-        worker.postMessage({ id, fn, args, wheelUrls });
-    });
-}
 
 // Optional layers decoded in the background: some notifications carry no
 // geometry, but the reports inside the BUFR file do, so download and decode the
@@ -6576,6 +5955,8 @@ function scheduleReplay(delay = 800) {
     if (!decoderReady && !decoderGaveUp) return;  // Called again once it has
     replayTimer = setTimeout(loadReplay, delay);
 }
+// Held back until the decoder has started (or failed to), then goes ahead
+onDecoderSettled(() => scheduleReplay(0));
 
 // The view as a bbox for an OGC API query (west, south, east, north). A view crossing
 // the antimeridian, or the whole globe, asks for everything.
@@ -7099,59 +6480,8 @@ let swathFeatureIds = 0;
 let swathsBuilt = 0;
 let swathPointsShown = false;  // Coverage switched off: swath reports are drawn as points
 
-// Convex hull (monotone chain) of [lon, lat] points, as a closed ring
-function convexHull(points) {
-    var pts = points.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-    var cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
-    var lower = [], upper = [];
-    for (var p of pts) {
-        while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
-        lower.push(p);
-    }
-    for (var i = pts.length - 1; i >= 0; i--) {
-        while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], pts[i]) <= 0) upper.pop();
-        upper.push(pts[i]);
-    }
-    var ring = lower.slice(0, -1).concat(upper.slice(0, -1));
-    return ring.length >= 3 ? ring.concat([ring[0]]) : null;
-}
-
-// Whether a point is inside a ring, or within `margin` degrees of its edge
-// (so neighbouring strips of one pass meet without gaps)
-function inOrNearRing([x, y], ring, margin) {
-    var inside = false;
-    for (var i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-        var [xi, yi] = ring[i], [xj, yj] = ring[j];
-        if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
-    }
-    if (inside) return true;
-    for (var k = 1; k < ring.length; k++) {
-        var [ax, ay] = ring[k - 1], [bx, by] = ring[k];
-        var dx = bx - ax, dy = by - ay, len = dx * dx + dy * dy || 1;
-        var t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / len));
-        if (Math.hypot(x - ax - t * dx, y - ay - t * dy) <= margin) return true;
-    }
-    return false;
-}
-
-// Coverage cells are H3 hexagons (h3-js), the same everywhere on the globe with
-// no seam at ±180. Resolution 2 cells are about 180 km a side; each step finer is
-// about 7 times as many cells for the map to draw
-const H3_RESOLUTION = 2;
-const H3_SAMPLE_DEG = 1;  // Spacing of the points that find the cells a footprint covers (cells are ~3° across)
-
-function h3Cell(lon, lat) {
-    return h3.latLngToCell(lat, ((lon + 540) % 360) - 180, H3_RESOLUTION);
-}
-
 function swathCellId(sat, lon, lat) {
     return `${sat}|${h3Cell(lon, lat)}`;
-}
-
-// A cell's outline as [lon, lat], longitudes carried past ±180 where it crosses
-// so it isn't drawn the whole way round the globe
-function cellRing(cell) {
-    return unwrap(h3.cellToBoundary(cell, true));
 }
 
 // Packs a decoded satellite file's reports into one swath file and adds it to the cells
@@ -7426,39 +6756,6 @@ function trackKey(subLayer, values) {
         return id ? `aircraft:${id}` : null;
     }
     return null;
-}
-
-function distanceKm([lon1, lat1], [lon2, lat2]) {
-    var r = Math.PI / 180;
-    var a = Math.sin((lat2 - lat1) * r / 2) ** 2 + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin((lon2 - lon1) * r / 2) ** 2;
-    return 12742 * Math.asin(Math.min(1, Math.sqrt(a)));
-}
-
-// Splits time-ordered positions into runs where every step passes the test
-function segments(points, ok, minPoints) {
-    var out = [], run = [points[0]];
-    for (var i = 1; i < points.length; i++) {
-        if (ok(points[i - 1], points[i])) {
-            run.push(points[i]);
-        } else {
-            if (run.length >= minPoints) out.push(run);
-            run = [points[i]];
-        }
-    }
-    if (run.length >= minPoints) out.push(run);
-    return out;
-}
-
-// Longitudes carried past ±180 so a line crossing the antimeridian doesn't wrap the globe
-function unwrap(coords) {
-    var out = [coords[0].slice()];
-    for (var i = 1; i < coords.length; i++) {
-        var lon = coords[i][0];
-        while (lon - out[i - 1][0] > 180) lon -= 360;
-        while (lon - out[i - 1][0] < -180) lon += 360;
-        out.push([lon, coords[i][1]]);
-    }
-    return out;
 }
 
 function buildTracks() {
@@ -7746,16 +7043,6 @@ const D3_URL = 'https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js';
 const TOPOJSON_URL = 'https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js';
 const LAND_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json';
 const OVERVIEW_REFRESH_MS = 2000;
-
-function loadScript(src) {
-    return new Promise((resolve, reject) => {
-        var script = document.createElement('script');
-        script.src = src;
-        script.onload = resolve;
-        script.onerror = () => reject(new Error(`could not load ${src}`));
-        document.head.appendChild(script);
-    });
-}
 
 // The world map's part of the map key (see MapKey): a title, a button that enlarges
 // it, and the canvas. Always shown
