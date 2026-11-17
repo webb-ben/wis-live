@@ -16,7 +16,7 @@ https://benwebb.com/wis-live/). The page is not affiliated with WMO.
 ## Layout
 
 ```
-index.html                 Page shell: meta tags, analytics, CDN scripts, #map
+index.html                 Page shell: meta tags, analytics, the app module, #map
 src/main.js                The main page: map, sidebar, popups (being split up; see below)
 src/state.js               The shared state: state.colourBy, colouredOnly, modelFieldOn,
                            filters, filterModes, hiddenLayers; setState / notify / subscribe
@@ -66,16 +66,25 @@ Verify changes in a real browser: watch for points appearing on the map,
 open the sidebar (the tab on its edge, halfway down the left), click a point, and try **Decode**. Check the console for
 errors.
 
-## External dependencies (all from CDNs, pinned versions)
+## External dependencies (pinned in `package.json`, bundled by Vite)
 
-- MapLibre GL JS `5.24.0` (unpkg) — globe projection needs v5
-- MQTT.js `5.0.1` (unpkg)
-- Bootstrap CSS `5.1.3` (unpkg) — CSS only, used for buttons/forms/tables
-- Pyodide `v0.26.4` (jsDelivr), loaded lazily on first decode
-- h3-js `4.2.1` (jsDelivr): the H3 hexagons satellite coverage is drawn in
-  (`H3_RESOLUTION`)
-- D3 `7.9.0`, topojson-client `3.1.0` and world-atlas `2.0.2` land outlines
-  (jsDelivr), loaded as the page opens for the Equal Earth world map in the key
+- MapLibre GL JS `5.24.0` — globe projection needs v5
+- MQTT.js `5.15.2` — its browser module build (`dist/mqtt.esm.js`)
+- h3-js `4.2.1`: the H3 hexagons satellite coverage is drawn in (`H3_RESOLUTION`)
+- Bootstrap `5.1.3` — CSS only, and only the parts used: `src/bootstrap.scss`
+  builds base styles, buttons, close, forms and tables from its Sass (with
+  `sass`, a build-time dependency). Using another part's classes means adding it there
+- d3-geo `3.1.1`, d3-scale `4.0.2`, topojson-client `3.1.0` and world-atlas
+  `2.0.2` (land outlines), for the Equal Earth world map in the key; loaded with
+  `import()` so they're a separate bundle
+- `vite.config.js` gives MapLibre, MQTT.js and h3-js a file each (`manualChunks`),
+  so app deploys leave them cached
+
+Not bundled:
+
+- Pyodide `v0.26.4` (jsDelivr), the Python runtime the decoder workers load on first decode
+- `public/assets/py/pybufrkit-*.whl` (4 MB, most of the published site: the BUFR
+  tables for every WMO table version), fetched by the decoder
 - Basemap: Esri World Light Gray raster tiles
 - Google Analytics and Simple Analytics in `index.html`
 
@@ -84,8 +93,8 @@ Data services called from the browser (all public, no keys): ECCC GeoMet
 Global Replay and Global Discovery Catalogues (ECCC, CMA, DWD; fastest
 first, see `rankGdcs`), and the Iowa Environmental Mesonet (airport METARs).
 
-Build tooling: Vite `6.4.6` (`package.json`, with `package-lock.json`; the
-workflow runs `npm ci`).
+Build tooling: Vite `6.4.6` and sass `1.77.8` (dev dependencies; with
+`package-lock.json`, and the workflow runs `npm ci`).
 
 Keep versions pinned. When bumping one, check the API still matches how
 `src/main.js` uses it.

@@ -1,5 +1,6 @@
 // Geometry on the globe: distances, hulls and rings, lines across ±180, and the
-// H3 hexagon cells satellite coverage is drawn in (h3-js, loaded by the page).
+// H3 hexagon cells satellite coverage is drawn in.
+import { latLngToCell, cellToBoundary, cellsToMultiPolygon } from 'h3-js';
 
 export function distanceKm([lon1, lat1], [lon2, lat2]) {
     var r = Math.PI / 180;
@@ -76,17 +77,17 @@ export const H3_RESOLUTION = 2;
 export const H3_SAMPLE_DEG = 1;  // Spacing of the points that find the cells a footprint covers (cells are ~3° across)
 
 export function h3Cell(lon, lat) {
-    return h3.latLngToCell(lat, ((lon + 540) % 360) - 180, H3_RESOLUTION);
+    return latLngToCell(lat, ((lon + 540) % 360) - 180, H3_RESOLUTION);
 }
 
 // A cell's outline as [lon, lat], longitudes carried past ±180 where it crosses
 // so it isn't drawn the whole way round the globe
 export function cellRing(cell) {
-    return unwrap(h3.cellToBoundary(cell, true));
+    return unwrap(cellToBoundary(cell, true));
 }
 
 // The outline of a set of cells merged together: one ring per edge of the area
 // (outer edges and any holes), each carried past ±180 like cellRing
 export function cellsOutline(cells) {
-    return cells.length ? h3.cellsToMultiPolygon(cells, true).flat().map(unwrap) : [];
+    return cells.length ? cellsToMultiPolygon(cells, true).flat().map(unwrap) : [];
 }

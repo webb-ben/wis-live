@@ -1,6 +1,7 @@
 // The live feed: races the public WIS2 Global Brokers and keeps the first that
 // connects and subscribes. A page passes what to do with each message and with
-// the broker's state; mqtt.js (MQTT.js) is loaded by the page.
+// the broker's state.
+import mqtt from 'mqtt';
 
 // Public WIS2 Global Brokers reachable from a browser (WSS only)
 const hosts = [

@@ -1,5 +1,5 @@
 // Small helpers shared by every page: escaping text for HTML, SVG elements,
-// colours and units, and loading a script on demand.
+// colours and units.
 
 export function esc(value) {
     return String(value).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -23,14 +23,4 @@ export function svgEl(name, attrs, parent) {
 
 export function knots(ms) {
     return Math.round(ms * 1.943844);
-}
-
-export function loadScript(src) {
-    return new Promise((resolve, reject) => {
-        var script = document.createElement('script');
-        script.src = src;
-        script.onload = resolve;
-        script.onerror = () => reject(new Error(`could not load ${src}`));
-        document.head.appendChild(script);
-    });
 }

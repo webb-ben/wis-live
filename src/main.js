@@ -1,11 +1,16 @@
 // The main page: the live map, its sidebar and popups. Pieces other pages can use
 // live in their own modules
+import maplibregl from 'maplibre-gl';
+// Stylesheets in cascade order: the app's own rules win over Bootstrap's and MapLibre's
+import './bootstrap.scss';  // Only the parts of Bootstrap the page uses
+import 'maplibre-gl/dist/maplibre-gl.css';
+import './style.css';
 import { state, setState, notify, subscribe } from './state.js';
 import { corsFriendly, canDownload, noteCacheLinks, noteLatency, noteBlocked, downloadOrder } from './caches.js';
 import { COLORS, OBS_CLASSES, METRICS, COLOURABLE, SATELLITE_LAYERS, ORIGIN_COLOURABLE, NO_VALUE_COLOR, SOURCE_COLORS } from './config.js';
 import { parseMessage, DISCIPLINES, FORMATS, isDataLink, isUpdate, formatOf, GATEWAY_TOPIC, GATEWAY_SATELLITE, GATEWAY_AIRCRAFT,
     GATEWAY_UPPER_AIR, isSpaceBased, disciplineOf, topicClass, stationId, pointFor, wis2boxVersion } from './messages.js';
-import { esc, darken, svgEl, knots, loadScript } from './lib/util.js';
+import { esc, darken, svgEl, knots } from './lib/util.js';
 import { distanceKm, segments, unwrap, convexHull, inOrNearRing, H3_SAMPLE_DEG, h3Cell, cellRing, cellsOutline } from './lib/geo.js';
 import { connectFastest, brokerState } from './mqtt.js';
 import { callDecoder, preloadDecoder, decoderReady, decoderGaveUp, onDecoderSettled } from './decoder.js';
@@ -6744,12 +6749,10 @@ function bufrPart(bytes) {
 // size (MapLibre has no Equal Earth). A small map always shown at the top of the map
 // key, above the legend. D3 draws what the map shows now on a
 // canvas: points that pass the layer switches and filters, coloured as on the map,
-// and satellite coverage. A click goes to that place on the map. D3, topojson-client
-// and the coastlines load as the page opens.
-const D3_URL = 'https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js';
-const TOPOJSON_URL = 'https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js';
-const LAND_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json';
+// and satellite coverage. A click goes to that place on the map. The D3 pieces it
+// uses, topojson-client and the coastlines are a separate bundle, loaded as it starts.
 const OVERVIEW_REFRESH_MS = 2000;
+let d3 = null;  // geoEqualEarth, geoPath, geoGraticule10 (d3-geo) and scaleLinear (d3-scale), once loaded
 
 // The world map's part of the map key (see MapKey): a title, a button that enlarges
 // it, and the canvas. Always shown
@@ -6782,12 +6785,10 @@ function buildOverview() {
 function loadOverview() {
     if (!overview.ready) {
         overview.ready = (async () => {
-            if (!window.d3) await loadScript(D3_URL);
-            if (!window.topojson) await loadScript(TOPOJSON_URL);
-            var response = await fetch(LAND_URL);
-            if (!response.ok) throw new Error(`coastlines: HTTP ${response.status}`);
-            var topo = await response.json();
-            overview.land = topojson.feature(topo, topo.objects.land);
+            var [geo, scale, topojson, topo] = await Promise.all([import('d3-geo'), import('d3-scale'),
+                import('topojson-client'), import('world-atlas/land-110m.json')]);
+            d3 = { geoEqualEarth: geo.geoEqualEarth, geoPath: geo.geoPath, geoGraticule10: geo.geoGraticule10, scaleLinear: scale.scaleLinear };
+            overview.land = topojson.feature(topo.default, topo.default.objects.land);
             overview.section.querySelector('.overview-status').remove();
         })().catch((err) => {
             overview.section.querySelector('.overview-status').textContent = `Could not load the world map: ${err.message}`;
