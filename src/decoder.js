@@ -288,13 +288,22 @@ async function init(wheelUrls) {
 
 onmessage = async (e) => {
     const { id, fn, args, wheelUrls } = e.data;
+    let py;
     try {
         if (!ready) ready = init(wheelUrls);
-        const py = await ready;
+        py = await ready;
+    } catch (err) {
+        // Only a failed start is tried again. A file that fails to decode must not
+        // reset this: that would load a whole new Pyodide (and its memory) every time
+        ready = null;
+        postMessage({ id, error: err.message });
+        return;
+    }
+    try {
         if (fn === 'radar_scan') await (h5py = h5py || py.loadPackage('h5py'));
         postMessage({ id, result: py.globals.get(fn)(...args) });
     } catch (err) {
-        ready = null;  // Allow a retry after a failed start
+        if (fn === 'radar_scan' && !py.loadedPackages.h5py) h5py = null;  // h5py failed to load: try again next time
         postMessage({ id, error: err.message });
     }
 };
