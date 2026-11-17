@@ -5035,8 +5035,9 @@ function collectPositions(coords, out) {
 
 // BUFR decoding in the browser with Pyodide + pybufrkit, loaded on first use
 const PYODIDE_URL = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/';
+// Served from public/ at the site's root; the CDN copy is the same file in the repo
 const PYBUFRKIT_WHEEL = 'assets/py/pybufrkit-0.2.25-py3-none-any.whl';
-const PYBUFRKIT_WHEEL_CDN = 'https://cdn.jsdelivr.net/gh/webb-ben/wis-live@main/' + PYBUFRKIT_WHEEL;
+const PYBUFRKIT_WHEEL_CDN = 'https://cdn.jsdelivr.net/gh/webb-ben/wis-live@main/public/' + PYBUFRKIT_WHEEL;
 // wis2box names itself and its version in generated_by ("wis2box 1.3.0"), and
 // serves data under <base>/data/<date>/wis/..., so the base of an origin link is
 // the wis2box itself. Cache copies find it through the origin's link for the same data.

@@ -10,36 +10,41 @@ It subscribes to the public WIS2 Global Brokers over MQTT-over-WebSockets,
 plots each notification on a MapLibre map, lists incoming messages in a
 sidebar, and can decode BUFR data in the browser with Pyodide + pybufrkit.
 
-It is served as-is (canonical URL: https://benwebb.com/wis-live/). The page is
-not affiliated with WMO.
+It is built with Vite and published to GitHub Pages (canonical URL:
+https://benwebb.com/wis-live/). The page is not affiliated with WMO.
 
 ## Layout
 
 ```
 index.html                 Page shell: meta tags, analytics, CDN scripts, #map
-assets/js/wis.js           All application logic (no modules, no build)
-assets/css/style.css       All custom styles
-assets/py/pybufrkit-*.whl  Pure-Python wheel of pybufrkit loaded by Pyodide
-assets/data/centre-id.json Snapshot of the WMO centre-id register (fallback)
-assets/data/wis2box-deployments.json  Centre -> wis2box URL, from the wis2box
-                           deployments list (not fetchable from a browser)
-assets/images/             Favicons
+src/main.js                The app, an ES module (being split into modules; see below)
+src/style.css              All custom styles
+public/assets/py/pybufrkit-*.whl  Pure-Python wheel of pybufrkit loaded by Pyodide
+public/assets/data/centre-id.json Snapshot of the WMO centre-id register (fallback)
+public/assets/data/wis2box-deployments.json  Centre -> wis2box URL, from the
+                           wis2box deployments list (not fetchable from a browser)
+public/assets/images/      Favicons
+vite.config.js             base /wis-live/; each page is an entry in rollupOptions.input
+.github/workflows/pages.yml  Builds and deploys to Pages on every push to main
 ```
 
-There is no build step, package manager, bundler, linter, or test suite. Do
-not add one unless asked.
+`public/` is copied to the site as-is: files the app fetches at runtime (the
+wheel, the JSON) and the icons live there, at the same paths as before.
+
+The plan is to split `src/main.js` into modules (MQTT, decoder, satellites,
+map, UI) so further pages, such as one for satellites or an MQTT explorer, can
+reuse them; each page is an HTML file at the root plus its own entry module.
+
+There is no linter or test suite. Do not add one unless asked.
 
 ## Running locally
 
-Serve the repo root over HTTP and open it in a browser:
-
 ```sh
-python3 -m http.server 8000
-# then open http://localhost:8000/
+npm install
+npm run dev       # http://localhost:5173/wis-live/
+npm run build     # into dist/
+npm run preview   # serves dist/ at http://localhost:4173/wis-live/
 ```
-
-Opening `index.html` via `file://` mostly works, but the local wheel fetch
-fails there and the decoder falls back to the jsDelivr copy on `main`.
 
 Verify changes in a real browser: watch for points appearing on the map,
 open the sidebar (the tab on its edge, halfway down the left), click a point, and try **Decode**. Check the console for
@@ -63,13 +68,17 @@ Data services called from the browser (all public, no keys): ECCC GeoMet
 Global Replay and Global Discovery Catalogues (ECCC, CMA, DWD; fastest
 first, see `rankGdcs`), and the Iowa Environmental Mesonet (airport METARs).
 
+Build tooling: Vite `6.4.6` (`package.json`, with `package-lock.json`; the
+workflow runs `npm ci`).
+
 Keep versions pinned. When bumping one, check the API still matches how
-`wis.js` uses it.
+`src/main.js` uses it.
 
-## How `wis.js` is organized
+## How `src/main.js` is organized
 
-It is one large file (~6,600 lines). Read top to bottom; the core comes
-first, roughly in this order:
+It is one large file (~7,900 lines), the former `wis.js`, loaded as an ES
+module (so strict mode, and nothing it declares is a global). Read top to
+bottom; the core comes first, roughly in this order:
 
 1. **Map** — constants (`MAX_POINTS`, `FADE_MS`, `PULSE_MS`, `COLORS`), map
    setup, `points` and `pulses` GeoJSON sources/layers. Points are batched in
@@ -128,10 +137,9 @@ channel is `origin` or `cache`.
 
 ## Conventions
 
-- Plain browser JavaScript in one script loaded with `defer`; globals are
-  fine. Match the existing style: 4-space indent, single quotes, semicolons,
-  `var` inside functions and `const`/`let` at top level, short comments that
-  explain *why*.
+- Plain browser JavaScript in ES modules. Match the existing style: 4-space
+  indent, single quotes, semicolons, `var` inside functions and `const`/`let`
+  at top level, short comments that explain *why*.
 - **Escape untrusted text.** Message content comes from third parties. Use
   `esc()` in template strings or set `textContent`; never interpolate raw
   message fields into `innerHTML`.
@@ -143,9 +151,10 @@ channel is `origin` or `cache`.
 - CSS: flat class selectors with prefixes per component (`queue-*`,
   `legend-*`, `pp-*` for popups). Mobile breakpoint is `max-width: 600px`.
 - If you change the wheel filename, update `PYBUFRKIT_WHEEL`. The CDN
-  fallback points at `main`, so it only picks up the change once pushed.
+  fallback points at `public/` on `main`, so it only picks up the change once pushed.
 
 ## Git
 
-- Default branch is `main`; it is what gets deployed.
+- Default branch is `main`; every push to it is built and deployed by
+  `.github/workflows/pages.yml`.
 - Commit messages are short and imperative (e.g. "Reduce number of callbacks").
