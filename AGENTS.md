@@ -18,6 +18,10 @@ https://benwebb.com/wis-live/). The page is not affiliated with WMO.
 ```
 index.html                 Page shell: meta tags, analytics, CDN scripts, #map
 src/main.js                The main page: map, sidebar, popups (being split up; see below)
+src/config.js              COLORS, OBS_CLASSES (kinds of observation), METRICS (Style by
+                           measures, with their colour scales), the layer lists they colour
+src/messages.js            parseMessage and what a notification says: topicClass,
+                           disciplineOf, formatOf, GATEWAY_* headings, stationId, pointFor
 src/mqtt.js                connectFastest({ onMessage, onState }): races the Global Brokers
 src/decoder.js             callDecoder(fn, ...args): Pyodide + pybufrkit in Web Workers
                            (DECODE_PY); onDecoderSettled(fn) once it has started or failed
@@ -87,8 +91,8 @@ It is one large file (~7,900 lines), the former `wis.js`, loaded as an ES
 module (so strict mode, and nothing it declares is a global). Read top to
 bottom; the core comes first, roughly in this order:
 
-1. **Map** — constants (`MAX_POINTS`, `FADE_MS`, `PULSE_MS`, `COLORS`), map
-   setup, `points` and `pulses` GeoJSON sources/layers. Points are batched in
+1. **Map** — constants (`MAX_POINTS`, `FADE_MS`, `PULSE_MS`; colours are in
+   `src/config.js`), map setup, `points` and `pulses` GeoJSON sources/layers. Points are batched in
    `toAdd`/`toRemove` and flushed every 500 ms (`flushPoints`) via
    `source.updateData`; avoid per-message `setData`. The style has a
    `background` layer under the `basemap` raster. The projection choice is
@@ -114,9 +118,10 @@ bottom; the core comes first, roughly in this order:
    and keeps the first one that connects and subscribes to `origin/a/wis2/#`
    and `cache/a/wis2/#`; the page passes `onMessage` and `onState`. The
    `everyone/everyone` credentials are public.
-7. **Message handling** — `onMessage` parses the WIS2 notification (GeoJSON),
-   skips `ignoredTopics`, reduces geometry to a point with `pointFor` (large
-   areas are dropped), and builds a record.
+7. **Message handling** — `onMessage` takes the parsed WIS2 notification
+   (GeoJSON), skips `ignoredTopics`, reduces geometry to a point with `pointFor`
+   (large areas are dropped), and builds a record. What a notification says
+   (`topicClass`, `formatOf`, `disciplineOf`, ...) is in `src/messages.js`.
 8. **BUFR decoding** (`src/decoder.js`) — `callDecoder` lazily starts Web
    Workers (`DECODER_WORKER`, a classic worker built from a string) that load
    Pyodide, install `bitstring==3.1.9` and `six`, unpack the bundled wheel, and
