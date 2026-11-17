@@ -45,6 +45,40 @@ export const SATELLITE_NAMES = {
     855: 'Combination of INSAT 3D and INSAT 3DR',
 };
 export const INSTRUMENT_NAMES = { 203: 'MHS', 221: 'IASI', 570: 'AMSU-A', 591: 'AVHRR/3', 616: 'VIIRS', 620: 'CrIS', 621: 'ATMS' };
+
+// Satellite catalogue pages in OSCAR/Space. Add links by WMO identifier or name so
+// decoded and topic-derived satellite reports are linked consistently.
+export const SATELLITE_URLS = {
+    3: 'https://space.oscar.wmo.int/satellites/view/metop_1',
+    4: 'https://space.oscar.wmo.int/satellites/view/metop_b',
+    5: 'https://space.oscar.wmo.int/satellites/view/metop_c',
+};
+
+// OSCAR's satellite pages use a URL-safe acronym: lowercase ASCII letters and digits,
+// with runs of hyphens/spaces converted to underscores and all other punctuation removed.
+export function satelliteOscarUrl(number, name) {
+    var id = number;
+    if (id === null && name) {
+        var match = Object.keys(SATELLITE_NAMES).find((key) => SATELLITE_NAMES[key] === name);
+        if (match) id = Number(match);
+    }
+    if (id !== null && SATELLITE_URLS[id]) return SATELLITE_URLS[id];
+
+    var acronym = String(name || '').trim();
+
+    // Only generate a catalogue link for a satellite acronym already recognised by
+    // this table or by a WIS2 topic name. Unknown numeric satellites stay plain text.
+    if (!acronym || (number !== null && !SATELLITE_NAMES[number])) return null;
+
+    acronym = acronym
+        .normalize('NFKD')
+        .replace(/[^\x00-\x7f]/g, '')
+        .replace(/[^a-zA-Z0-9 -]/g, '')
+        .replace(/[ -]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .toLowerCase();
+    return acronym ? `https://space.oscar.wmo.int/satellites/view/${acronym}` : null;
+}
 // Code table 0 02 023: which channel cloud-motion winds were tracked in
 export const AMV_METHODS = { 1: 'Infrared', 2: 'Visible', 3: 'Water vapour (cloud)', 4: 'Several channels', 5: 'Water vapour (clear air)',
     6: 'Ozone', 7: 'Water vapour' };

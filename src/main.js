@@ -11,10 +11,10 @@ import { COLORS, OBS_CLASSES, METRICS, COLOURABLE, SATELLITE_LAYERS, ORIGIN_COLO
 import { parseMessage, DISCIPLINES, FORMATS, isDataLink, isUpdate, formatOf, GATEWAY_TOPIC, GATEWAY_SATELLITE, GATEWAY_AIRCRAFT,
     GATEWAY_UPPER_AIR, isSpaceBased, disciplineOf, topicClass, stationId, pointFor, wis2boxVersion } from './messages.js';
 import { esc, darken, svgEl, knots } from './lib/util.js';
-import { distanceKm, segments, unwrap, convexHull, inOrNearRing, H3_SAMPLE_DEG, h3Cell, cellRing, cellsOutline } from './lib/geo.js';
+import { distanceKm, segments, unwrap, convexHull, inOrNearRing, H3_RESOLUTION, H3_SAMPLE_DEG, h3Cell, h3Neighbors, cellRing, cellsOutline } from './lib/geo.js';
 import { connectFastest, brokerState } from './mqtt.js';
 import { callDecoder, preloadDecoder, decoderReady, decoderGaveUp, onDecoderSettled } from './decoder.js';
-import { SATELLITE_NAMES, INSTRUMENT_NAMES, AMV_METHODS, PIXEL_TYPES, satelliteNamed } from './satellite/names.js';
+import { SATELLITE_NAMES, satelliteOscarUrl, INSTRUMENT_NAMES, AMV_METHODS, PIXEL_TYPES, satelliteNamed } from './satellite/names.js';
 import { showSpectrum } from './satellite/spectrum.js';
 
 // Map
@@ -997,7 +997,8 @@ class LegendControl {
         range.addEventListener('change', () => setReplayWindow(minutesShown()));
 
         // How see-through satellite coverage is
-        container.querySelector('.legend-toggle[data-layer="sat-coverage"]').insertAdjacentHTML('afterend', `
+        var coverageToggle = container.querySelector('.legend-toggle[data-layer="sat-coverage"]');
+        coverageToggle.insertAdjacentHTML('afterend', `
             <label class="legend-option legend-range legend-range-satellite" data-layer="sat-opacity">
                 <span class="legend-range-value">Coverage opacity <output></output></span>
                 <input type="range" min="0" max="100" step="5" aria-label="Opacity of satellite coverage">
@@ -2017,6 +2018,11 @@ const COMPASS_POINTS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', '
 // Code tables 0 01 007 (satellite) and 0 02 019 (instrument), common entries only;
 // anything else shows its code.
 
+function satelliteLink(name, number = null) {
+    var url = satelliteOscarUrl(number, name);
+    return url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(name)}</a>` : esc(name);
+}
+
 function satelliteTiles(rows, values) {
     // id: the descriptor of a value the map can be coloured by (see metricTileAttr)
     var tile = (label, html, id) => `<div class="pp-tile"${metricTileAttr(id, true)}><div>${esc(label)}</div><strong>${html}</strong></div>`;
@@ -2029,7 +2035,7 @@ function satelliteTiles(rows, values) {
     var name = sat === null ? null : SATELLITE_NAMES[sat] || `Satellite ${sat}`;
     var instrument = inst === null ? null : INSTRUMENT_NAMES[inst] || `instrument ${inst}`;
     // A known satellite's tile styles the map by satellite, each in its colour
-    tiles.push(tile('Satellite', `${esc(name || 'Unknown')}${instrument ? ` <small>${esc(instrument)}</small>` : ''}`)
+    tiles.push(tile('Satellite', `${name ? satelliteLink(name, sat) : 'Unknown'}${instrument ? ` <small>${esc(instrument)}</small>` : ''}`)
         .replace('class="pp-tile"', `class="pp-tile"${name ? ` data-metric="${SATELLITE_STYLE}"` : ''}`));
 
     // What kind of product, from the elements it carries
@@ -6316,6 +6322,7 @@ function addSwathFile(job, reports) {
     // Reports in a line have no area to cover
     if (!ring) { reports.forEach((r) => plotRecord(job, r)); return; }
     var old = swathFiles.get(first.fileKey);
+    var replacedSat = old && old.sat;
     if (old) removeSwathFile(old);  // An update replaces it
     var values = reports.map(metricValues);
     var metrics = {};
@@ -6350,39 +6357,12 @@ function addSwathFile(job, reports) {
         var known = metrics[m] ? metrics[m].filter((v) => !isNaN(v)) : [];
         if (known.length) file.means[m] = known.reduce((a, b) => a + b, 0) / known.length;
     }
-    var cellFor = (lon, lat) => {
-        var cell = h3Cell(lon, lat), id = `${sat}|${cell}`;
-        if (!file.cells.has(id)) file.cells.set(id, { cell, fill: false, n: 0, t0: Infinity, t1: -Infinity, sums: {}, counts: {}, mins: {}, maxs: {} });
-        return file.cells.get(id);
-    };
-    // Cells the file's footprint covers: found from points on a fine grid that are
-    // in it, or near its edge (so neighbouring strips of one pass meet)
-    var xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
-    var xMin = Math.min(...xs) - H3_SAMPLE_DEG, xMax = Math.max(...xs) + H3_SAMPLE_DEG;
-    var yMin = Math.max(-90, Math.min(...ys) - H3_SAMPLE_DEG), yMax = Math.min(90, Math.max(...ys) + H3_SAMPLE_DEG);
-    for (var lat = yMin; lat <= yMax; lat += H3_SAMPLE_DEG) {
-        for (var lon = xMin; lon <= xMax; lon += H3_SAMPLE_DEG) {
-            if (inOrNearRing([lon, lat], ring, H3_SAMPLE_DEG)) cellFor(lon, lat).fill = true;
-        }
-    }
-    // Reports in each cell give it its own values
-    // (and what the cell's summary shows: how many, when, and each measure's range)
-    for (var i = 0; i < n; i++) {
-        var cell = cellFor(reports[i].coords[0], reports[i].coords[1]);
-        cell.n++;
-        cell.t0 = Math.min(cell.t0, reports[i].observed);
-        cell.t1 = Math.max(cell.t1, reports[i].observed);
-        for (var [mk, arr] of Object.entries(metrics)) {
-            if (mk === 'windDir' || isNaN(arr[i])) continue;
-            cell.sums[mk] = (cell.sums[mk] || 0) + arr[i];
-            cell.counts[mk] = (cell.counts[mk] || 0) + 1;
-            cell.mins[mk] = Math.min(cell.mins[mk] ?? Infinity, arr[i]);
-            cell.maxs[mk] = Math.max(cell.maxs[mk] ?? -Infinity, arr[i]);
-        }
-    }
+    buildSwathCells(file, ring);
     swathFiles.set(file.key, file);
     applySwathFile(file, 1);
     trimSwathFiles();
+    if (replacedSat && replacedSat !== sat) refreshSatelliteHoles(replacedSat);
+    refreshSatelliteHoles(sat);
     if (!seenLayers.has(first.subLayer)) showLegendRow(first.subLayer);
     if (file.props.sat) addSatelliteRow(file.props.sat);
     decodePlotted[job.kind] += n;
@@ -6394,33 +6374,104 @@ function addSwathFile(job, reports) {
     mapKeyDirty = true;
 }
 
+function buildSwathCells(file, ring) {
+    file.cells.clear();
+    var cellFor = (lon, lat) => {
+        var cell = h3Cell(lon, lat), id = `${file.sat}|${cell}`;
+        if (!file.cells.has(id)) file.cells.set(id, { cell, fill: false, n: 0, t0: Infinity, t1: -Infinity, sums: {}, counts: {}, mins: {}, maxs: {} });
+        return file.cells.get(id);
+    };
+    var spacing = H3_SAMPLE_DEG;
+    var xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
+    var xMin = Math.min(...xs) - spacing, xMax = Math.max(...xs) + spacing;
+    var yMin = Math.max(-90, Math.min(...ys) - spacing), yMax = Math.min(90, Math.max(...ys) + spacing);
+    for (var lat = yMin; lat <= yMax; lat += spacing) {
+        for (var lon = xMin; lon <= xMax; lon += spacing) {
+            if (inOrNearRing([lon, lat], ring, spacing)) cellFor(lon, lat).fill = true;
+        }
+    }
+    for (var i = 0; i < file.n; i++) {
+        var cell = cellFor(file.coords[2 * i], file.coords[2 * i + 1]);
+        cell.n++;
+        cell.t0 = Math.min(cell.t0, file.observed[i]);
+        cell.t1 = Math.max(cell.t1, file.observed[i]);
+        for (var [mk, arr] of Object.entries(file.metrics)) {
+            if (mk === 'windDir' || isNaN(arr[i])) continue;
+            cell.sums[mk] = (cell.sums[mk] || 0) + arr[i];
+            cell.counts[mk] = (cell.counts[mk] || 0) + 1;
+            cell.mins[mk] = Math.min(cell.mins[mk] ?? Infinity, arr[i]);
+            cell.maxs[mk] = Math.max(cell.maxs[mk] ?? -Infinity, arr[i]);
+        }
+    }
+}
+
 // Adds a file's share to its cells (sign 1), or takes it off again (-1)
 function applySwathFile(file, sign) {
-    for (var [id, c] of file.cells) {
-        var cell = swathCells.get(id);
-        if (!cell) {
-            if (sign < 0) continue;
-            cell = { fid: ++swathFeatureIds, h3: c.cell, sat: file.sat, files: new Set(), sums: {}, counts: {}, fillSums: {}, fillCounts: {} };
-            swathCells.set(id, cell);
+    for (var [id, c] of file.cells) applySwathCell(file, id, c, sign);
+}
+
+function applySwathCell(file, id, c, sign) {
+    var cell = swathCells.get(id);
+    if (!cell) {
+        if (sign < 0) return;
+        cell = { fid: ++swathFeatureIds, h3: c.cell, sat: file.sat, hole: !!c.hole,
+            files: new Set(), sums: {}, counts: {}, fillSums: {}, fillCounts: {} };
+        swathCells.set(id, cell);
+    }
+    if (sign > 0) cell.files.add(file);
+    else cell.files.delete(file);
+    for (var m in c.sums) {
+        cell.sums[m] = (cell.sums[m] || 0) + sign * c.sums[m];
+        cell.counts[m] = (cell.counts[m] || 0) + sign * c.counts[m];
+    }
+    if (c.fill) {
+        for (var mf in file.means) {
+            cell.fillSums[mf] = (cell.fillSums[mf] || 0) + sign * file.means[mf];
+            cell.fillCounts[mf] = (cell.fillCounts[mf] || 0) + sign;
         }
-        if (sign > 0) cell.files.add(file);
-        else cell.files.delete(file);
-        for (var m in c.sums) {
-            cell.sums[m] = (cell.sums[m] || 0) + sign * c.sums[m];
-            cell.counts[m] = (cell.counts[m] || 0) + sign * c.counts[m];
+    }
+    if (cell.files.size) {
+        swathDirty.add(id);
+    } else {
+        swathCells.delete(id);
+        swathDirty.delete(id);
+        swathRemoved.push(cell.fid);
+    }
+}
+
+function refreshSatelliteHoles(sat) {
+    // Drop old derived cells, then recompute from real coverage so removed or
+    // replaced files cannot leave holes filled in areas no longer covered.
+    for (var cell of [...swathCells.values()]) {
+        if (cell.sat !== sat || !cell.hole) continue;
+        var id = `${sat}|${cell.h3}`;
+        for (var file of [...cell.files]) {
+            var c = file.cells.get(id);
+            if (!c?.hole) continue;
+            applySwathCell(file, id, c, -1);
+            file.cells.delete(id);
         }
-        if (c.fill) {
-            for (var mf in file.means) {
-                cell.fillSums[mf] = (cell.fillSums[mf] || 0) + sign * file.means[mf];
-                cell.fillCounts[mf] = (cell.fillCounts[mf] || 0) + sign;
-            }
+    }
+
+    var occupied = new Map([...swathCells.values()]
+        .filter((cell) => cell.sat === sat && !cell.hole)
+        .map((cell) => [cell.h3, cell]));
+    var candidates = new Set();
+    for (var h3 of occupied.keys()) {
+        for (var neighbor of h3Neighbors(h3)) {
+            if (!occupied.has(neighbor)) candidates.add(neighbor);
         }
-        if (cell.files.size) {
-            swathDirty.add(id);
-        } else {
-            swathCells.delete(id);
-            swathDirty.delete(id);
-            swathRemoved.push(cell.fid);
+    }
+    for (var hole of candidates) {
+        var neighbors = h3Neighbors(hole);
+        if (!neighbors.length || !neighbors.every((neighbor) => occupied.has(neighbor))) continue;
+        var files = new Set(neighbors.flatMap((neighbor) => [...occupied.get(neighbor).files]));
+        var id = `${sat}|${hole}`;
+        for (var file of files) {
+            var c = { cell: hole, fill: true, hole: true, n: 0, t0: Infinity, t1: -Infinity,
+                sums: {}, counts: {}, mins: {}, maxs: {} };
+            file.cells.set(id, c);
+            applySwathCell(file, id, c, 1);
         }
     }
 }
@@ -6430,15 +6481,18 @@ function removeSwathFile(file) {
     applySwathFile(file, -1);
     hideSwathPoints(file);
     mapKeyDirty = true;
+    return file.sat;
 }
 
 // Drops the oldest files beyond the caps
 function trimSwathFiles() {
     var oldest = Date.now() - SWATH_KEEP_MS;
+    var changed = new Set();
     for (var file of swathFiles.values()) {
         if (swathFiles.size <= SWATH_FILES_MAX && file.born >= oldest) break;
-        removeSwathFile(file);
+        changed.add(removeSwathFile(file));
     }
+    for (var sat of changed) refreshSatelliteHoles(sat);
 }
 
 // Redraws only the cells that changed since last time
@@ -6529,7 +6583,8 @@ function buildCellSummary(id, cell, lngLat) {
     var reports = parts.reduce((n, p) => n + p.part.n, 0);
     var withReports = parts.filter((p) => p.part.n);
     var t0 = Math.min(...withReports.map((p) => p.part.t0)), t1 = Math.max(...withReports.map((p) => p.part.t1));
-    var tiles = [`<div class="pp-tile" data-metric="${SATELLITE_STYLE}"><div>Satellite</div><strong>${esc(t.satName || 'Satellite')}</strong></div>`];
+    var satName = t.satName || 'Satellite';
+    var tiles = [`<div class="pp-tile" data-metric="${SATELLITE_STYLE}"><div>Satellite</div><strong>${satelliteLink(satName)}</strong></div>`];
     for (var [key, m] of Object.entries(METRICS)) {
         if (m.targets !== 'satellite') continue;
         var count = parts.reduce((n, p) => n + (p.part.counts[key] || 0), 0);
@@ -6551,13 +6606,13 @@ function buildCellSummary(id, cell, lngLat) {
         <header class="pp-head">
             <span class="pp-dot" style="--color: ${t.color}; --outline: ${darken(t.color)}"></span>
             <div>
-                <div class="pp-title">${esc(t.satName || 'Satellite')}</div>
+                <div class="pp-title">${satelliteLink(satName)}</div>
                 <div class="pp-sub">Coverage cell · ${reports ? `${reports} report${reports === 1 ? '' : 's'}` : 'no reports'} from ${parts.length} file${parts.length === 1 ? '' : 's'}</div>
             </div>
         </header>
         <dl class="pp-meta">
             ${reports ? `<dt>Observed</dt><dd>${t1 - t0 < 60e3 ? `${esc(new Date(t1).toLocaleString())}` : `${esc(new Date(t0).toLocaleDateString())} ${when(t0)}–${when(t1)} UTC`} (${timeAgo(new Date(t1).toISOString())})</dd>` : ''}
-            <dt>Cell</dt><dd class="pp-mono" title="H3 cell, resolution 2">${esc(cell.h3)}</dd>
+            <dt>Cell</dt><dd class="pp-mono" title="H3 cell, resolution ${H3_RESOLUTION}">${esc(cell.h3)}</dd>
         </dl>
         <div class="pp-status">${reports
             ? 'The cell is coloured by the mean of the reports in it. Of each file only some reports are kept, spread across it; these are the ones here.'

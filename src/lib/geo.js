@@ -1,6 +1,6 @@
 // Geometry on the globe: distances, hulls and rings, lines across ±180, and the
 // H3 hexagon cells satellite coverage is drawn in.
-import { latLngToCell, cellToBoundary, cellsToMultiPolygon } from 'h3-js';
+import { latLngToCell, cellToBoundary, cellsToMultiPolygon, gridDisk } from 'h3-js';
 
 export function distanceKm([lon1, lat1], [lon2, lat2]) {
     var r = Math.PI / 180;
@@ -71,13 +71,16 @@ export function inOrNearRing([x, y], ring, margin) {
 }
 
 // Coverage cells are H3 hexagons (h3-js), the same everywhere on the globe with
-// no seam at ±180. Resolution 2 cells are about 180 km a side; each step finer is
-// about 7 times as many cells for the map to draw
-export const H3_RESOLUTION = 2;
-export const H3_SAMPLE_DEG = 1;  // Spacing of the points that find the cells a footprint covers (cells are ~3° across)
+// no seam at ±180. Resolution 3 cells are about 60 km a side.
+export const H3_RESOLUTION = 3;
+export const H3_SAMPLE_DEG = 0.5;  // Sample finely enough to find resolution 3 cells across a footprint
 
 export function h3Cell(lon, lat) {
     return latLngToCell(lat, ((lon + 540) % 360) - 180, H3_RESOLUTION);
+}
+
+export function h3Neighbors(cell) {
+    return gridDisk(cell, 1).filter((neighbor) => neighbor !== cell);
 }
 
 // A cell's outline as [lon, lat], longitudes carried past ±180 where it crosses
