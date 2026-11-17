@@ -1370,6 +1370,7 @@ function liftCell(cell) {
 // Outlines the coverage cell under the pointer, and thinly all of its satellite's
 // coverage (null takes both away)
 let hoveredCell = null;
+const SAT_OUTLINE_MAX_CELLS = 2500;  // Of about 5,900 at this resolution; more is too slow to outline
 let satOutline = { sat: null, cells: 0, features: [] };  // The satellite's outline, kept while its coverage is unchanged
 function outlineSwathCell(lngLat, sat) {
     var source = map.getSource('swath-hover');
@@ -1380,7 +1381,16 @@ function outlineSwathCell(lngLat, sat) {
     if (cell) {
         var cells = [...swathCells.values()].filter((c) => c.sat === sat).map((c) => c.h3);
         if (satOutline.sat !== sat || satOutline.cells !== cells.length) {
-            satOutline = { sat, cells: cells.length, features: cellsOutline(cells).map((ring) => ({ type: 'Feature',
+            // H3 can't merge some areas (one wrapping round the globe throws) and takes minutes
+            // over nearly global ones; then only the cell itself is outlined, rather than the
+            // hover failing or freezing the page
+            var rings = [];
+            try {
+                if (cells.length <= SAT_OUTLINE_MAX_CELLS) rings = cellsOutline(cells);
+            } catch (err) {
+                console.debug(`No coverage outline for ${sat}: ${err.message}`);
+            }
+            satOutline = { sat, cells: cells.length, features: rings.map((ring) => ({ type: 'Feature',
                 properties: { role: 'sat' }, geometry: { type: 'LineString', coordinates: ring } })) };
         }
     }
@@ -4564,6 +4574,7 @@ const WIS2_GTS_TOPIC = /\/a\/wis2\/[^/]+-wis2-to-gts\//;
 // XML whose location is inside the file (Environment Canada citypage forecasts)
 const DECODE_FILE_MAX_BYTES = 200 * 1024;
 const DECODE_FILE_MAX_REPORTS = 300;  // Per file, so a satellite swath can't flood the map
+const IGNORED_SATELLITES = [852];  // 0 01 007 numbers left out: 852 is a combination of Metop-1 to Metop-3
 const NOT_BUFR = ['grib', 'xml', 'csv', 'json', 'image', 'hdf', 'text'];
 // Satellite files, from the cache or the GTS, are decoded while the Satellites row
 // is on, whatever Cache and GTS-to-WIS2 say, and may be larger than other files
@@ -4764,6 +4775,9 @@ function plotDecodedReport(job, rows, profile, index, fileIndex, swath) {
     var lat = [5001, 5002].map((id) => values.get(id)).find((v) => typeof v === 'number');
     var lon = [6001, 6002].map((id) => values.get(id)).find((v) => typeof v === 'number');
     if (lat === undefined || lon === undefined || Math.abs(lat) > 90 || Math.abs(lon) > 180) return;
+    // Products made from several satellites aren't one satellite's coverage (and spread
+    // over so much of the globe that outlining them on hover breaks); left out
+    if (IGNORED_SATELLITES.includes(values.get(1007))) return;
 
     var props = job.feature.properties || {};
     var [channel, t] = job.topic.split('/a/wis2/');
