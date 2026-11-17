@@ -567,6 +567,37 @@
 .pp-tile strong {
   font-size: 14px;
 }
+/* A tile whose value the map can be coloured by: a click styles the map by it */
+.pp-tile-metric {
+  position: relative;
+  cursor: pointer;
+}
+.pp-tile-metric::after {
+  content: '';
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: conic-gradient(#2c7bb6, #abd9e9, #ffffbf, #fdae61, #d7191c, #2c7bb6);
+  opacity: 0.45;
+}
+.pp-tile-metric:hover {
+  background-color: #e9eef3;
+}
+.pp-tile-metric:hover::after,
+.pp-tile-metric[aria-pressed="true"]::after {
+  opacity: 1;
+}
+.pp-tile-metric[aria-pressed="true"] {
+  background-color: #e7f1ff;
+  box-shadow: inset 0 0 0 2px #0d6efd;
+}
+.pp-tile-metric:focus-visible {
+  outline: 2px solid #0d6efd;
+  outline-offset: 1px;
+}
 .wavespec {
   display: block;
   max-width: 100%;

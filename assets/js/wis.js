@@ -207,9 +207,16 @@ function colourTargets(m) {
     return m && m.targets === 'satellite' ? SATELLITE_LAYERS : COLOURABLE;
 }
 
+// Styled by satellite (each its own colour) or by a satellite measure: only the
+// satellite layers are coloured, and their coverage is drawn strong
+function satelliteStyled() {
+    return colourBy === SATELLITE_STYLE || !!(METRICS[colourBy] && METRICS[colourBy].targets === 'satellite');
+}
+
 function isColourTarget() {
     var m = METRICS[colourBy];
     var target = ['in', ['get', 'layer'], ['literal', colourTargets(m)]];
+    if (colourBy === SATELLITE_STYLE) return ['in', ['get', 'layer'], ['literal', SATELLITE_LAYERS]];
     if (m && m.targets === 'satellite') return target;
     return ['any', target, ['all', ['==', ['get', 'layer'], 'origin'], ['in', ['get', 'kind'], ['literal', ORIGIN_COLOURABLE]]]];
 }
@@ -224,6 +231,8 @@ const IS_AIRCRAFT = ['in', ['get', 'layer'], ['literal', ['cache-aircraft', 'gts
 const NO_VALUE_COLOR = '#ced4da';
 const METRIC_QUEUE_MAX = 5000;  // Station files waiting to be decoded, newest kept (most carry their data inline, a few ms each)
 let colourBy = 'kind';
+// Style by: each satellite in its own colour (see satelliteColour), not a measure
+const SATELLITE_STYLE = 'satellite';
 let colouredOnly = false;  // Hide every point not coloured by the measure
 let metricQueue = [];
 // Replayed stations wait in a queue of their own, taken only when no live station is waiting,
@@ -355,7 +364,7 @@ try {
 
 // Which opacity the coverage uses now
 function swathOpacityKey() {
-    return METRICS[colourBy] && METRICS[colourBy].targets === 'satellite' ? 'styled' : 'plain';
+    return satelliteStyled() ? 'styled' : 'plain';
 }
 let opacitySlider = null;  // Set by LegendControl; follows the measure
 
@@ -1051,7 +1060,7 @@ function paintAge() {
     // (aircraft keep their own colour and opacity: they aren't coloured by the measures)
     if (colourBy !== 'kind') {
         // Surface measures leave aircraft alone (they aren't coloured); satellite measures dim them too
-        var kept = METRICS[colourBy] && METRICS[colourBy].targets === 'satellite' ? isColourTarget() : ['any', isColourTarget(), IS_AIRCRAFT];
+        var kept = satelliteStyled() ? isColourTarget() : ['any', isColourTarget(), IS_AIRCRAFT];
         opacity = ['case', kept, opacity, ['*', opacity, 0.25]];
     }
     map.setPaintProperty('points', 'circle-opacity', ['case', ['get', 'origin'], 0, opacity]);
@@ -1136,12 +1145,14 @@ class LegendControl {
                 <span class="legend-range-ticks" aria-hidden="true">${REPLAY_TICKS.map((m) =>
                     `<span style="--at: ${replayPosition(m)}">${m < 60 ? `${m}m` : `${m / 60}h`}</span>`).join('')}</span>
             </label>`);
-        var range = container.querySelector('.legend-range input');
+        // Its own slider and label: the coverage opacity slider is another .legend-range, earlier in the panel
+        var replayRange = container.querySelector('.legend-range[data-layer="replay-window"]');
+        var range = replayRange.querySelector('input');
         var minutesShown = () => replayMinutesAt(range.value / 1000);
         var showWindow = () => {
             var minutes = minutesShown();
             var since = new Date(Date.now() - minutes * 60000).toISOString().slice(11, 16);
-            container.querySelector('.legend-range output').textContent = `${since} UTC (${replayWindowLabel(minutes)} ago)`;
+            replayRange.querySelector('output').textContent = `${since} UTC (${replayWindowLabel(minutes)} ago)`;
             range.setAttribute('aria-valuetext', `${replayWindowLabel(minutes)}, since ${since} UTC`);
         };
         showWindow();
@@ -1282,6 +1293,7 @@ function buildStylePanel() {
             <label class="key-colour-by">Style by
                 <select class="form-select form-select-sm" aria-label="Color points by">
                     <option value="kind">Observation type</option>
+                    <option value="${SATELLITE_STYLE}">Satellite</option>
                     ${[...new Set(Object.values(METRICS).map((m) => m.group))].map((group) => `
                     <optgroup label="${group}">
                         ${Object.entries(METRICS).filter(([, m]) => m.group === group).map(([key, m]) => `<option value="${key}">${m.label}</option>`).join('')}
@@ -1290,7 +1302,7 @@ function buildStylePanel() {
             </label>
             <div class="legend-scale" hidden><span></span><i></i><span></span></div>
             <div class="key-options">
-                <label class="legend-coloured-only" hidden title="Only points with a value for the measure are drawn"><input type="checkbox" class="form-check-input"> Require value</label>
+                <label class="legend-coloured-only" hidden title="Only points with a value for the measure are drawn"><input type="checkbox" class="form-check-input"> <span>Require value</span></label>
             </div>
             <div class="legend-note legend-colour-status" hidden></div>
             <label class="legend-model form-switch" hidden title="Draw Environment and Climate Change Canada's global model field for the same measure, at the current hour, under the points, so observations can be compared with the model">
@@ -1331,7 +1343,9 @@ function drawnLayers() {
     var hidden = new Set(effectiveHidden());
     var m = colouredOnly && METRICS[colourBy];
     var out = new Set();
-    var passes = (p) => passesFilters(p, hidden);
+    // Satellites only (styled by satellite, with the checkbox on) leaves out the rest
+    var satellitesOnly = colouredOnly && colourBy === SATELLITE_STYLE;
+    var passes = (p) => passesFilters(p, hidden) && !(satellitesOnly && !SATELLITE_LAYERS.includes(p.layer));
     var mark = (p) => {
         out.add(p.layer);
         if (p.via) out.add(p.via);
@@ -1364,8 +1378,16 @@ function updateMapKey() {
     if (m) {
         // The measure and its scale are in the style panel above
         // With "Require value" on, points without one aren't drawn, so there's nothing to explain
-        if (!colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}No value, or not measured</div>`);
+        // The same grey "Other" row as styled by satellite: whatever the style doesn't colour
+        if (!colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}Other</div>`);
         if (coverage) rows.push(`<div class="key-row">${swatch}Satellite coverage${colourBy === 'cloudAmount' ? ', darker = cloudier' : ''}</div>`);
+    } else if (colourBy === SATELLITE_STYLE) {
+        // Each satellite switched on, in its colour, by name; everything else is grey
+        [...satelliteColours].filter(([sat]) => !hidden.includes(sat))
+            .sort(([a], [b]) => satelliteLabel(a).localeCompare(satelliteLabel(b)))
+            .forEach(([sat, colour]) => rows.push(`<div class="key-row">${symbol('circle', colour)}${esc(satelliteLabel(sat))}</div>`));
+        // Nothing else is drawn with Satellites only on
+        if (!colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}Other</div>`);
     } else {
         for (var [key, c] of Object.entries(OBS_CLASSES)) {
             var shapes = [drawn(`cache-${key}`) && 'circle', drawn(`gts-${key}`) && 'diamond', drawn(`replay-${key}`) && 'square'].filter(Boolean);
@@ -2113,7 +2135,8 @@ const AMV_METHODS = { 1: 'Infrared', 2: 'Visible', 3: 'Water vapour (cloud)', 4:
 const PIXEL_TYPES = { 0: 'Mixed', 1: 'Clear', 2: 'Cloudy', 3: 'Probably clear', 4: 'Probably cloudy', 5: 'Ash' };
 
 function satelliteTiles(rows, values) {
-    var tile = (label, html) => `<div class="pp-tile"><div>${esc(label)}</div><strong>${html}</strong></div>`;
+    // id: the descriptor of a value the map can be coloured by (see metricTileAttr)
+    var tile = (label, html, id) => `<div class="pp-tile"${metricTileAttr(id, true)}><div>${esc(label)}</div><strong>${html}</strong></div>`;
     var number = (id) => (values.has(id) && typeof values.get(id)[0] === 'number' ? values.get(id)[0] : null);
     var count = (id) => rows.filter((r) => r[0] === id).length;
     var all = (id) => rows.filter((r) => r[0] === id && typeof r[2] === 'number').map((r) => r[2]);
@@ -2140,7 +2163,7 @@ function satelliteTiles(rows, values) {
     if (number(5040) !== null) tiles.push(tile('Orbit', esc(number(5040).toLocaleString())));
 
     if (product === 'Cloud-motion winds') {
-        tiles.push(...windTiles(values));
+        tiles.push(...windTiles(values, 'satWind'));
         var method = number(2023);
         if (method !== null) tiles.push(tile('Tracked in', esc(AMV_METHODS[method] || `method ${method}`)));
         // Several confidences can follow (with and without the forecast check); the first is the main one
@@ -2151,31 +2174,31 @@ function satelliteTiles(rows, values) {
         var pick = Math.max(0, (number(21102) || 1) - 1);
         var speeds = all(11012), dirs = all(11011);
         var speed = speeds[pick] ?? speeds[0], dir = dirs[pick] ?? dirs[0];
-        if (speed !== undefined) tiles.push(...windTiles(new Map([[11002, [speed]], ...(dir !== undefined ? [[11001, [dir]]] : [])])));
+        if (speed !== undefined) tiles.push(...windTiles(new Map([[11002, [speed]], ...(dir !== undefined ? [[11001, [dir]]] : [])]), 'seaWind'));
         if (speeds.length > 1) tiles.push(tile('Possible winds', `${esc(speeds.length)} <small>this one most likely</small>`));
     }
-    if (number(15001) !== null) tiles.push(tile('Total ozone', `${esc(Math.round(number(15001)))} DU`));
+    if (number(15001) !== null) tiles.push(tile('Total ozone', `${esc(Math.round(number(15001)))} DU`, 15001));
     // Column water vapour, then its uncertainty after 008093 (0 = total uncertainty)
     var vapour = all(13095);
     if (vapour.length) {
         var spread = values.has(8093) && vapour.length > 1 ? vapour[1] : null;
         var doubtful = spread !== null && spread > vapour[0] / 2;
-        tiles.push(tile('Water vapour', `${esc(vapour[0].toFixed(1))} kg/m²${spread !== null ? ` <small>± ${esc(spread.toFixed(1))}${doubtful ? ', low confidence' : ''}</small>` : ''}`));
+        tiles.push(tile('Water vapour', `${esc(vapour[0].toFixed(1))} kg/m²${spread !== null ? ` <small>± ${esc(spread.toFixed(1))}${doubtful ? ', low confidence' : ''}</small>` : ''}`, 13095));
     }
     if (number(8072) !== null && PIXEL_TYPES[number(8072)]) tiles.push(tile('Pixel', esc(PIXEL_TYPES[number(8072)])));
     if (number(10102) !== null) {
         var anomaly = number(10102) * 100;
-        tiles.push(tile('Sea-level anomaly', `${anomaly > 0 ? '+' : ''}${esc(anomaly.toFixed(1))} cm <small>vs the long-term mean</small>`));
+        tiles.push(tile('Sea-level anomaly', `${anomaly > 0 ? '+' : ''}${esc(anomaly.toFixed(1))} cm <small>vs the long-term mean</small>`, 10102));
     }
-    if (number(20016) !== null) tiles.push(tile('Cloud-top pressure', `${esc(Math.round(number(20016) / 100))} hPa`));
+    if (number(20016) !== null) tiles.push(tile('Cloud-top pressure', `${esc(Math.round(number(20016) / 100))} hPa`, 20016));
     if (number(20014) !== null) tiles.push(tile('Cloud-top height', `${esc((number(20014) / 1000).toFixed(1))} km`));
     if (product === 'Cloud-motion winds' && number(12001) !== null) tiles.push(tile('Cloud temperature', `${esc((number(12001) - 273.15).toFixed(1))} °C`));
-    if (number(20081) !== null) tiles.push(tile('Cloud amount', `${esc(Math.round(number(20081)))} %`));
+    if (number(20081) !== null) tiles.push(tile('Cloud amount', `${esc(Math.round(number(20081)))} %`, 20081));
 
     var bt = all(12163).concat(all(12063));
     if (bt.length) {
         tiles.push(tile('Channels', esc(bt.length)));
-        tiles.push(tile('Brightness temperature', `${esc(Math.round(Math.min(...bt)))}–${esc(Math.round(Math.max(...bt)))} K`));
+        tiles.push(tile('Brightness temperature', `${esc(Math.round(Math.min(...bt)))}–${esc(Math.round(Math.max(...bt)))} K`, 12163));
     }
     // Channel frequencies: microwave in GHz, infrared and visible as wavelengths
     var freqs = all(2153).filter((f) => f > 0);
@@ -2185,7 +2208,7 @@ function satelliteTiles(rows, values) {
         var text = lo === hi ? fmt(lo) : lo < 1e12 ? `${Number((lo / 1e9).toFixed(1))}–${fmt(hi)}` : `${Number((3e8 / hi * 1e6).toFixed(1))}–${fmt(lo)}`;
         tiles.push(tile(freqs.length > 1 ? 'Channels at' : 'Channel', esc(text)));
     }
-    if (number(12061) !== null) tiles.push(tile('Skin temperature', `${esc((number(12061) - 273.15).toFixed(1))} °C`));
+    if (number(12061) !== null) tiles.push(tile('Skin temperature', `${esc((number(12061) - 273.15).toFixed(1))} °C`, 12061));
     if (product === 'Temperature and humidity profile') tiles.push(tile('Profile levels', esc(count(12101))));
     if (product === 'Radio occultation') {
         tiles.push(tile('Profile levels', esc(count(15037))));
@@ -2350,12 +2373,13 @@ function renderSpectrum(container, spectrum, opts) {
     container.replaceChildren(svg);
 }
 
-function windTiles(values) {
-    var tile = (label, html) => `<div class="pp-tile"><div>${esc(label)}</div><strong>${html}</strong></div>`;
+// metric: the measure the speed tile colours the map by (wind at stations, or a satellite wind)
+function windTiles(values, metric) {
+    var tile = (label, html, key) => `<div class="pp-tile"${key ? ` data-metric="${key}"` : ''}><div>${esc(label)}</div><strong>${html}</strong></div>`;
     var number = (id) => (values.has(id) && typeof values.get(id)[0] === 'number' ? values.get(id)[0] : null);
     var speed = number(11002), dir = number(11001), gust = number(11041);
     var tiles = [];
-    if (speed !== null) tiles.push(tile('Wind speed', `${esc(Number(speed.toFixed(1)))} m/s <small>${knots(speed)} kn</small>`));
+    if (speed !== null) tiles.push(tile('Wind speed', `${esc(Number(speed.toFixed(1)))} m/s <small>${knots(speed)} kn</small>`, metric));
     if (dir !== null && speed !== 0) {
         var point = COMPASS_POINTS[Math.round(dir / 22.5) % 16];
         tiles.push(tile('Wind direction', `<span class="wind-arrow" style="--to: ${(dir + 180) % 360}deg" aria-hidden="true">↑</span>`
@@ -2366,6 +2390,42 @@ function windTiles(values) {
     // A gust no stronger than the mean wind is an unset or unrelated value; leave it out
     if (gust !== null && gust > (speed || 0)) tiles.push(tile('Wind gust', `${esc(Number(gust.toFixed(1)))} m/s <small>${knots(gust)} kn</small>`));
     return tiles;
+}
+
+// Tiles that can style the map: a value the map can be coloured by marks its tile with
+// the measure (data-metric), found from its descriptor among the satellite measures or
+// the surface ones. A click colours the map by it; a click on the measure in use goes
+// back to colouring by observation type
+function metricTileAttr(id, satellite) {
+    if (id === undefined) return '';
+    var key = Object.keys(METRICS).find((k) => METRICS[k].ids.includes(id) && (METRICS[k].targets === 'satellite') === !!satellite);
+    return key ? ` data-metric="${key}"` : '';
+}
+
+function syncMetricTile(tile) {
+    var on = colourBy === tile.dataset.metric, label = METRICS[tile.dataset.metric].label.toLowerCase();
+    tile.setAttribute('aria-pressed', on);
+    tile.title = on ? `The map is coloured by ${label}. Click to colour it by observation type` : `Colour the map by ${label}`;
+}
+
+function bindMetricTiles(out) {
+    out.querySelectorAll('.pp-tile[data-metric]').forEach((tile) => {
+        tile.classList.add('pp-tile-metric');
+        tile.tabIndex = 0;
+        tile.setAttribute('role', 'button');
+        syncMetricTile(tile);
+        var choose = () => {
+            var next = colourBy === tile.dataset.metric ? 'kind' : tile.dataset.metric;
+            stylePanel.querySelector('select').value = next;
+            setColourBy(next, stylePanel);
+        };
+        tile.addEventListener('click', choose);
+        tile.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault();
+            choose();
+        });
+    });
 }
 
 function renderDecoded(out, title, result) {
@@ -2392,11 +2452,11 @@ function renderDecoded(out, title, result) {
         var id = key.ids.find((i) => values.has(i));
         if (!id || (key.unless && key.unless.some((i) => values.has(i)))) continue;
         if (key.wind) {
-            tiles.push(...windTiles(values));
+            tiles.push(...windTiles(values, 'wind'));
             continue;
         }
         var text = formatValue(...values.get(id)).join(' ');
-        tiles.push(`<div class="pp-tile"><div>${esc(key.label)}</div><strong>${esc(text)}</strong></div>`);
+        tiles.push(`<div class="pp-tile"${metricTileAttr(id, false)}><div>${esc(key.label)}</div><strong>${esc(text)}</strong></div>`);
     }
     // Aircraft: where the flight is from and going, and what it's doing
     var route = flightRoute(values.has(1111) && values.get(1111)[0], values.has(1112) && values.get(1112)[0]);
@@ -2441,6 +2501,7 @@ function renderDecoded(out, title, result) {
     out.querySelectorAll('.pp-pager button').forEach((button) => button.addEventListener('click', () => {
         showReport(out, title, result.key, result.index + Number(button.dataset.step));
     }));
+    bindMetricTiles(out);
     if (marine && marine.spectrum && marine.spectrum.peak) {
         renderWaveSpectrum(out.querySelector('.wave-spectrum'), marine.spectrum, { width: 300, height: 190 });
     }
@@ -2466,7 +2527,8 @@ function marineDetails(rows, satellite) {
     }
     var first = (...ids) => ids.map((id) => all.get(id)).find(Boolean)?.[0];
     var nth = (id, i) => (all.get(id) || [])[i];
-    var tile = (label, text) => `<div class="pp-tile"><div>${esc(label)}</div><strong>${esc(text)}</strong></div>`;
+    // id: the descriptor of a value the map can be coloured by (see metricTileAttr)
+    var tile = (label, text, id) => `<div class="pp-tile"${metricTileAttr(id, satellite)}><div>${esc(label)}</div><strong>${esc(text)}</strong></div>`;
     var wave = (height, period, from) => [
         height !== undefined ? `${Number(height.toFixed(1))} m` : null,
         period !== undefined ? `${period} s` : null,
@@ -2475,7 +2537,7 @@ function marineDetails(rows, satellite) {
 
     var tiles = [];
     var sea = first(22043, 22049, 22042);
-    if (sea !== undefined) tiles.push(tile('Sea temperature', `${(sea - 273.15).toFixed(1)} °C`));
+    if (sea !== undefined) tiles.push(tile('Sea temperature', `${(sea - 273.15).toFixed(1)} °C`, 22043));
     var salinity = first(22062);
     if (salinity !== undefined) tiles.push(tile('Salinity', `${salinity} ‰`));
     // Wave buoys: significant and maximum height, mean period and the direction
@@ -2485,7 +2547,7 @@ function marineDetails(rows, satellite) {
     var peak = spectrum && spectrum.peak ? 1 / spectrum.peak.f : first(22071) > 1 ? first(22071) : undefined;
     var dominant = first(22076);
     if (all.has(22070)) {
-        tiles.push(tile('Wave height', [`${first(22070)} m significant`, all.has(22073) ? `max ${first(22073)} m` : null].filter(Boolean).join(' · ')));
+        tiles.push(tile('Wave height', [`${first(22070)} m significant`, all.has(22073) ? `max ${first(22073)} m` : null].filter(Boolean).join(' · '), 22070));
     }
     if (all.has(22074) || peak !== undefined) {
         tiles.push(tile('Wave period', [all.has(22074) ? `mean ${first(22074)} s` : null, peak !== undefined ? `peak ${peak.toFixed(1)} s` : null,
@@ -3943,6 +4005,8 @@ function applyMapFilter() {
     // With aircraft tracks on, tracked aircraft are drawn in the air instead of on the ground
     // Optionally only the points coloured by the selected measure
     if (colouredOnly && METRICS[colourBy]) expr.push(['all', isColourTarget(), ['has', `m_${colourBy}`]]);
+    // Or, styled by satellite, only what came from a satellite
+    if (colouredOnly && colourBy === SATELLITE_STYLE) expr.push(isColourTarget());
     // Swath reports are only points while coverage is switched off (see syncSwathPoints)
     var coverage = !effectiveHidden().includes('sat-coverage');
     syncSwathPoints();
@@ -4056,7 +4120,7 @@ function readFiltersFromUrl() {
     list(FILTER_PARAMS.disciplines).filter((d) => DISCIPLINES.hasOwnProperty(d)).forEach((d) => filters.disciplines.add(d));
     list('hide').filter((key) => filterModes.hasOwnProperty(key)).forEach((key) => { filterModes[key] = 'hide'; });
     var style = params.get('style');
-    if (style === 'kind' || METRICS.hasOwnProperty(style)) startColour = style;
+    if (style === 'kind' || style === SATELLITE_STYLE || METRICS.hasOwnProperty(style)) startColour = style;
     colouredOnly = params.get('require') === '1';
     modelFieldOn = params.get('base') === '1';
     if (/^urn:wmo:md:/.test(params.get('dataset') || '')) startDataset = params.get('dataset');
@@ -4077,7 +4141,7 @@ function writeFiltersToUrl() {
     // The options only count while colouring by a measure (and the base layer only for one with a model field)
     var m = METRICS[colourBy];
     set('style', colourBy !== DEFAULT_COLOUR ? colourBy : '');
-    set('require', colouredOnly && m ? '1' : '');
+    set('require', colouredOnly && (m || colourBy === SATELLITE_STYLE) ? '1' : '');
     set('base', modelFieldOn && m && m.wms ? '1' : '');
     if (!startDataset) set('dataset', shownDataset ? shownDataset.id : '');  // Kept while a link's dataset is still loading
     var share = document.querySelector('.queue-share');
@@ -6127,17 +6191,26 @@ function setColourBy(key, legend) {
             ['all', target, ['has', `m_${key}`]], ['interpolate', ['linear'], value, ...m.stops.flatMap(([v, c]) => [v, darken(c)])],
             kept, ['get', 'outline'],
             darken(NO_VALUE_COLOR)];
+    } else if (key === SATELLITE_STYLE) {
+        // Each satellite its own colour; everything else grey
+        var target = isColourTarget();
+        color = ['case', target, satelliteMatch(false), NO_VALUE_COLOR];
+        swathColor = satelliteMatch(false, ['get', 'color']);
+        originRing = color;
+        var outline = ['case', target, satelliteMatch(true), darken(NO_VALUE_COLOR)];
     }
     // Calm reports under a wind measure are empty: an outline with no fill
     var pointColor = windArrows()
         ? ['case', ['all', target, ['==', ['to-number', ['get', `m_${key}`], -1], 0]], 'rgba(0, 0, 0, 0)', color]
         : color;
     map.setPaintProperty('points', 'circle-color', pointColor);
-    map.setPaintProperty('points-gts', 'icon-halo-color', m ? outline : ['get', 'outline']);
-    map.setPaintProperty('points', 'circle-stroke-color', ['case', ['get', 'origin'], originRing, m ? outline : ['get', 'outline']]);
+    // Outlines follow the style (a measure's scale, or each satellite's colour), else each point's own
+    var styledOutline = outline || ['get', 'outline'];
+    map.setPaintProperty('points-gts', 'icon-halo-color', styledOutline);
+    map.setPaintProperty('points', 'circle-stroke-color', ['case', ['get', 'origin'], originRing, styledOutline]);
     map.setPaintProperty('points-gts', 'icon-color', pointColor);
     map.setPaintProperty('points-ext', 'icon-color', pointColor);
-    map.setPaintProperty('points-ext', 'icon-halo-color', m ? outline : ['get', 'outline']);
+    map.setPaintProperty('points-ext', 'icon-halo-color', styledOutline);
     map.setPaintProperty('points-arrow', 'icon-color', color);
     if (windArrows()) {
         // Longer arrows for stronger winds, which also win where arrows would overlap
@@ -6151,10 +6224,20 @@ function setColourBy(key, legend) {
     map.setPaintProperty('swath-lift', 'fill-color', swathColor);
     paintAge();
     syncOpacitySlider();
+    // Tiles in an open popup show which measure is in use, however it was chosen
+    document.querySelectorAll('.pp-tile[data-metric]').forEach(syncMetricTile);
+    syncSatelliteRows();
     var scale = legend.querySelector('.legend-scale');
     if (scale) scale.hidden = !m;
+    // The same checkbox hides whatever the style doesn't colour: points without a value
+    // for a measure, or anything not from a satellite
     var colouredOnlyRow = legend.querySelector('.legend-coloured-only');
-    if (colouredOnlyRow) colouredOnlyRow.hidden = !m;
+    if (colouredOnlyRow) {
+        var bySatellite = key === SATELLITE_STYLE;
+        colouredOnlyRow.hidden = !m && !bySatellite;
+        colouredOnlyRow.querySelector('span').textContent = bySatellite ? 'Satellites only' : 'Require value';
+        colouredOnlyRow.title = bySatellite ? 'Only satellite observations are drawn' : 'Only points with a value for the measure are drawn';
+    }
     updateModelField(legend);
     applyMapFilter();
     if (m) {
@@ -6175,7 +6258,8 @@ function setColourBy(key, legend) {
 
 function showColourStatus(legend) {
     var el = legend.querySelector('.legend-colour-status');
-    if (colourBy === 'kind') { el.hidden = true; return; }
+    // Only measures have values to count (not observation type, nor satellite)
+    if (!METRICS[colourBy]) { el.hidden = true; return; }
     var points = [...records.values()].filter((r) => isColourable(r, METRICS[colourBy]));
     var known = points.filter((r) => r.feature && r.feature.properties[`m_${colourBy}`] !== undefined).length;
     var total = points.length;
@@ -6202,7 +6286,7 @@ function queueStationDecodes() {
 }
 
 function queueStationDecode(record) {
-    if (colourBy === 'kind' || record.decoded || !record.source || !isColourable(record)) return;
+    if (!METRICS[colourBy] || record.decoded || !record.source || !isColourable(record)) return;
     if (record.replay) {
         // Replays arrive newest first, so once the queue is full the rest are older still
         if (replayMetricQueue.length < REPLAY_DECODE_MAX) replayMetricQueue.push(record);
@@ -6214,7 +6298,7 @@ function queueStationDecode(record) {
 }
 
 async function pumpStationDecodes() {
-    if (metricBusy || (!metricQueue.length && !replayMetricQueue.length) || colourBy === 'kind') return;
+    if (metricBusy || (!metricQueue.length && !replayMetricQueue.length) || !METRICS[colourBy]) return;
     metricBusy = true;
     // Live stations newest first; replayed ones only once none are waiting
     var record = metricQueue.length ? metricQueue.pop() : replayMetricQueue.shift();
@@ -6268,6 +6352,38 @@ function satelliteName(record) {
     return row ? `Satellite ${row[2]}` : null;
 }
 
+// Style by Satellite: each satellite's colour, given in the order they're first seen
+// so none share one until there are more satellites than colours
+const SATELLITE_PALETTE = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#17becf', '#bcbd22', '#7f7f7f',
+    '#393b79', '#e6550d', '#31a354', '#843c39', '#7b4173', '#3182bd', '#fd8d3c', '#74c476', '#9e9ac8', '#e7969c'];
+const satelliteColours = new Map();  // satellite key (sat:satellite:<name>) -> colour; one per satellite, few
+
+function satelliteColour(key) {
+    if (!satelliteColours.has(key)) satelliteColours.set(key, SATELLITE_PALETTE[satelliteColours.size % SATELLITE_PALETTE.length]);
+    return satelliteColours.get(key);
+}
+
+function satelliteLabel(key) {
+    return key.split(':').slice(2).join(':').toUpperCase().replace(/^SATELLITE /, 'Satellite ');
+}
+
+// A paint expression giving each satellite its colour (or its outline, darker); others get fallback
+function satelliteMatch(dark, fallback) {
+    var pairs = [...satelliteColours].flatMap(([key, colour]) => [key, dark ? darken(colour) : colour]);
+    var other = fallback || (dark ? darken(NO_VALUE_COLOR) : NO_VALUE_COLOR);
+    return pairs.length ? ['match', ['coalesce', ['get', 'sat'], ''], ...pairs, other] : other;
+}
+
+// The satellites' rows under Space-based take their colours while the map is styled by satellite
+function syncSatelliteRows() {
+    document.querySelectorAll('.legend-satellite').forEach((row) => {
+        var colour = colourBy === SATELLITE_STYLE ? satelliteColour(row.dataset.layer) : OBS_CLASSES.satellite.color;
+        var dot = row.querySelector('.legend-dot');
+        dot.style.setProperty('--color', colour);
+        dot.style.setProperty('--outline', darken(colour));
+    });
+}
+
 function addSatelliteRow(key) {
     if (seenLayers.has(key)) return;
     var [, parent] = key.split(':');
@@ -6275,12 +6391,15 @@ function addSatelliteRow(key) {
     if (!parentRow) return;
     seenLayers.add(key);
     LAYER_PARENTS[key] = parent;
-    var name = key.split(':').slice(2).join(':');
+    satelliteColour(key);
+    // A new satellite joins the colours on the map while styled by satellite
+    if (colourBy === SATELLITE_STYLE && stylePanel) requestAnimationFrame(() => setColourBy(colourBy, stylePanel));
     var row = document.createElement('label');
     row.className = 'legend-toggle legend-sub legend-depth-2 legend-satellite';
     row.dataset.layer = key;
-    row.innerHTML = `<input type="checkbox" class="form-check-input"${hiddenLayers.has(key) ? '' : ' checked'}><span class="legend-dot" style="--color: ${OBS_CLASSES.satellite.color}; --outline: ${darken(OBS_CLASSES.satellite.color)}"></span><span></span>`;
-    row.lastElementChild.textContent = name.toUpperCase().replace(/^SATELLITE /, 'Satellite ');
+    var colour = colourBy === SATELLITE_STYLE ? satelliteColour(key) : OBS_CLASSES.satellite.color;
+    row.innerHTML = `<input type="checkbox" class="form-check-input"${hiddenLayers.has(key) ? '' : ' checked'}><span class="legend-dot" style="--color: ${colour}; --outline: ${darken(colour)}"></span><span></span>`;
+    row.lastElementChild.textContent = satelliteLabel(key);
     var input = row.querySelector('input');
     var parentOff = ancestors(key).some((a) => hiddenLayers.has(a));
     input.disabled = parentOff;
@@ -7725,7 +7844,7 @@ function drawOverview() {
             if (!passesFilters(p, hidden)) continue;
             var value = m && m.targets === 'satellite' ? p[`m_${colourBy}`] : undefined;
             if (colouredOnly && m && value == null) continue;
-            var fill = value != null ? scale(value) : p.color;
+            var fill = colourBy === SATELLITE_STYLE ? satelliteColours.get(p.sat) || p.color : value != null ? scale(value) : p.color;
             if (!fills.has(fill)) fills.set(fill, []);
             fills.get(fill).push(feature.geometry.coordinates[0].map(([lon, lat]) => projection([Math.max(-180, Math.min(180, lon)), lat])));
         }
@@ -7749,8 +7868,10 @@ function drawOverview() {
         var target = m && isColourable(record, m);
         var v = m ? q[`m_${colourBy}`] : undefined;
         if (colouredOnly && m && !(target && v != null)) continue;
+        if (colouredOnly && colourBy === SATELLITE_STYLE && !SATELLITE_LAYERS.includes(q.layer)) continue;
         // As setColourBy: grey without a value, aircraft keep theirs under surface measures
-        var colour = !m ? q.color : target && v != null ? scale(v) : m.targets !== 'satellite' && /-aircraft$/.test(q.layer) ? q.color : NO_VALUE_COLOR;
+        var colour = colourBy === SATELLITE_STYLE ? (SATELLITE_LAYERS.includes(q.layer) && satelliteColours.get(q.sat)) || NO_VALUE_COLOR
+            : !m ? q.color : target && v != null ? scale(v) : m.targets !== 'satellite' && /-aircraft$/.test(q.layer) ? q.color : NO_VALUE_COLOR;
         var xy = projection(record.coords);
         if (!xy) continue;
         var key = `${colour}|${q.origin ? 'ring' : 'dot'}`;
