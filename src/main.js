@@ -14,7 +14,7 @@ import { esc, darken, svgEl, knots } from './lib/util.js';
 import { distanceKm, segments, unwrap, convexHull, inOrNearRing, H3_SAMPLE_DEG, h3Cell, cellRing, cellsOutline } from './lib/geo.js';
 import { connectFastest, brokerState } from './mqtt.js';
 import { callDecoder, preloadDecoder, decoderReady, decoderGaveUp, onDecoderSettled } from './decoder.js';
-import { SATELLITE_NAMES, INSTRUMENT_NAMES, AMV_METHODS, PIXEL_TYPES } from './satellite/names.js';
+import { SATELLITE_NAMES, INSTRUMENT_NAMES, AMV_METHODS, PIXEL_TYPES, satelliteNamed } from './satellite/names.js';
 import { showSpectrum } from './satellite/spectrum.js';
 
 // Map
@@ -5523,7 +5523,8 @@ function satelliteName(record) {
     var row = record.decoded && record.decoded.rows && record.decoded.rows.find((x) => x[0] === 1007);
     if (row && SATELLITE_NAMES[row[2]]) return SATELLITE_NAMES[row[2]];
     var match = /space-based-observations\/([^/]+)/.exec(record.topic);
-    if (match) return match[1].toUpperCase();
+    // The same name the table gives it, so a satellite gets one row whichever way it came
+    if (match) return satelliteNamed(match[1]) || match[1].toUpperCase();
     return row ? `Satellite ${row[2]}` : null;
 }
 
