@@ -28,7 +28,8 @@ src/mqtt.js                connectFastest({ onMessage, onState }): races the Glo
 src/caches.js              The global caches seen and how fast each answers: downloadOrder
                            (fastest first; hosts that blocked a browser download are skipped
                            for good), canDownload; main.js's fetchTracked reports each
-                           download. The fastest is state.cache (the GDC in use: state.catalogue)
+                           download. Caches are timed again every minute; the fastest is
+                           state.cache (the GDC in use, re-ranked every minute: state.catalogue)
 src/decoder.js             callDecoder(fn, ...args): Pyodide + pybufrkit in Web Workers
                            (DECODE_PY); onDecoderSettled(fn) once it has started or failed
 src/lib/util.js            esc, darken, svgEl, knots
@@ -131,7 +132,9 @@ bottom; the core comes first, roughly in this order:
    dataset are mirrored in the URL (`readFiltersFromUrl`/`writeFiltersToUrl`).
 6. **MQTT** (`src/mqtt.js`) — `connectFastest` races the brokers in `hosts`
    and keeps the first one that connects and subscribes to `origin/a/wis2/#`
-   and `cache/a/wis2/#`; the page passes `onMessage` and `onState`. The
+   and `cache/a/wis2/#`; the page passes `onMessage` and `onState`. It stays
+   on that broker (switching would drop messages) and times a round trip every
+   minute (`brokerState.ms`). The
    `everyone/everyone` credentials are public.
 7. **Message handling** — `onMessage` takes the parsed WIS2 notification
    (GeoJSON), skips `ignoredTopics`, reduces geometry to a point with `pointFor`
@@ -161,7 +164,9 @@ airport METARs, the Equal Earth world map (a D3 canvas above the legend in the
 map key, as MapLibre has no Equal Earth; it filters with `passesFilters` like the key),
 satellite coverage (each swath file is packed into `swathFiles`
 and adds to running totals per H3 cell, not points; a report becomes a record only
-when clicked, via `swathRecord`) and aircraft tracks.
+when clicked, via `swathRecord`) and tracks (`buildTracks`: aircraft float at their
+altitude; ships, joined by call sign or WIGOS id via `shipTrackKey`, are lines on
+the Tracks rows under Cache and GTS Ships).
 
 Topic structure: `<channel>/a/wis2/<centre>/data/core/<discipline>/...`, where
 channel is `origin` or `cache`.

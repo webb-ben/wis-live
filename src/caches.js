@@ -7,7 +7,8 @@ import { isDataLink } from './messages.js';
 
 const CACHES_MAX = 50;  // Hosts kept (there are a handful of global caches)
 const PROBE_MS = 8000;
-const cacheHosts = new Map();  // host -> { host, id, name, ms, ok, blocked }
+const REPROBE_MS = 60e3;  // Every cache is timed again this often, so state.cache follows the fastest
+const cacheHosts = new Map();  // host -> { host, id, name, ms, ok, blocked, href }
 
 // Hosts known to let a browser download their files: the S3-backed global caches and
 // JMA's own server (which JMA's GTS-to-WIS2 bulletins link to). DWD, KMA, CMA and
@@ -42,8 +43,11 @@ export function noteCacheLinks(feature) {
     if (!id) return;
     for (var link of feature.links || []) {
         var host = isDataLink(link) && hostOf(link.href);
-        if (!host || cacheHosts.has(host) || cacheHosts.size >= CACHES_MAX) continue;
-        var cache = { host, id, name: cacheName(id), ms: Infinity, ok: false, blocked: false };
+        if (!host) continue;
+        // The latest file on each cache is what it's timed with again
+        if (cacheHosts.has(host)) { cacheHosts.get(host).href = link.href; continue; }
+        if (cacheHosts.size >= CACHES_MAX) continue;
+        var cache = { host, id, name: cacheName(id), ms: Infinity, ok: false, blocked: false, href: link.href };
         cacheHosts.set(host, cache);
         probe(cache, link.href);
     }
@@ -80,6 +84,15 @@ export function noteTrying(url) {
     var host = hostOf(url);
     if (host && !okHosts.has(host)) tryingHosts.add(host);
 }
+
+// Every minute, each cache that hasn't blocked the browser is timed again with its
+// latest file, so a cache that slows down or speeds up moves in the order
+setInterval(() => {
+    if (document.hidden) return;  // A background tab needn't keep asking
+    for (var cache of cacheHosts.values()) {
+        if (!cache.blocked && !isBlocked(cache.host)) probe(cache, cache.href);
+    }
+}, REPROBE_MS);
 
 // How long a request to url took to answer (ms), and whether the browser could
 // read it (ok). Later timings count for less than the running figure

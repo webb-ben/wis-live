@@ -38,6 +38,20 @@ function setBrokerState(state, host, ms) {
     handlers.onState(brokerState);
 }
 
+// Every minute, how long the broker in use takes to answer: an UNSUBSCRIBE for a topic
+// never subscribed to costs nothing and the broker acknowledges it at once. It isn't
+// swapped for a faster one, as the brokers carry the same messages and changing would
+// drop some; the time is shown in the map key
+const PING_MS = 60e3;
+function pingBroker() {
+    if (!client || !client.connected || document.hidden) return;
+    var pinged = client, start = performance.now();
+    pinged.unsubscribe('wis-live/latency', () => {
+        if (pinged === client && brokerState.state === 'connected') setBrokerState('connected', undefined, performance.now() - start);
+    });
+}
+setInterval(pingBroker, PING_MS);
+
 // Race all brokers and keep the first one that connects and subscribes.
 // onMessage(topic, message) gets every message; onState(brokerState) every change
 export function connectFastest({ onMessage, onState } = handlers) {
@@ -81,6 +95,7 @@ export function connectFastest({ onMessage, onState } = handlers) {
                 client.on('connect', () => setBrokerState('connected'));  // After a reconnect
                 console.log(`Connected to ${host}!`);
                 setBrokerState('connected', new URL(host).host, performance.now() - start);
+                pingBroker();  // A round trip, like the later ones, rather than the time to connect
             });
         });
 

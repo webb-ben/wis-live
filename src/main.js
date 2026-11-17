@@ -111,12 +111,19 @@ const OWN_SECTION = ['satellite'];
 // Legend rows, grouped by source; each can be switched on and off. Rows other
 // than opt-in ones stay hidden until a point of that kind has arrived. Opt-in
 // rows are decoded in the browser, since their notifications carry no location.
+// A ship layer's Tracks row: its reports joined by ship, a line under the points
+const shipTracksRow = (parent) => ({ key: `${parent}-tracks`, parent, label: 'Tracks', follow: true, track: true, color: OBS_CLASSES.ship.color,
+    title: 'Each ship\'s reports joined in time order by its call sign or WIGOS id, as a line under its points. Ships that stay put (moored platforms) draw none.' });
+
 const LAYER_GROUPS = [
     { key: 'wis2', label: 'WIS2', subtitle: 'Live from the WIS2 Global Brokers', layers: [
         { key: 'origin', label: 'Origin', color: COLORS.origin, ring: true },
         { key: 'obs', label: 'Cache', color: OBS_CLASSES.station.color, optIn: true },  // Always listed
         // Sublayers sit under their parent and are off whenever it is off
-        ...Object.entries(OBS_CLASSES).filter(([key]) => !OWN_SECTION.includes(key)).map(([key, c]) => ({ key: `cache-${key}`, parent: 'obs', label: c.label, color: c.color, title: c.title })),
+        ...Object.entries(OBS_CLASSES).filter(([key]) => !OWN_SECTION.includes(key)).flatMap(([key, c]) => [
+            { key: `cache-${key}`, parent: 'obs', label: c.label, color: c.color, title: c.title },
+            ...(key === 'ship' ? [shipTracksRow('cache-ship')] : []),
+        ]),
         { key: 'radar', parent: 'obs', label: 'Weather radar', color: COLORS.radar,
             title: 'Reflectivity from the lowest scan of each radar volume (ODIM HDF5) in the cache (e.g. RMI, Belgium), drawn around the radar; downloaded only while this is on' },
     ] },
@@ -131,6 +138,7 @@ const LAYER_GROUPS = [
             ...(key === 'aircraft' ? [{ key: 'gts-tracks', parent: 'gts-aircraft', label: 'Tracks', follow: true, track: true,
                 color: 'linear-gradient(90deg, #99e9f2, #22b8cf, #1971c2, #5f3dc4)',
                 title: 'Each aircraft drawn in the air at its altitude: a path coloured by height (light low, dark high), chevrons pointing the way it is flying, and a red arrowhead at its latest report. Tilt the map to see it in 3D. Off: every report is a point on the ground.' }] : []),
+            ...(key === 'ship' ? [shipTracksRow('gts-ship')] : []),
         ]),
         // Listed once a WIS2-to-GTS centre has published something (see revealGatewayRows)
         { key: 'wis2gts', label: 'WIS2-to-GTS (decode required)', color: COLORS.wis2gts,
@@ -314,6 +322,7 @@ const records = new Map();  // id -> record for every point on the map
 // Satellite coverage (see the Satellite coverage section). Declared here as the key,
 // built while the page loads, lists what they hold
 const swathFiles = new Map();  // file data_id -> swath file, oldest first
+let shipTrackLayers = new Set();  // Layers with a ship track drawn, for the map key (set by buildTracks)
 const swathCells = new Map();  // satellite + H3 cell -> totals of the files covering it
 const pools = { wis2: new Map(), decoded: new Map(), satellite: new Map() };  // Same records, in arrival order per cap
 const POOL_CAPS = { wis2: MAX_POINTS, decoded: MAX_DECODED_POINTS, satellite: MAX_SATELLITE_POINTS };
@@ -497,12 +506,14 @@ map.on('load', () => {
         },
     });
     // Each decoded satellite file as one footprint (the area its reports cover), under the points
-    map.addSource('swaths', { type: 'geojson', data: empty });
+    // tolerance 0: MapLibre's default simplification cuts corners off cells this small
+    // at low zooms, which shows as a clipped outline on the selected or hovered cell
+    map.addSource('swaths', { type: 'geojson', data: empty, tolerance: 0 });
     // No antialiasing, so neighbouring cells meet without hairline seams
     map.addLayer({ id: 'swaths-fill', type: 'fill', source: 'swaths', paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.3, 'fill-antialias': false } });
     // The selected coverage cell sinks a pixel into the map: a thin shadow along its
     // top edge, the cell itself (coloured like the coverage) a pixel lower, and a light edge
-    map.addSource('swath-selected', { type: 'geojson', data: empty });
+    map.addSource('swath-selected', { type: 'geojson', data: empty, tolerance: 0 });
     map.addLayer({ id: 'swath-lift-shadow', type: 'fill', source: 'swath-selected',
         paint: { 'fill-color': '#000000', 'fill-opacity': 0.3, 'fill-translate': [0, -1] } });
     map.addLayer({ id: 'swath-lift', type: 'fill', source: 'swath-selected',
@@ -511,7 +522,7 @@ map.on('load', () => {
         paint: { 'line-color': '#ffffff', 'line-width': 1.5, 'line-translate': [0, 1] } });
     // On hover: a very thin line round all of that satellite's coverage, and the cell
     // itself in black on a white halo, like the selected-point marker
-    map.addSource('swath-hover', { type: 'geojson', data: empty });
+    map.addSource('swath-hover', { type: 'geojson', data: empty, tolerance: 0 });
     var isRole = (role) => ['==', ['get', 'role'], role];
     map.addLayer({ id: 'swath-hover-sat', type: 'line', source: 'swath-hover', filter: isRole('sat'),
         paint: { 'line-color': '#000000', 'line-width': 0.75, 'line-opacity': 0.6 } });
@@ -777,6 +788,7 @@ function addPoint(record) {
     if (record.track && record.track.startsWith('aircraft:')) feature.properties.tracked = true;
     record.feature = feature;
     toAdd.push(feature);
+    if (record.track) tracksDirty = true;
     // Swath reports drawn as points arrive a whole file at a time, too many to pulse
     if (!reduceMotion && !feature.properties.superseded && !record.external && !record.replay && !record.swath) pulses.push(feature);
     if (!seenLayers.has(feature.properties.layer)) showLegendRow(feature.properties.layer);
@@ -1226,6 +1238,9 @@ function updateMapKey() {
         rows.push(`<div class="key-title">Radar reflectivity (dBZ)</div>`);
         rows.push(`<div class="legend-scale"><span>5</span><i style="background: linear-gradient(90deg, ${RADAR_COLORS.map(([, c]) => c).join(', ')})"></i><span>65</span></div>`);
     }
+    if ([...shipTrackLayers].some((l) => !hidden.includes(l))) {
+        rows.push(`<div class="key-row"><span class="legend-dot legend-line" style="--color: ${OBS_CLASSES.ship.color}"></span>Ship tracks</div>`);
+    }
     if (!hidden.includes('gts-tracks') && drawn('gts-aircraft')) {
         rows.push(`<div class="key-row"><span class="legend-dot legend-line" style="--color: linear-gradient(90deg, #99e9f2, #22b8cf, #1971c2, #5f3dc4)"></span>Aircraft tracks by altitude</div>`);
     }
@@ -1255,17 +1270,17 @@ function updateMapKey() {
         connecting: 'Connecting to a broker…',
         retrying: 'No Global Broker reachable, retrying…',
     }[brokerState.state];
-    var brokerHtml = line(`broker-${brokerState.state}`, status, 'WIS2 Global Broker the live messages come from (time to connect)');
+    var brokerHtml = line(`broker-${brokerState.state}`, status, 'WIS2 Global Broker the live messages come from, and its round trip time (measured every minute)');
     // Grey while being found, green once one has answered, like the broker's dot
     brokerHtml += state.catalogue && state.catalogue.failed
         ? line('broker-retrying', 'Catalogue: none reachable', 'No Global Discovery Catalogue answered; dataset records are tried again on demand')
         : state.catalogue
         ? line('broker-connected', `Catalogue: ${state.catalogue.host}${ms(state.catalogue.ms)}`,
-            `Global Discovery Catalogue the dataset records come from: the fastest to answer (${state.catalogue.name})`)
+            `Global Discovery Catalogue the dataset records come from: the fastest to answer, checked every minute (${state.catalogue.name})`)
         : line('broker-connecting', 'Catalogue: finding the fastest…', 'Timing the Global Discovery Catalogues');
     brokerHtml += state.cache
         ? line('broker-connected', `Cache: ${state.cache.host}${ms(state.cache.ms)}`,
-            `Global cache downloads try first: the fastest to answer (${state.cache.name})`)
+            `Global cache downloads try first: the fastest to answer, checked every minute (${state.cache.name})`)
         : line('broker-connecting', 'Cache: finding the fastest…', 'Timing the global caches as their messages arrive');
     if (mapKeyStatus && brokerHtml !== mapKeyStatus.dataset.html) {
         mapKeyStatus.innerHTML = mapKeyStatus.dataset.html = brokerHtml;
@@ -4482,6 +4497,7 @@ function onMessage(topic, feature, replay) {
     };
     if (channel === 'cache' || replay) record.color = OBS_CLASSES[topicClass(record)].color;
     if (replay) record.subLayer = `replay-${topicClass(record)}`;
+    if (topicClass(record) === 'ship') record.track = shipTrackKey(record.wsi);
     var added = addPoint(record);
     if (added === record) queueStationDecode(record);
     return added;
@@ -5097,6 +5113,7 @@ function plotSynop(job, report, coords) {
         decodedLayer: job.kind,
         subLayer: `gts-${cls}`,
         synop: true,
+        track: report.kind === 'ship' ? shipTrackKey(report.callSign) : null,
         observed: report.time,
         props: { data_id: `synop:${wsi || report.callSign}:${report.time}`, pubtime: (job.feature.properties || {}).pubtime, datetime: date.toISOString() },
         links: job.feature.links || [],
@@ -5756,32 +5773,37 @@ const GDC_PROBE_MS = 8000;
 let gdcRanked = null;
 
 // Time one record from each catalogue, all at once, and order GDCS by how long each took
-// (those that failed or timed out last). Done once, on the first catalogue request.
-function rankGdcs() {
-    if (!gdcRanked) {
-        gdcRanked = Promise.all(GDCS.map(async (gdc) => {
+// (those that failed or timed out last). Done as the page opens and again every minute
+// (again), so lookups follow whichever is fastest now; requests wait for the first ranking only
+function rankGdcs(again) {
+    if (!gdcRanked || again) {
+        var ranking = Promise.all(GDCS.map(async (gdc) => {
             var abort = new AbortController();
             var timer = setTimeout(() => abort.abort(), GDC_PROBE_MS);
             var start = performance.now();
             try {
-                var response = await fetch(`${gdc.api}?f=json&limit=1`, { signal: abort.signal });
+                var response = await fetch(`${gdc.api}?f=json&limit=1`, { signal: abort.signal, cache: 'no-store' });
                 await response.arrayBuffer();
-                gdc.ms = response.ok ? performance.now() - start : Infinity;
+                return response.ok ? performance.now() - start : Infinity;
             } catch (err) {
-                gdc.ms = Infinity;
+                return Infinity;
             } finally {
                 clearTimeout(timer);
             }
-        })).then(() => {
+        })).then((times) => {
+            // Sorted in place in one go, so a request going through GDCS sees whole orders
+            GDCS.forEach((gdc, i) => { gdc.ms = times[i]; });
             GDCS.sort((a, b) => a.ms - b.ms);
             // The one in use, shown in the map key
             setState({ catalogue: isFinite(GDCS[0].ms) ? { name: GDCS[0].name, host: new URL(GDCS[0].api).host, ms: GDCS[0].ms } : { failed: true } });
         });
+        if (!gdcRanked) gdcRanked = ranking;
     }
     return gdcRanked;
 }
 // Timed as the page opens rather than on the first lookup, so the map key can say which is in use
 rankGdcs();
+setInterval(() => document.hidden || rankGdcs(true), 60e3);
 
 // A catalogue request (a path under the records), from the fastest catalogue that answers
 async function gdcFetch(path, options) {
@@ -6486,11 +6508,22 @@ function syncSwathPoints() {
     files.forEach(showSwathPoints);
 }
 
-// ---------- Tracks. Aircraft reports are joined by identifier in time order.
+// ---------- Tracks. Aircraft and ship reports are joined by identifier in time order:
+// aircraft float at their altitude, ships are a line on the sea under their points.
 // (Satellites aren't: their coverage already shows where they've been.)
 const TRACK_REBUILD_MS = 2000;
 const TRACK_MAX_GAP_MS = 90 * 60e3;
 const AIRCRAFT_MAX_KMH = 1300;           // Faster than this means a mixed-up identifier
+const SHIP_MAX_GAP_MS = 24 * 3600e3;     // Ships report every few hours
+const SHIP_MAX_KMH = 80;
+const SHIP_MIN_KM = 2;                   // A track shorter than this is a platform that stays put
+
+// A ship's track key from its call sign or WIGOS id. "SHIP" is the call sign of every
+// ship that keeps its identity private, so those can't be joined
+function shipTrackKey(id) {
+    id = typeof id === 'string' ? id.trim() : id == null ? '' : String(id);
+    return id && id.toUpperCase() !== 'SHIP' ? `ship:${id}` : null;
+}
 let tracksDirty = false;
 let tracksBuilt = 0;
 
@@ -6500,19 +6533,27 @@ function trackKey(subLayer, values) {
         var id = text(1008) || text(1006);
         return id ? `aircraft:${id}` : null;
     }
+    if (subLayer && subLayer.endsWith('-ship')) return shipTrackKey(text(1011) || reportId(values));
     return null;
 }
 
 function buildTracks() {
     var groups = new Map();
-    for (var record of pools.decoded.values()) {
-        if (!record.track || !records.has(record.id)) continue;
+    for (var record of records.values()) {
+        if (!record.track) continue;
         if (!groups.has(record.track)) groups.set(record.track, []);
         groups.get(record.track).push(record);
     }
     var features = [];
+    var shipLayers = new Set();
     for (var [key, reports] of groups) {
         reports.sort((a, b) => a.observed - b.observed);
+        if (key.startsWith('ship:')) {
+            var lines = shipTrack(key, reports);
+            features.push(...lines);
+            if (lines.length) shipLayers.add(lines[0].properties.layer);
+            continue;
+        }
         var points = reports.map((r) => ({ t: r.observed, c: r.coords, alt: r.alt, id: r.id }));
         var runs = segments(points, (a, b) => b.t - a.t <= TRACK_MAX_GAP_MS
             && distanceKm(a.c, b.c) / Math.max((b.t - a.t) / 3600e3, 1 / 60) <= AIRCRAFT_MAX_KMH, 2);
@@ -6536,7 +6577,46 @@ function buildTracks() {
             topic: last.topic.toLowerCase(),
         }));
     }
+    if ([...shipLayers].join() !== [...shipTrackLayers].join()) mapKeyDirty = true;
+    shipTrackLayers = shipLayers;
     return features;
+}
+
+// One ship's reports as lines (none if it hasn't moved). Runs are split where
+// reports are too far apart in time, or would need an impossible speed (two ships
+// sharing an identifier); the line goes on the Tracks row under the latest report's layer
+function shipTrack(key, reports) {
+    var points = reports.map((r) => ({ t: r.observed, c: r.coords, id: r.id }));
+    var runs = segments(points, (a, b) => b.t - a.t <= SHIP_MAX_GAP_MS
+        && distanceKm(a.c, b.c) / Math.max((b.t - a.t) / 3600e3, 0.25) <= SHIP_MAX_KMH, 2)
+        .filter((run) => run.slice(1).reduce((km, p, i) => km + distanceKm(run[i].c, p.c), 0) >= SHIP_MIN_KM);
+    if (!runs.length) return [];
+    var last = reports[reports.length - 1];
+    var layer = layerOf(last);
+    // A LineString each, as the tracks layer draws only those
+    return runs.map((run) => ({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: unwrap(run.map((p) => p.c)) },
+        properties: {
+            kind: 'ship',
+            label: `Ship ${key.slice(5)}`,
+            count: reports.length,
+            lastId: last.id,
+            color: last.color,
+            born: last.born,
+            // Its layer's Tracks row where there is one, so it can be switched off on its own
+            layer: LAYER_PARENTS[`${layer}-tracks`] ? `${layer}-tracks` : layer,
+            via: last.decodedLayer || '',
+            sat: null,
+            channel: last.channel,
+            centre: last.centre,
+            format: last.format,
+            discipline: last.discipline,
+            space: false,
+            replay: !!last.replay,
+            topic: last.topic.toLowerCase(),
+        },
+    }));
 }
 
 // Sizes of the floating aircraft shapes, in screen pixels at the current zoom
@@ -6739,10 +6819,12 @@ async function fetchData(source) {
     // Every cache's copy, fastest cache first; hosts that blocked a browser download are
     // skipped (see caches.js, which learns from how each attempt goes)
     var urls = downloadOrder([...source.urls, ...(dataLinks.get(source.dataId) || [])]);
+    var answered = 0;
     for (var url of urls) {
         try {
             var response = await fetchTracked(url);
             if (!response.ok) continue;
+            answered++;
             var bytes = new Uint8Array(await response.arrayBuffer());
             if (bufrPart(bytes)) return { bytes: bufrPart(bytes), bufr: true, url: url };
             if (!text && isText(bytes)) text = { bytes: bytes, bufr: false, url: url };
@@ -6752,13 +6834,29 @@ async function fetchData(source) {
         }
     }
     if (text) return text;
-    throw new Error('no downloadable copy in a supported format (the data servers may block browser downloads)');
+    // Retry looks again: other caches' copies arrive in their own notifications
+    if (answered) throw new Error(`the ${answered === 1 ? 'copy' : `${answered} copies`} downloaded ${answered === 1 ? 'is' : 'are'} neither BUFR nor text`);
+    throw new Error(urls.length
+        ? `none of the ${urls.length} ${urls.length === 1 ? 'copy' : 'copies'} known could be downloaded; Retry tries any other caches' copies seen since`
+        : 'every copy known is on a server that blocks browser downloads; Retry tries any other caches\' copies seen since');
 }
 
+// Text in any language: control characters other than tabs and line breaks are rare,
+// and bytes above 127 count when they're valid UTF-8 (e.g. a CAP warning in Greek)
 function isText(bytes) {
     var sample = bytes.subarray(0, 2000);
-    var printable = sample.filter((b) => b === 9 || b === 10 || b === 13 || (b >= 32 && b < 127)).length;
-    return sample.length > 0 && printable / sample.length > 0.95;
+    if (!sample.length) return false;
+    var utf8 = isUtf8(sample.length < bytes.length ? sample.subarray(0, utf8Boundary(sample)) : sample);
+    var printable = sample.filter((b) => b === 9 || b === 10 || b === 13 || (b >= 32 && b < 127) || (utf8 && b >= 128)).length;
+    return printable / sample.length > 0.95;
+}
+
+// Where a cut-off sample ends on a whole UTF-8 character (continuation bytes are 10xxxxxx)
+function utf8Boundary(bytes) {
+    var end = bytes.length;
+    for (var back = 0; back < 4 && end > 0 && (bytes[end - 1] & 0xc0) === 0x80; back++) end--;
+    if (end > 0 && bytes[end - 1] >= 0xc0) end--;  // A lead byte whose character was cut off
+    return end;
 }
 
 // GTS bulletins put an abbreviated heading (e.g. "IUAG04 VHHH 141200") before
