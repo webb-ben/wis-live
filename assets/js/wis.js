@@ -1452,12 +1452,12 @@ function liftSwathCell(record) {
 let hoveredCell = null;
 function outlineSwathCell(lngLat, sat) {
     var source = map.getSource('swath-hover');
-    var hex = lngLat && hexOf(lngLat.lng, lngLat.lat);
-    var id = hex ? `${sat}|${hex.q}|${hex.r}` : null;
+    var cell = lngLat && h3Cell(lngLat.lng, lngLat.lat);
+    var id = cell ? `${sat}|${cell}` : null;
     if (!source || id === hoveredCell) return;
     hoveredCell = id;
-    source.setData({ type: 'FeatureCollection', features: hex ? [{ type: 'Feature', properties: {},
-        geometry: { type: 'LineString', coordinates: hexRing(hex.x, hex.y) } }] : [] });
+    source.setData({ type: 'FeatureCollection', features: cell ? [{ type: 'Feature', properties: {},
+        geometry: { type: 'LineString', coordinates: cellRing(cell) } }] : [] });
 }
 
 document.addEventListener('keydown', (e) => {
@@ -6927,7 +6927,6 @@ setInterval(() => { if (airportStations.size) queueAirports(); }, 5 * 60 * 1000)
 // map, and a report only becomes a full record when it is clicked (or drawn as a
 // point, with coverage switched off).
 const SWATH_MIN_REPORTS = 5;
-const SWATH_CELL = 2;  // Grid cell (hexagon) width in degrees; must divide 360
 const SWATH_FILES_MAX = 3000;  // Files whose coverage is kept, oldest dropped first...
 const SWATH_KEEP_MS = 12 * 3600e3;  // ...and none older than this
 const SWATH_DETAIL_MAX = 30000;  // Reports whose decoded values are kept, so their popups open at once; older ones are decoded again
@@ -6976,34 +6975,24 @@ function inOrNearRing([x, y], ring, margin) {
     return false;
 }
 
-// Coverage cells are hexagons, pointy side up, rows offset by half a hexagon.
-// SWATH_CELL is their width east to west; 360 is a whole number of them, so the
-// grid meets itself round the globe
-const HEX_SIZE = SWATH_CELL / Math.sqrt(3);  // Centre to corner
-const HEX_ROW = HEX_SIZE * 1.5;  // Centre to centre, row to row
+// Coverage cells are H3 hexagons (h3-js), the same everywhere on the globe with
+// no seam at ±180. Resolution 2 cells are about 180 km a side; each step finer is
+// about 7 times as many cells for the map to draw
+const H3_RESOLUTION = 2;
+const H3_SAMPLE_DEG = 1;  // Spacing of the points that find the cells a footprint covers (cells are ~3° across)
 
-// The hexagon a point falls in: axial q, r (rounded as cube coordinates) and its
-// centre, with q wrapped so the centre is between -180 and 180
-function hexOf(lon, lat) {
-    var fq = (Math.sqrt(3) / 3 * lon - lat / 3) / HEX_SIZE, fr = 2 / 3 * lat / HEX_SIZE, fs = -fq - fr;
-    var q = Math.round(fq), r = Math.round(fr), s = Math.round(fs);
-    var dq = Math.abs(q - fq), dr = Math.abs(r - fr), ds = Math.abs(s - fs);
-    if (dq > dr && dq > ds) q = -r - s;
-    else if (dr > ds) r = -q - s;
-    q -= Math.floor((SWATH_CELL * (q + r / 2) + 180) / 360) * 360 / SWATH_CELL;
-    return { q, r, x: SWATH_CELL * (q + r / 2), y: HEX_ROW * r };
+function h3Cell(lon, lat) {
+    return h3.latLngToCell(lat, ((lon + 540) % 360) - 180, H3_RESOLUTION);
 }
 
 function swathCellId(sat, lon, lat) {
-    var hex = hexOf(lon, lat);
-    return `${sat}|${hex.q}|${hex.r}`;
+    return `${sat}|${h3Cell(lon, lat)}`;
 }
 
-function hexRing(x, y) {
-    return [0, 1, 2, 3, 4, 5, 0].map((k) => {
-        var a = Math.PI / 180 * (60 * k + 30);
-        return [x + HEX_SIZE * Math.cos(a), Math.max(-90, Math.min(90, y + HEX_SIZE * Math.sin(a)))];
-    });
+// A cell's outline as [lon, lat], longitudes carried past ±180 where it crosses
+// so it isn't drawn the whole way round the globe
+function cellRing(cell) {
+    return unwrap(h3.cellToBoundary(cell, true));
 }
 
 // Packs a decoded satellite file's reports into one swath file and adds it to the cells
@@ -7057,17 +7046,18 @@ function addSwathFile(job, reports) {
         if (known.length) file.means[m] = known.reduce((a, b) => a + b, 0) / known.length;
     }
     var cellFor = (lon, lat) => {
-        var hex = hexOf(lon, lat), id = `${sat}|${hex.q}|${hex.r}`;
-        if (!file.cells.has(id)) file.cells.set(id, { x: hex.x, y: hex.y, fill: false, sums: {}, counts: {} });
+        var cell = h3Cell(lon, lat), id = `${sat}|${cell}`;
+        if (!file.cells.has(id)) file.cells.set(id, { cell, fill: false, sums: {}, counts: {} });
         return file.cells.get(id);
     };
-    // Cells the file's footprint covers: hexagons whose centre is in it, or near its edge
+    // Cells the file's footprint covers: found from points on a fine grid that are
+    // in it, or near its edge (so neighbouring strips of one pass meet)
     var xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
-    var xMin = Math.min(...xs), xMax = Math.max(...xs);
-    for (var r = Math.floor(Math.min(...ys) / HEX_ROW) - 1; r <= Math.ceil(Math.max(...ys) / HEX_ROW) + 1; r++) {
-        for (var q = Math.floor(xMin / SWATH_CELL - r / 2) - 1; q <= Math.ceil(xMax / SWATH_CELL - r / 2) + 1; q++) {
-            var centre = [SWATH_CELL * (q + r / 2), HEX_ROW * r];
-            if (inOrNearRing(centre, ring, SWATH_CELL * 0.75)) cellFor(...centre).fill = true;
+    var xMin = Math.min(...xs) - H3_SAMPLE_DEG, xMax = Math.max(...xs) + H3_SAMPLE_DEG;
+    var yMin = Math.max(-90, Math.min(...ys) - H3_SAMPLE_DEG), yMax = Math.min(90, Math.max(...ys) + H3_SAMPLE_DEG);
+    for (var lat = yMin; lat <= yMax; lat += H3_SAMPLE_DEG) {
+        for (var lon = xMin; lon <= xMax; lon += H3_SAMPLE_DEG) {
+            if (inOrNearRing([lon, lat], ring, H3_SAMPLE_DEG)) cellFor(lon, lat).fill = true;
         }
     }
     // Reports in each cell give it its own values
@@ -7100,7 +7090,7 @@ function applySwathFile(file, sign) {
         var cell = swathCells.get(id);
         if (!cell) {
             if (sign < 0) continue;
-            cell = { fid: ++swathFeatureIds, x: c.x, y: c.y, sat: file.sat, files: new Set(), sums: {}, counts: {}, fillSums: {}, fillCounts: {} };
+            cell = { fid: ++swathFeatureIds, h3: c.cell, sat: file.sat, files: new Set(), sums: {}, counts: {}, fillSums: {}, fillCounts: {} };
             swathCells.set(id, cell);
         }
         if (sign > 0) cell.files.add(file);
@@ -7173,7 +7163,7 @@ function swathFeature(cell) {
     return {
         type: 'Feature',
         id: cell.fid,
-        geometry: { type: 'Polygon', coordinates: [hexRing(cell.x, cell.y)] },
+        geometry: { type: 'Polygon', coordinates: [cellRing(cell.h3)] },
         properties: {
             ...file.props,
             swath: cell.sat,
