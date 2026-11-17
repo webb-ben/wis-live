@@ -13,9 +13,10 @@ export const state = {
     // Each filter either keeps only what matches ('only') or hides what matches ('hide')
     filterModes: { text: 'only', centres: 'only', format: 'only', disciplines: 'only' },
     // Layer switches that are off. Off at first: radar, the Global Replay, METAR,
-    // WIS2-to-GTS, aircraft and ground-based GNSS (cache, GTS and replay), and aircraft tracks
+    // WIS2-to-GTS, aircraft and ground-based GNSS (cache, GTS and replay), aircraft
+    // tracks, and satellites (on when the URL styles the map by a satellite measure)
     hiddenLayers: new Set(['radar', 'replay', 'cache-gnss', 'gts-gnss', 'replay-gnss', 'airports', 'wis2gts',
-        'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks']),
+        'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks', 'satellite']),
     // The services in use, fastest first: { name, ms } of the Global Discovery
     // Catalogue, and { host, id, name, ms } of the global cache downloads try first
     catalogue: null,

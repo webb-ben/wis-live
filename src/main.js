@@ -3725,6 +3725,9 @@ function readFiltersFromUrl() {
     list('hide').filter((key) => filterModes.hasOwnProperty(key)).forEach((key) => { filterModes[key] = 'hide'; });
     var style = params.get('style');
     if (style === 'kind' || style === SATELLITE_STYLE || METRICS.hasOwnProperty(style)) startColour = style;
+    // Satellites are off at first (their files are the heaviest downloads), unless the
+    // link styles the map by satellite or by a satellite measure, which needs them on
+    if (style === SATELLITE_STYLE || (METRICS[style] && METRICS[style].targets === 'satellite')) hiddenLayers.delete('satellite');
     setState({ colouredOnly: params.get('require') === '1', modelFieldOn: params.get('base') === '1' });
     if (/^urn:wmo:md:/.test(params.get('dataset') || '')) startDataset = params.get('dataset');
 }
