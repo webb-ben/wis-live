@@ -511,15 +511,15 @@ map.on('load', () => {
     map.addSource('swaths', { type: 'geojson', data: empty, tolerance: 0 });
     // No antialiasing, so neighbouring cells meet without hairline seams
     map.addLayer({ id: 'swaths-fill', type: 'fill', source: 'swaths', paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.3, 'fill-antialias': false } });
-    // The selected coverage cell sinks a pixel into the map: a thin shadow along its
-    // top edge, the cell itself (coloured like the coverage) a pixel lower, and a light edge
+    // The selected coverage cell: filled more strongly (coloured like the coverage), with
+    // a white edge on a soft dark halo, the same all the way round
     map.addSource('swath-selected', { type: 'geojson', data: empty, tolerance: 0 });
-    map.addLayer({ id: 'swath-lift-shadow', type: 'fill', source: 'swath-selected',
-        paint: { 'fill-color': '#000000', 'fill-opacity': 0.3, 'fill-translate': [0, -1] } });
     map.addLayer({ id: 'swath-lift', type: 'fill', source: 'swath-selected',
-        paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.6, 'fill-translate': [0, 1] } });
+        paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.6 } });
+    map.addLayer({ id: 'swath-lift-halo', type: 'line', source: 'swath-selected',
+        layout: { 'line-join': 'round' }, paint: { 'line-color': '#000000', 'line-width': 4, 'line-opacity': 0.3 } });
     map.addLayer({ id: 'swath-lift-edge', type: 'line', source: 'swath-selected',
-        paint: { 'line-color': '#ffffff', 'line-width': 1.5, 'line-translate': [0, 1] } });
+        layout: { 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 1.5 } });
     // On hover: a very thin line round all of that satellite's coverage, and the cell
     // itself in black on a white halo, like the selected-point marker
     map.addSource('swath-hover', { type: 'geojson', data: empty, tolerance: 0 });
@@ -530,7 +530,7 @@ map.on('load', () => {
     map.addLayer({ id: 'swath-hover', type: 'line', source: 'swath-hover', filter: isRole('cell'), paint: { 'line-color': '#000000', 'line-width': 2 } });
     map.on('click', 'swaths-fill', (e) => {
         if (nearestPoint(e.point)) return;
-        openPopup(nearestSwathReport(e.features[0].properties.swath, e.lngLat));
+        openCellSummary(e.features[0].properties.swath, e.lngLat);
     });
     map.on('mousemove', 'swaths-fill', (e) => {
         if (map.queryRenderedFeatures(e.point, { layers: POINT_LAYERS }).length) return outlineSwathCell(null);
@@ -1313,6 +1313,18 @@ function showLegendRow(key) {
 // Info panel
 function openPopup(record) {
     if (!record) return;
+    showInfo(buildPopup(record));
+    var inAir = record.track && record.track.startsWith('aircraft:') && !effectiveHidden().includes('gts-tracks');
+    // A report drawn as part of satellite coverage is shown by outlining its cell
+    var inCoverage = record.swath && !swathPointsShown;
+    selectedMarker.setLngLat(record.coords);
+    if (inAir || inCoverage) selectedMarker.remove(); else selectedMarker.addTo(map);
+    liftSwathCell(inCoverage ? record : null);
+    keepPopupInView();
+}
+
+// Puts content in the info panel (built on first use) and opens it
+function showInfo(content) {
     hoverLabel.remove();
     if (!infobar) {
         infobar = document.createElement('aside');
@@ -1338,27 +1350,21 @@ function openPopup(record) {
     }
     // On narrow screens the two panels can't both fit
     if (window.innerWidth < 760) document.body.classList.remove('queue-open');
-    infobar.querySelector('.infobar-body').replaceChildren(buildPopup(record));
+    infobar.querySelector('.infobar-body').replaceChildren(content);
     infobar.querySelector('.infobar-body').scrollTop = 0;
     infobar.classList.remove('infobar-full');
     document.body.classList.add('info-open');
-    var inAir = record.track && record.track.startsWith('aircraft:') && !effectiveHidden().includes('gts-tracks');
-    // A report drawn as part of satellite coverage is shown by outlining its cell
-    var inCoverage = record.swath && !swathPointsShown;
-    selectedMarker.setLngLat(record.coords);
-    if (inAir || inCoverage) selectedMarker.remove(); else selectedMarker.addTo(map);
-    liftSwathCell(inCoverage ? record : null);
-    keepPopupInView();
 }
 
-// Lifts the coverage cell under the pointer (null puts it back); props carry its colour and values
-// Sinks the coverage cell holding a selected report (null puts it back)
+// Marks the coverage cell holding a selected report, or a selected cell (null clears it)
 function liftSwathCell(record) {
-    var source = map.getSource('swath-selected');
-    if (!source) return;
     var file = record && swathFiles.get(record.fileKey);
-    var cell = file && swathCells.get(swathCellId(file.sat, ...record.coords));
-    source.setData({ type: 'FeatureCollection', features: cell ? [swathFeature(cell)] : [] });
+    liftCell(file && swathCells.get(swathCellId(file.sat, ...record.coords)));
+}
+
+function liftCell(cell) {
+    var source = map.getSource('swath-selected');
+    if (source) source.setData({ type: 'FeatureCollection', features: cell ? [swathFeature(cell)] : [] });
 }
 
 // Outlines the coverage cell under the pointer, and thinly all of its satellite's
@@ -6295,9 +6301,9 @@ function addSwathFile(job, reports) {
         template: { ...first, decoded: null, satName: satelliteName(first) },
         coords: Float32Array.from(reports.flatMap((r) => r.coords)),
         observed: Float64Array.from(reports, (r) => r.observed),
-        index: reports.map((r) => r.fileIndex),
-        datetime: reports.map((r) => r.props.datetime),
-        wsi: reports.map((r) => r.wsi),
+        index: Int32Array.from(reports, (r) => r.fileIndex),
+        // Report ids only for files whose reports have them (most satellite files don't)
+        wsi: reports.some((r) => r.wsi) ? reports.map((r) => r.wsi) : null,
         metrics,
         born: Date.now(),
         // For the same filters as the points
@@ -6317,7 +6323,7 @@ function addSwathFile(job, reports) {
     }
     var cellFor = (lon, lat) => {
         var cell = h3Cell(lon, lat), id = `${sat}|${cell}`;
-        if (!file.cells.has(id)) file.cells.set(id, { cell, fill: false, sums: {}, counts: {} });
+        if (!file.cells.has(id)) file.cells.set(id, { cell, fill: false, n: 0, t0: Infinity, t1: -Infinity, sums: {}, counts: {}, mins: {}, maxs: {} });
         return file.cells.get(id);
     };
     // Cells the file's footprint covers: found from points on a fine grid that are
@@ -6331,12 +6337,18 @@ function addSwathFile(job, reports) {
         }
     }
     // Reports in each cell give it its own values
+    // (and what the cell's summary shows: how many, when, and each measure's range)
     for (var i = 0; i < n; i++) {
         var cell = cellFor(reports[i].coords[0], reports[i].coords[1]);
+        cell.n++;
+        cell.t0 = Math.min(cell.t0, reports[i].observed);
+        cell.t1 = Math.max(cell.t1, reports[i].observed);
         for (var [mk, arr] of Object.entries(metrics)) {
             if (mk === 'windDir' || isNaN(arr[i])) continue;
             cell.sums[mk] = (cell.sums[mk] || 0) + arr[i];
             cell.counts[mk] = (cell.counts[mk] || 0) + 1;
+            cell.mins[mk] = Math.min(cell.mins[mk] ?? Infinity, arr[i]);
+            cell.maxs[mk] = Math.max(cell.maxs[mk] ?? -Infinity, arr[i]);
         }
     }
     swathFiles.set(file.key, file);
@@ -6449,8 +6461,8 @@ function swathRecord(file, i) {
         id: nextId++,
         coords: [file.coords[2 * i], file.coords[2 * i + 1]],
         observed: file.observed[i],
-        props: { ...t.props, data_id: `${file.key}#${i}`, datetime: file.datetime[i] },
-        wsi: file.wsi[i],
+        props: { ...t.props, data_id: `${file.key}#${i}`, datetime: new Date(file.observed[i]).toISOString() },
+        wsi: file.wsi ? file.wsi[i] : null,
         decoded: null,
         // Only the values the map can be styled by are kept (metrics); the popup decodes
         // the rest of the report from the file again
@@ -6468,17 +6480,99 @@ function onMap(record) {
 }
 
 // The report in a swath closest to where it was clicked, from the files covering that cell
-function nearestSwathReport(key, lngLat) {
-    var cell = swathCells.get(swathCellId(key, lngLat.lng, lngLat.lat));
-    if (!cell) return null;
-    var best = null, bestKm = Infinity;
-    for (var file of cell.files) {
-        for (var i = 0; i < file.n; i++) {
-            var km = distanceKm([file.coords[2 * i], file.coords[2 * i + 1]], [lngLat.lng, lngLat.lat]);
-            if (km < bestKm) { best = [file, i]; bestKm = km; }
+// ---------- A coverage cell's summary: what a click on a cell shows. Its colour is
+// the mean of the reports in it, so the panel gives that mean for each measure, with
+// the range and how many reports, and lists the files they came from. Nothing is
+// downloaded; a single report is decoded only when asked for (Open a report)
+function openCellSummary(sat, lngLat) {
+    var id = swathCellId(sat, lngLat.lng, lngLat.lat), cell = swathCells.get(id);
+    if (!cell) return;
+    showInfo(buildCellSummary(id, cell, lngLat));
+    selectedMarker.remove();
+    liftCell(cell);
+    keepPopupInView();
+}
+
+function buildCellSummary(id, cell, lngLat) {
+    var parts = [...cell.files].map((file) => ({ file, part: file.cells.get(id) })).filter((p) => p.part)
+        .sort((a, b) => b.file.born - a.file.born);
+    var t = parts[0].file.template;
+    var reports = parts.reduce((n, p) => n + p.part.n, 0);
+    var withReports = parts.filter((p) => p.part.n);
+    var t0 = Math.min(...withReports.map((p) => p.part.t0)), t1 = Math.max(...withReports.map((p) => p.part.t1));
+    var tiles = [`<div class="pp-tile" data-metric="${SATELLITE_STYLE}"><div>Satellite</div><strong>${esc(t.satName || 'Satellite')}</strong></div>`];
+    for (var [key, m] of Object.entries(METRICS)) {
+        if (m.targets !== 'satellite') continue;
+        var count = parts.reduce((n, p) => n + (p.part.counts[key] || 0), 0);
+        if (count) {
+            var sum = parts.reduce((n, p) => n + (p.part.sums[key] || 0), 0);
+            var lo = Math.min(...parts.filter((p) => p.part.counts[key]).map((p) => p.part.mins[key]));
+            var hi = Math.max(...parts.filter((p) => p.part.counts[key]).map((p) => p.part.maxs[key]));
+            tiles.push(`<div class="pp-tile" data-metric="${key}"><div>${esc(m.label)}${count > 1 ? ', mean' : ''}</div><strong>${esc(formatMetric(sum / count, m))}</strong>`
+                + `<div>${count > 1 ? `${esc(formatMetric(lo, m).split(' ')[0])} to ${esc(formatMetric(hi, m))} · ` : ''}${count} report${count === 1 ? '' : 's'}</div></div>`);
+        } else if (cell.fillCounts[key] && !reports) {
+            // No report falls in the cell: it's shaded with its files' averages
+            tiles.push(`<div class="pp-tile" data-metric="${key}"><div>${esc(m.label)}</div><strong>${esc(formatMetric(cell.fillSums[key] / cell.fillCounts[key], m))}</strong><div>files' average</div></div>`);
         }
     }
-    return best && swathRecord(...best);
+    var when = (ms) => new Date(ms).toISOString().slice(11, 16);
+    var div = document.createElement('div');
+    div.className = 'pp';
+    div.innerHTML = `
+        <header class="pp-head">
+            <span class="pp-dot" style="--color: ${t.color}; --outline: ${darken(t.color)}"></span>
+            <div>
+                <div class="pp-title">${esc(t.satName || 'Satellite')}</div>
+                <div class="pp-sub">Coverage cell · ${reports ? `${reports} report${reports === 1 ? '' : 's'}` : 'no reports'} from ${parts.length} file${parts.length === 1 ? '' : 's'}</div>
+            </div>
+        </header>
+        <dl class="pp-meta">
+            ${reports ? `<dt>Observed</dt><dd>${t1 - t0 < 60e3 ? `${esc(new Date(t1).toLocaleString())}` : `${esc(new Date(t0).toLocaleDateString())} ${when(t0)}–${when(t1)} UTC`} (${timeAgo(new Date(t1).toISOString())})</dd>` : ''}
+            <dt>Cell</dt><dd class="pp-mono" title="H3 cell, resolution 2">${esc(cell.h3)}</dd>
+        </dl>
+        <div class="pp-status">${reports
+            ? 'The cell is coloured by the mean of the reports in it. Of each file only some reports are kept, spread across it; these are the ones here.'
+            : 'No kept report falls in this cell; it is shaded with the average of the files that cover it.'}</div>
+        <div class="pp-tiles pp-cell-tiles">${tiles.join('')}</div>
+        <div class="pp-cell-files"></div>
+        <div class="pp-dataset" hidden></div>`;
+    var list = div.querySelector('.pp-cell-files');
+    for (var { file, part } of parts.slice(0, 10)) {
+        var row = document.createElement('div');
+        row.className = 'pp-cell-file';
+        // The file's name (e.g. A_IEXX23EUMP..._C_RJTD_...bufr) says more than its topic
+        var link = (file.template.links || []).find(isDataLink);
+        var name = link ? decodeURIComponent(link.href.split(/[?#]/)[0].split('/').pop()) : file.template.path;
+        row.innerHTML = `<div><span class="pp-mono">${esc(name)}</span><br><small>${part.n ? `${part.n} report${part.n === 1 ? '' : 's'} here` : 'covers it'} · published ${timeAgo(file.template.props.pubtime || new Date(file.born).toISOString())}</small></div>`;
+        var nearest = nearestReportInCell(file, cell.h3, lngLat);
+        if (nearest !== null) {
+            var open = document.createElement('button');
+            open.type = 'button';
+            open.className = 'btn btn-sm btn-outline-secondary';
+            open.textContent = 'Open a report';
+            open.title = 'Decode the report nearest where you clicked, from this file';
+            open.addEventListener('click', ((f, i) => () => openPopup(swathRecord(f, i)))(file, nearest));
+            row.appendChild(open);
+        }
+        list.appendChild(row);
+    }
+    if (parts.length > 10) list.insertAdjacentHTML('beforeend', `<div class="pp-status">and ${parts.length - 10} more files</div>`);
+    var dataset = datasetId(t);
+    if (dataset) showDatasetInPopup(div.querySelector('.pp-dataset'), dataset);
+    bindMetricTiles(div);
+    return div;
+}
+
+// The file's kept report in the cell nearest a point, or null if none is in it
+function nearestReportInCell(file, h3, lngLat) {
+    var best = null, bestKm = Infinity;
+    for (var i = 0; i < file.n; i++) {
+        var lon = file.coords[2 * i], lat = file.coords[2 * i + 1];
+        if (h3Cell(lon, lat) !== h3) continue;
+        var km = distanceKm([lon, lat], [lngLat.lng, lngLat.lat]);
+        if (km < bestKm) { best = i; bestKm = km; }
+    }
+    return best;
 }
 
 // With coverage switched off, every swath report is a point

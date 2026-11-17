@@ -567,6 +567,32 @@
 .pp-tile strong {
   font-size: 14px;
 }
+/* A coverage cell's summary: the files its reports came from */
+.pp-cell-tiles {
+  margin-top: 8px;
+}
+.pp-cell-files {
+  margin-top: 10px;
+}
+.pp-cell-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid #e9ecef;
+  font-size: 12px;
+}
+.pp-cell-file > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.pp-cell-file small {
+  color: #6c757d;
+}
+.pp-cell-file .btn {
+  flex: none;
+}
 /* A tile whose value the map can be coloured by: a click styles the map by it */
 .pp-tile-metric {
   position: relative;
