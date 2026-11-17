@@ -1,11 +1,12 @@
 // The main page: the live map, its sidebar and popups. Pieces other pages can use
 // live in their own modules
-import { state, setState, notify } from './state.js';
+import { state, setState, notify, subscribe } from './state.js';
+import { corsFriendly, canDownload, noteCacheLinks, noteLatency, noteBlocked, downloadOrder } from './caches.js';
 import { COLORS, OBS_CLASSES, METRICS, COLOURABLE, SATELLITE_LAYERS, ORIGIN_COLOURABLE, NO_VALUE_COLOR, SOURCE_COLORS } from './config.js';
 import { parseMessage, DISCIPLINES, FORMATS, isDataLink, isUpdate, formatOf, GATEWAY_TOPIC, GATEWAY_SATELLITE, GATEWAY_AIRCRAFT,
     GATEWAY_UPPER_AIR, isSpaceBased, disciplineOf, topicClass, stationId, pointFor, wis2boxVersion } from './messages.js';
 import { esc, darken, svgEl, knots, loadScript } from './lib/util.js';
-import { distanceKm, segments, unwrap, convexHull, inOrNearRing, H3_SAMPLE_DEG, h3Cell, cellRing } from './lib/geo.js';
+import { distanceKm, segments, unwrap, convexHull, inOrNearRing, H3_SAMPLE_DEG, h3Cell, cellRing, cellsOutline } from './lib/geo.js';
 import { connectFastest, brokerState } from './mqtt.js';
 import { callDecoder, preloadDecoder, decoderReady, decoderGaveUp, onDecoderSettled } from './decoder.js';
 import { SATELLITE_NAMES, INSTRUMENT_NAMES, AMV_METHODS, PIXEL_TYPES } from './satellite/names.js';
@@ -503,10 +504,14 @@ map.on('load', () => {
         paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.6, 'fill-translate': [0, 1] } });
     map.addLayer({ id: 'swath-lift-edge', type: 'line', source: 'swath-selected',
         paint: { 'line-color': '#ffffff', 'line-width': 1.5, 'line-translate': [0, 1] } });
-    // The hovered coverage cell, outlined like the selected-point marker: dark on a white halo
+    // On hover: a very thin line round all of that satellite's coverage, and the cell
+    // itself in black on a white halo, like the selected-point marker
     map.addSource('swath-hover', { type: 'geojson', data: empty });
-    map.addLayer({ id: 'swath-hover-halo', type: 'line', source: 'swath-hover', paint: { 'line-color': '#ffffff', 'line-width': 5 } });
-    map.addLayer({ id: 'swath-hover', type: 'line', source: 'swath-hover', paint: { 'line-color': '#212529', 'line-width': 2 } });
+    var isRole = (role) => ['==', ['get', 'role'], role];
+    map.addLayer({ id: 'swath-hover-sat', type: 'line', source: 'swath-hover', filter: isRole('sat'),
+        paint: { 'line-color': '#000000', 'line-width': 0.75, 'line-opacity': 0.6 } });
+    map.addLayer({ id: 'swath-hover-halo', type: 'line', source: 'swath-hover', filter: isRole('cell'), paint: { 'line-color': '#ffffff', 'line-width': 5 } });
+    map.addLayer({ id: 'swath-hover', type: 'line', source: 'swath-hover', filter: isRole('cell'), paint: { 'line-color': '#000000', 'line-width': 2 } });
     map.on('click', 'swaths-fill', (e) => {
         if (nearestPoint(e.point)) return;
         openPopup(nearestSwathReport(e.features[0].properties.swath, e.lngLat));
@@ -1243,6 +1248,12 @@ function updateMapKey() {
     }[brokerState.state];
     // Under the world map, bottom right, apart from the key
     var brokerHtml = `<div class="key-note key-broker"><span class="broker-dot broker-${brokerState.state}"></span><span class="key-broker-text" title="WIS2 Global Broker the live messages come from: ${status}">${status}</span></div>`;
+    // Under it, the fastest Global Discovery Catalogue (dataset records come from it) and
+    // the fastest global cache (downloads try it first), each with how long it took to answer
+    var service = (label, s, title) => s ? `<div class="key-note key-broker"><span class="broker-dot key-service-dot"></span>`
+        + `<span class="key-broker-text" title="${esc(title)}">${label}: ${esc(s.name)} · ${Math.round(s.ms)} ms</span></div>` : '';
+    brokerHtml += service('Catalogue', state.catalogue, 'Global Discovery Catalogue the dataset records come from: the one that answered fastest')
+        + service('Cache', state.cache, state.cache ? `Global cache downloads try first: the one answering fastest (${state.cache.id}, ${state.cache.host})` : '');
     if (mapKeyStatus && brokerHtml !== mapKeyStatus.dataset.html) {
         mapKeyStatus.innerHTML = mapKeyStatus.dataset.html = brokerHtml;
     }
@@ -1317,15 +1328,24 @@ function liftSwathCell(record) {
     source.setData({ type: 'FeatureCollection', features: cell ? [swathFeature(cell)] : [] });
 }
 
-// Outlines the coverage cell under the pointer (null takes the outline away)
+// Outlines the coverage cell under the pointer, and thinly all of its satellite's
+// coverage (null takes both away)
 let hoveredCell = null;
+let satOutline = { sat: null, cells: 0, features: [] };  // The satellite's outline, kept while its coverage is unchanged
 function outlineSwathCell(lngLat, sat) {
     var source = map.getSource('swath-hover');
     var cell = lngLat && h3Cell(lngLat.lng, lngLat.lat);
     var id = cell ? `${sat}|${cell}` : null;
     if (!source || id === hoveredCell) return;
     hoveredCell = id;
-    source.setData({ type: 'FeatureCollection', features: cell ? [{ type: 'Feature', properties: {},
+    if (cell) {
+        var cells = [...swathCells.values()].filter((c) => c.sat === sat).map((c) => c.h3);
+        if (satOutline.sat !== sat || satOutline.cells !== cells.length) {
+            satOutline = { sat, cells: cells.length, features: cellsOutline(cells).map((ring) => ({ type: 'Feature',
+                properties: { role: 'sat' }, geometry: { type: 'LineString', coordinates: ring } })) };
+        }
+    }
+    source.setData({ type: 'FeatureCollection', features: cell ? [...satOutline.features, { type: 'Feature', properties: { role: 'cell' },
         geometry: { type: 'LineString', coordinates: cellRing(cell) } }] : [] });
 }
 
@@ -3462,14 +3482,6 @@ function timeAgo(time) {
     return `${Math.round(seconds / 86400)} d ago`;
 }
 
-function hostname(href) {
-    try {
-        return new URL(href).hostname;
-    } catch (err) {
-        return href;
-    }
-}
-
 function titleCase(name) {
     return name.toLowerCase().replace(/(^|[\s(\/-])\w/g, (c) => c.toUpperCase());
 }
@@ -4386,6 +4398,8 @@ connectFastest({
     // The map key shows which broker the page is on
     onState: updateMapKey,
 });
+// And which catalogue and global cache (see rankGdcs and caches.js)
+subscribe(['catalogue', 'cache'], updateMapKey);
 
 const ignoredTopics = [
     '/a/wis2/ca-eccc-msc/data/core/weather/prediction',
@@ -4395,6 +4409,8 @@ const ignoredTopics = [
 function onMessage(topic, feature, replay) {
     // Kept for every message so the sidebar can find a downloadable copy
     rememberLinks((feature.properties || {}).data_id, feature.links || []);
+    // And which global cache each host belongs to, timed when first seen
+    if (topic.startsWith('cache/')) noteCacheLinks(feature);
     noteDataset(feature);
     revealGatewayRows(topic, feature);
     // Replayed messages are only drawn: decoding a past hour of files would swamp the decoder
@@ -4559,11 +4575,12 @@ function satelliteSkipped(kind, topic) {
 
 function queueDecode(kind, topic, feature) {
     var key = decodeKey(topic, feature);
-    // Each cache republishes the file; take the first copy a browser can download,
-    // falling back on any link already seen for it (e.g. the origin's) when this
-    // cache's own server blocks browser downloads
-    var link = (feature.links || []).find((l) => isDataLink(l) && corsFriendly(l.href));
-    var href = link ? link.href : [...(dataLinks.get((feature.properties || {}).data_id) || [])].find(corsFriendly);
+    // Each cache republishes the file; take the copy from the fastest cache a browser
+    // can download from (see caches.js), among this message's links and any already
+    // seen for it (e.g. the origin's). Hosts not known to allow browsers are left out
+    // until they have, so a background download doesn't waste its one try
+    var seen = [...(feature.links || []).filter(isDataLink).map((l) => l.href), ...(dataLinks.get((feature.properties || {}).data_id) || [])];
+    var href = downloadOrder(seen).find((url) => corsFriendly(url) || canDownload(url));
     if (!href || !key || decodeSeen.has(key)) return;
     if (satelliteSkipped(kind, topic)) return;
     if (kind === 'radar' && radarThrottled(feature)) return;
@@ -4615,12 +4632,16 @@ async function fetchForDecode(job) {
     try {
         // A stalled server would otherwise hold up the queue
         // Radar volumes can run to tens of MB, so they get longer
+        var start = performance.now();
         var response = await fetch(job.href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS * (job.kind === 'radar' ? 4 : 1)) });
+        noteLatency(job.href, performance.now() - start, true);  // How fast this cache answers
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         var raw = new Uint8Array(await response.arrayBuffer());
         var bytes = job.kind === 'radar' ? raw : bufrPart(raw);
         if (bytes) decodeReady.push({ job, bytes });
     } catch (err) {
+        // A network error (not a timeout or an HTTP status) is a cache blocking browsers
+        if (err.name === 'TypeError') noteBlocked(job.href);
         decodeSeen.delete(job.key);  // Let another cache's copy try
         console.debug(`Could not fetch ${job.href}: ${err.message}`);
     }
@@ -5719,10 +5740,16 @@ function rankGdcs() {
             } finally {
                 clearTimeout(timer);
             }
-        })).then(() => { GDCS.sort((a, b) => a.ms - b.ms); });
+        })).then(() => {
+            GDCS.sort((a, b) => a.ms - b.ms);
+            // The one in use, shown in the map key
+            if (isFinite(GDCS[0].ms)) setState({ catalogue: { name: GDCS[0].name, ms: GDCS[0].ms } });
+        });
     }
     return gdcRanked;
 }
+// Timed as the page opens rather than on the first lookup, so the map key can say which is in use
+rankGdcs();
 
 // A catalogue request (a path under the records), from the fastest catalogue that answers
 async function gdcFetch(path, options) {
@@ -6677,17 +6704,21 @@ async function fetchData(source) {
         if (bufrPart(bytes)) return { bytes: bufrPart(bytes), bufr: true };
         if (isText(bytes)) text = { bytes: bytes, bufr: false };
     }
-    // Most caches block cross-origin requests, so try the ones that allow it first
-    var urls = [...new Set([...source.urls, ...(dataLinks.get(source.dataId) || [])])];
-    urls.sort((a, b) => corsFriendly(b) - corsFriendly(a));
+    // Every cache's copy, fastest cache first; ones that block browser downloads last
+    // (see caches.js, which learns from how each attempt goes)
+    var urls = downloadOrder([...source.urls, ...(dataLinks.get(source.dataId) || [])]);
     for (var url of urls) {
         try {
+            var start = performance.now();
             var response = await fetch(url);
+            noteLatency(url, performance.now() - start, true);
             if (!response.ok) continue;
             var bytes = new Uint8Array(await response.arrayBuffer());
             if (bufrPart(bytes)) return { bytes: bufrPart(bytes), bufr: true, url: url };
             if (!text && isText(bytes)) text = { bytes: bytes, bufr: false, url: url };
         } catch (err) {
+            // Thrown before any answer could be read: blocked by CORS, or unreachable
+            noteBlocked(url);
             console.debug(`Could not fetch ${url}`);
         }
     }
@@ -6699,16 +6730,6 @@ function isText(bytes) {
     var sample = bytes.subarray(0, 2000);
     var printable = sample.filter((b) => b === 9 || b === 10 || b === 13 || (b >= 32 && b < 127)).length;
     return sample.length > 0 && printable / sample.length > 0.95;
-}
-
-// Hosts that let a browser download their files: the S3-backed global caches and
-// JMA's own server (which JMA's GTS-to-WIS2 bulletins link to). DWD, KMA, CMA and
-// NCM send no CORS headers.
-const CORS_HOSTS = ['www.wis-jma.go.jp'];
-
-function corsFriendly(url) {
-    var host = hostname(url);
-    return host.endsWith('.amazonaws.com') || CORS_HOSTS.includes(host) ? 1 : 0;
 }
 
 // GTS bulletins put an abbreviated heading (e.g. "IUAG04 VHHH 141200") before

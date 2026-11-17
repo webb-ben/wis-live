@@ -16,6 +16,10 @@ export const state = {
     // WIS2-to-GTS, aircraft and ground-based GNSS (cache, GTS and replay), and aircraft tracks
     hiddenLayers: new Set(['radar', 'replay', 'cache-gnss', 'gts-gnss', 'replay-gnss', 'airports', 'wis2gts',
         'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks']),
+    // The services in use, fastest first: { name, ms } of the Global Discovery
+    // Catalogue, and { host, id, name, ms } of the global cache downloads try first
+    catalogue: null,
+    cache: null,
 };
 
 const listeners = new Set();  // { keys: Set or null for every key, fn }

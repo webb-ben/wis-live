@@ -25,6 +25,9 @@ src/config.js              COLORS, OBS_CLASSES (kinds of observation), METRICS (
 src/messages.js            parseMessage and what a notification says: topicClass,
                            disciplineOf, formatOf, GATEWAY_* headings, stationId, pointFor
 src/mqtt.js                connectFastest({ onMessage, onState }): races the Global Brokers
+src/caches.js              The global caches seen and how fast each answers: downloadOrder
+                           (fastest first, browser-blocking last), noteLatency/noteBlocked;
+                           the fastest is state.cache (the GDC in use is state.catalogue)
 src/decoder.js             callDecoder(fn, ...args): Pyodide + pybufrkit in Web Workers
                            (DECODE_PY); onDecoderSettled(fn) once it has started or failed
 src/lib/util.js            esc, darken, svgEl, knots, loadScript

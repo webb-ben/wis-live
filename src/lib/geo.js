@@ -84,3 +84,9 @@ export function h3Cell(lon, lat) {
 export function cellRing(cell) {
     return unwrap(h3.cellToBoundary(cell, true));
 }
+
+// The outline of a set of cells merged together: one ring per edge of the area
+// (outer edges and any holes), each carried past ±180 like cellRing
+export function cellsOutline(cells) {
+    return cells.length ? h3.cellsToMultiPolygon(cells, true).flat().map(unwrap) : [];
+}
