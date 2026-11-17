@@ -1282,6 +1282,11 @@ function updateMapKey() {
         ? line('broker-connected', `Cache: ${state.cache.host}${ms(state.cache.ms)}`,
             `Global cache downloads try first: the fastest to answer, checked every minute (${state.cache.name})`)
         : line('broker-connecting', 'Cache: finding the fastest…', 'Timing the global caches as their messages arrive');
+    if (state.slowNetwork) {
+        var shedNames = SHED_LAYERS.filter((l) => state.slowNetwork.shed.includes(l.key)).map((l) => l.label).join(' and ');
+        brokerHtml += line('broker-reconnecting', `Slow network: ${shedNames} off`,
+            `Switched off to save the connection (${state.slowNetwork.reason}). Switch them back on under Layers.`);
+    }
     if (mapKeyStatus && brokerHtml !== mapKeyStatus.dataset.html) {
         mapKeyStatus.innerHTML = mapKeyStatus.dataset.html = brokerHtml;
     }
@@ -4427,7 +4432,7 @@ connectFastest({
     onState: updateMapKey,
 });
 // And which catalogue and global cache (see rankGdcs and caches.js)
-subscribe(['catalogue', 'cache'], updateMapKey);
+subscribe(['catalogue', 'cache', 'slowNetwork'], updateMapKey);
 
 const ignoredTopics = [
     '/a/wis2/ca-eccc-msc/data/core/weather/prediction',
@@ -6867,6 +6872,47 @@ function bufrPart(bytes) {
     var start = head.indexOf('BUFR');
     return start < 0 ? null : bytes.subarray(start);
 }
+
+// ---------- Slow networks. Checked every minute: when the broker's round trip or the
+// fastest cache's answer is slow, the heaviest downloads are switched off, satellites
+// first, then (if it is still slow a minute later) the GTS gateways. They're switched
+// off as if by hand, so the Layers tab shows it and they can be switched back on; one
+// switched back on isn't switched off again. Nothing is switched back on by itself:
+// with the downloads gone the network looks fast again, which would just flip-flop
+const SLOW_BROKER_MS = 1500;  // MQTT round trip
+const SLOW_CACHE_MS = 3000;   // Fastest global cache, to answer a request
+const SLOW_CHECK_MS = 60e3;
+const SHED_LAYERS = [{ key: 'satellite', label: 'Satellites' }, { key: 'gts', label: 'GTS gateways' }];
+const shedKept = new Set();  // Switched back on after being shed: left alone
+
+function slowNetworkReason() {
+    if (brokerState.state === 'connected' && brokerState.ms > SLOW_BROKER_MS) return `broker round trip ${Math.round(brokerState.ms)} ms`;
+    if (state.cache && state.cache.ms > SLOW_CACHE_MS) return `fastest cache ${Math.round(state.cache.ms)} ms`;
+    return null;
+}
+
+function checkNetwork() {
+    var shed = state.slowNetwork ? state.slowNetwork.shed : [];
+    // One that has been switched back on stays on
+    var kept = shed.filter((key) => !hiddenLayers.has(key));
+    kept.forEach((key) => shedKept.add(key));
+    shed = shed.filter((key) => hiddenLayers.has(key));
+    var reason = !document.hidden && slowNetworkReason();
+    var next = reason && SHED_LAYERS.find((l) => !hiddenLayers.has(l.key) && !shedKept.has(l.key));
+    if (next) {
+        var input = document.querySelector(`.legend-toggle[data-layer="${next.key}"] input`);
+        if (input) {
+            input.checked = false;
+            input.dispatchEvent(new Event('change'));
+            shed = [...shed, next.key];
+            console.log(`Slow network (${reason}): ${next.label} switched off`);
+        }
+    }
+    if (shed.join() !== (state.slowNetwork ? state.slowNetwork.shed.join() : '')) {
+        setState({ slowNetwork: shed.length ? { shed, reason: reason || state.slowNetwork.reason } : null });
+    }
+}
+setInterval(checkNetwork, SLOW_CHECK_MS);
 
 // ---------- World overview in the Equal Earth projection, which keeps areas true to
 // size (MapLibre has no Equal Earth). A small map always shown at the top of the map

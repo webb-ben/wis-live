@@ -151,7 +151,10 @@ bottom; the core comes first, roughly in this order:
    Background files wait in `decodeQueues`: one for satellites and one for
    everything else, each with its own downloads and cap, taking turns on the
    decoder. A satellite swath keeps only the values the map can be styled by
-   (`file.metrics`); its popups decode the report again.
+   (`file.metrics`); its popups decode the report again. On a slow network
+   (`checkNetwork`, every minute: broker round trip over `SLOW_BROKER_MS` or the
+   fastest cache over `SLOW_CACHE_MS`) Satellites, then GTS gateways, are
+   switched off as if by hand, and the map key says so (`state.slowNetwork`).
 
 After the core, each feature is its own section headed `// ---------- <name>`
 (grep for that to list them): GeoMet model fields, Environment Canada

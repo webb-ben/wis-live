@@ -20,6 +20,8 @@ export const state = {
     // Catalogue, and { host, id, name, ms } of the global cache downloads try first
     catalogue: null,
     cache: null,
+    // Layers switched off because the network is slow (see main.js): { shed: [keys], reason }
+    slowNetwork: null,
 };
 
 const listeners = new Set();  // { keys: Set or null for every key, fn }
