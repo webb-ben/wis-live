@@ -436,9 +436,9 @@ const map = new maplibregl.Map({
     // Added below as its own control, so it can be kept closed
     attributionControl: false,
 });
-// The ⓘ button: tile credits plus what this page is
+// Tile credits plus what this page is, at the foot of the sidebar (see below)
 const attribution = new maplibregl.AttributionControl({
-    compact: true,
+    compact: false,
     customAttribution: '<br>WIS 2.0 Live shows real-time weather observations as they are published through the WMO Information System. This page is not affiliated with WMO.',
 });
 
@@ -1227,23 +1227,14 @@ function selectQueueTab(tab) {
     }
 }
 
-// The key on the map. On top, how points are styled: what they're coloured by,
-// its scale, and the options that go with it. Below, only what is drawn now.
+// Bottom right: the Equal Earth world map (see buildOverview) and, under it, the Global
+// Broker the live messages come from. The key itself is in StyleControl, top right
 class MapKey {
     onAdd() {
         this.container = document.createElement('div');
-        this.container.className = 'maplibregl-ctrl map-key';
-        this.container.append(buildStylePanel());
-        mapKeyBody = this.container.appendChild(document.createElement('div'));
-        this.container.addEventListener('click', (e) => {
-            if (e.target.closest('.map-key-edit')) {
-                document.body.classList.add('queue-open');
-                selectQueueTab('layers');
-                return;
-            }
-            // On phones the key opens to its options, notes and shapes on a tap anywhere but a control
-            if (PHONE.matches && !e.target.closest('select, input, label')) this.container.classList.toggle('map-key-open');
-        });
+        this.container.className = 'maplibregl-ctrl map-key map-world';
+        mapKeyStatus = document.createElement('div');
+        this.container.append(buildOverview(), mapKeyStatus);
         updateMapKey();
         return this.container;
     }
@@ -1252,7 +1243,31 @@ class MapKey {
         // Nothing to do here
     }
 }
-let mapKeyBody = null;
+
+// Top right: the key of what is drawn now, then Style by with its options. (The
+// sidebar opens from the tab on its edge; ProjectionControl's Flat/Globe isn't shown for now)
+class StyleControl {
+    onAdd() {
+        var container = document.createElement('div');
+        container.className = 'maplibregl-ctrl map-key map-style';
+        mapKeyBody = container.appendChild(document.createElement('div'));
+        mapKeyBody.className = 'map-key-main';
+        container.append(buildStylePanel());
+        container.addEventListener('click', (e) => {
+            // On phones the panel opens to its options on a tap anywhere but a control
+            if (PHONE.matches && !e.target.closest('select, input, label')) container.classList.toggle('map-key-open');
+        });
+        return container;
+    }
+
+    onRemove() {
+        // Nothing to do here
+    }
+}
+let mapKeyBody = null;  // The key's rows, in StyleControl (top right)
+let mapKeyStatus = null;  // The broker line, under the world map (bottom right)
+// The world map under the key (see buildOverview), declared here as the key is built while the page loads
+let overview = null;  // { section, canvas, land, projection, timer, ready }
 let mapKeyHtml = '';
 let mapKeyDirty = false;
 let mapKeyBuilt = 0;
@@ -1301,16 +1316,22 @@ function buildStylePanel() {
 
 // Layers with a point drawn on the map now: switched on, and passing the same
 // filters as applyMapFilter. The decode options a report came through (via) count too
-function drawnLayers() {
-    var hidden = new Set(effectiveHidden());
+// Whether a point's properties (or a swath file's) pass the layer switches and the
+// filters, as applyMapFilter decides on the map. hidden is a Set of effectiveHidden()
+function passesFilters(p, hidden) {
     var test = (key, active, matches) => !active || (filterModes[key] === 'hide' ? !matches : matches);
-    var m = colouredOnly && METRICS[colourBy];
-    var out = new Set();
-    var passes = (p) => !(hidden.has(p.layer) || hidden.has(p.via) || hidden.has(p.sat) || (p.replay && hidden.has('replay')))
+    return !(hidden.has(p.layer) || hidden.has(p.via) || hidden.has(p.sat) || (p.replay && hidden.has('replay')))
         && test('centres', filters.centres.size, filters.centres.has(p.centre))
         && test('format', filters.format, p.format === filters.format)
         && test('disciplines', filters.disciplines.size, filters.disciplines.has(p.discipline) || (filters.disciplines.has('space-weather') && p.space))
         && test('text', filters.text, p.topic.includes(filters.text));
+}
+
+function drawnLayers() {
+    var hidden = new Set(effectiveHidden());
+    var m = colouredOnly && METRICS[colourBy];
+    var out = new Set();
+    var passes = (p) => passesFilters(p, hidden);
     var mark = (p) => {
         out.add(p.layer);
         if (p.via) out.add(p.via);
@@ -1338,18 +1359,20 @@ function updateMapKey() {
     var symbol = (shape, color) => `<span class="legend-dot${shape === 'diamond' ? ' key-diamond' : ''}${shape === 'square' ? ' key-square' : ''}${shape === 'ring' ? ' legend-ring' : ''}" style="--color: ${color}; --outline: ${darken(color)}"></span>`;
     var rows = [];
     var m = METRICS[colourBy];
+    var coverage = SATELLITE_LAYERS.some(drawn) && !hidden.includes('sat-coverage') && swathCells.size;
+    var swatch = '<span class="legend-dot key-swath" title="Coverage"></span>';
     if (m) {
         // The measure and its scale are in the style panel above
         // With "Require value" on, points without one aren't drawn, so there's nothing to explain
         if (!colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}No value, or not measured</div>`);
+        if (coverage) rows.push(`<div class="key-row">${swatch}Satellite coverage${colourBy === 'cloudAmount' ? ', darker = cloudier' : ''}</div>`);
     } else {
         for (var [key, c] of Object.entries(OBS_CLASSES)) {
             var shapes = [drawn(`cache-${key}`) && 'circle', drawn(`gts-${key}`) && 'diamond', drawn(`replay-${key}`) && 'square'].filter(Boolean);
-            if (shapes.length) rows.push(`<div class="key-row">${shapes.map((shape) => symbol(shape, c.color)).join('')}${esc(c.label)}</div>`);
+            // Satellites' points and their coverage on one line
+            var extra = key === 'satellite' && coverage ? swatch : '';
+            if (shapes.length || extra) rows.push(`<div class="key-row">${shapes.map((shape) => symbol(shape, c.color)).join('')}${extra}${esc(c.label)}</div>`);
         }
-    }
-    if (SATELLITE_LAYERS.some(drawn) && !hidden.includes('sat-coverage') && swathCells.size) {
-        rows.push(`<div class="key-row"><span class="legend-dot key-swath"></span>Satellite coverage${colourBy === 'cloudAmount' ? ', darker = cloudier' : ''}</div>`);
     }
     if (drawn('wis2gts')) rows.push(`<div class="key-row">${symbol('diamond', COLORS.wis2gts)}WIS2-to-GTS</div>`);
     if (!hidden.includes('radar') && radars.size) {
@@ -1374,16 +1397,19 @@ function updateMapKey() {
     if (shapes.length) rows.push(`<div class="key-shapes">${shapes.join('')}</div>`);
     // The Global Broker messages come from, and whether it is connected
     var broker = brokerState.host ? esc(brokerState.host) : '';
-    // One line: a long host name is cut short (it's in full on hover), the Layers link kept whole
+    // One line: a long host name is cut short (it's in full on hover)
     var status = {
         connected: `Broker: ${broker}`,
         reconnecting: `Reconnecting to ${broker}…`,
         connecting: 'Connecting to a broker…',
         retrying: 'No Global Broker reachable, retrying…',
     }[brokerState.state];
-    rows.push(`<div class="key-note key-broker"><span class="broker-dot broker-${brokerState.state}"></span><span class="key-broker-text" title="WIS2 Global Broker the live messages come from: ${status}">${status}</span>
-    <button type="button" class="btn btn-link btn-sm map-key-edit">Layers</button></div>`);
-    // Refreshed as points come and go; left alone when nothing changed, so a click on Layers isn't lost
+    // Under the world map, bottom right, apart from the key
+    var brokerHtml = `<div class="key-note key-broker"><span class="broker-dot broker-${brokerState.state}"></span><span class="key-broker-text" title="WIS2 Global Broker the live messages come from: ${status}">${status}</span></div>`;
+    if (mapKeyStatus && brokerHtml !== mapKeyStatus.dataset.html) {
+        mapKeyStatus.innerHTML = mapKeyStatus.dataset.html = brokerHtml;
+    }
+    // Refreshed as points come and go; left alone when nothing changed, so a hover isn't interrupted
     var html = rows.join('');
     if (html !== mapKeyHtml) mapKeyBody.innerHTML = mapKeyHtml = html;
     mapKeyDirty = false;
@@ -3998,8 +4024,10 @@ function applyFilters() {
     applyMapFilter();
     rebuildQueue();
     var active = filtersActive();
-    queueToggle.classList.toggle('filtered', active);
-    queueToggle.title = active ? 'Layers and messages (filters on)' : 'Layers and messages';
+    if (queueToggle) {
+        queueToggle.classList.toggle('filtered', active);
+        queueToggle.title = active ? 'Layers, filters and messages (filters on)' : 'Layers, filters and messages';
+    }
     document.querySelector('.queue-reset').hidden = !active;
     writeFiltersToUrl();  // Shows Copy link too, while the URL has filters or styling to share
     filterDatasetRows();
@@ -4157,21 +4185,11 @@ async function fetchJson(url) {
     return response.json();
 }
 
+// Builds the sidebar (filters, Layers, Datasets and Messages tabs). It isn't on the
+// map itself: the tab on its edge opens and closes it
 class QueueControl {
     onAdd(map) {
         var container = document.createElement('div');
-        container.className = 'maplibregl-ctrl maplibregl-ctrl-group';
-        var toggle = document.createElement('button');
-        toggle.type = 'button';
-        toggle.className = 'queue-toggle';
-        queueToggle = toggle;
-        toggle.title = 'Layers and messages';
-        toggle.innerHTML = '&#9776;';
-        container.appendChild(toggle);
-        toggle.addEventListener('click', function(){
-            document.body.classList.toggle('queue-open');
-            flushQueue();
-        });
 
         var sidebar = document.createElement('aside');
         sidebar.className = 'queue';
@@ -4233,6 +4251,18 @@ class QueueControl {
         sidebar.querySelector('.queue-filters .queue-title').insertAdjacentHTML('beforeend',
             '<button type="button" class="btn btn-sm btn-outline-secondary queue-close" title="Close (Esc)">Close</button>');
         sidebar.querySelector('.queue-close').addEventListener('click', () => document.body.classList.remove('queue-open'));
+        // A tab on the sidebar's edge, halfway down: at the left of the map while it's
+        // collapsed (› opens it), on its edge while it's open (‹ closes it)
+        var handle = document.createElement('button');
+        handle.type = 'button';
+        handle.className = 'queue-handle';
+        handle.setAttribute('aria-label', 'Open or close the sidebar');
+        handle.addEventListener('click', () => {
+            var open = !document.body.classList.contains('queue-open');
+            document.body.classList.toggle('queue-open', open);
+            if (open) flushQueue();
+        });
+        sidebar.appendChild(handle);
         document.body.appendChild(sidebar);
         sidebar.querySelectorAll('.queue-tabs button').forEach((button) => button.addEventListener('click', () => selectQueueTab(button.dataset.tab)));
         queueList = sidebar.querySelector('.queue-list');
@@ -4251,18 +4281,6 @@ class QueueControl {
             filters.format = queueFormat.value;
             applyFilters();
         });
-        // A tab on the sidebar's edge, halfway down: at the left of the map while it's
-        // collapsed (› opens it), on its edge while it's open (‹ closes it)
-        var handle = document.createElement('button');
-        handle.type = 'button';
-        handle.className = 'queue-handle';
-        handle.setAttribute('aria-label', 'Open or close the sidebar');
-        handle.addEventListener('click', () => {
-            var open = !document.body.classList.contains('queue-open');
-            document.body.classList.toggle('queue-open', open);
-            if (open) flushQueue();
-        });
-        sidebar.appendChild(handle);
         var chips = [...sidebar.querySelectorAll('.queue-chip')];
 
         queueFilter.addEventListener('input', function(){
@@ -4781,30 +4799,25 @@ function connectFastest() {
 }
 
 readFiltersFromUrl();  // Before the sidebar is built, so its controls start set
-map.addControl(new QueueControl(), 'top-left');
-map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-left');
-map.addControl(new ProjectionControl(), 'top-left');
+// The sidebar, opened from the tab on its edge
+new QueueControl().onAdd(map);
 // Layer switches and styling live in the sidebar's Layers tab; the map shows a
 // read-only key of what is currently drawn
 document.querySelector('.queue-pane-layers').appendChild(new LegendControl().onAdd(map));
-map.addControl(new MapKey(), 'top-right');
-map.addControl(attribution, 'bottom-right');
+// The key and Style by top right; the zoom buttons top left (they
+// step aside as the sidebar opens); the world map and broker status bottom right
+map.addControl(new StyleControl(), 'top-right');
+map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-left');
+map.addControl(new MapKey(), 'bottom-right');
 
-// The ⓘ attribution starts closed and stays closed unless the visitor opens it:
-// MapLibre opens the compact attribution again whenever its text changes
-(function keepAttributionClosed() {
-    var el = document.querySelector('.maplibregl-ctrl-attrib');
-    if (!el) return;
-    var openedByVisitor = false;
-    // Captured before MapLibre's own handler toggles it, so this is the state the visitor is choosing
-    el.addEventListener('click', (e) => {
-        if (e.target.closest('.maplibregl-ctrl-attrib-button')) openedByVisitor = !el.classList.contains('maplibregl-compact-show');
-    }, true);
-    var close = () => {
-        if (!openedByVisitor && el.classList.contains('maplibregl-compact-show')) el.classList.remove('maplibregl-compact-show');
-    };
-    new MutationObserver(close).observe(el, { attributes: true, attributeFilter: ['class'] });
-    close();
+// Credits and what this page is, at the foot of the sidebar instead of an ⓘ on the
+// map. MapLibre's attribution keeps itself up to date there as sources come and go
+(function addAbout() {
+    var about = document.createElement('details');
+    about.className = 'queue-about';
+    about.innerHTML = '<summary>ⓘ About and credits</summary>';
+    about.appendChild(attribution.onAdd(map));
+    document.querySelector('.queue').appendChild(about);
 })();
 
 // Keep the globe (the map's centre) in the middle of the area the panels leave
@@ -4831,6 +4844,12 @@ function updateMapPadding() {
 new MutationObserver(updateMapPadding).observe(document.body, { attributes: true, attributeFilter: ['class'] });
 window.addEventListener('resize', () => { panelPadding = ''; updateMapPadding(); });
 
+// On desktop the sidebar starts open on its Layers tab; on phones it would cover the map
+if (!PHONE.matches) {
+    document.body.classList.add('queue-open');
+    selectQueueTab('layers');
+}
+
 connectFastest();
 
 const ignoredTopics = [
@@ -4844,12 +4863,6 @@ function stationId(props) {
 }
 
 function parseMessage(topic, message) {
-// On desktop the sidebar starts open on its Layers tab; on phones it would cover the map
-if (!PHONE.matches) {
-    document.body.classList.add('queue-open');
-    selectQueueTab('layers');
-}
-
     // message is Buffer
     try {
         return JSON.parse(message.toString());
@@ -7597,4 +7610,180 @@ function bufrPart(bytes) {
     var head = String.fromCharCode(...bytes.subarray(0, 256));
     var start = head.indexOf('BUFR');
     return start < 0 ? null : bytes.subarray(start);
+}
+
+// ---------- World overview in the Equal Earth projection, which keeps areas true to
+// size (MapLibre has no Equal Earth). A small map always shown at the top of the map
+// key, above the legend. D3 draws what the map shows now on a
+// canvas: points that pass the layer switches and filters, coloured as on the map,
+// and satellite coverage. A click goes to that place on the map. D3, topojson-client
+// and the coastlines load as the page opens.
+const D3_URL = 'https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js';
+const TOPOJSON_URL = 'https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js';
+const LAND_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json';
+const OVERVIEW_REFRESH_MS = 2000;
+
+function loadScript(src) {
+    return new Promise((resolve, reject) => {
+        var script = document.createElement('script');
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = () => reject(new Error(`could not load ${src}`));
+        document.head.appendChild(script);
+    });
+}
+
+// The world map's part of the map key (see MapKey): a title, a button that enlarges
+// it, and the canvas. Always shown
+function buildOverview() {
+    var section = document.createElement('div');
+    section.className = 'key-overview';
+    section.innerHTML = `
+        <div class="pp-status overview-status">Loading…</div>
+        <canvas role="img" aria-label="World map in the Equal Earth projection; click to go there on the map"
+            title="World map, Equal Earth projection (true areas). Click to go there"></canvas>`;
+    overview = { section, canvas: section.querySelector('canvas'), land: null, projection: null, timer: null, ready: null };
+    overview.canvas.addEventListener('click', (e) => {
+        if (!overview.projection) return;
+        var box = overview.canvas.getBoundingClientRect();
+        var lonLat = overview.projection.invert([e.clientX - box.left, e.clientY - box.top]);
+        // Outside the outline of the Earth there's nowhere to go
+        if (!lonLat || !(Math.abs(lonLat[0]) <= 180 && Math.abs(lonLat[1]) <= 90)) return;
+        map.flyTo({ center: lonLat, zoom: Math.max(map.getZoom(), 3) });
+    });
+    window.addEventListener('resize', drawOverview);
+    // Drawn once the key is on the page and has a size (and the rest of this script
+    // has run, as the key is built part way through), then kept up to date
+    requestAnimationFrame(() => loadOverview().then(() => {
+        drawOverview();
+        overview.timer = setInterval(drawOverview, OVERVIEW_REFRESH_MS);
+    }));
+    return section;
+}
+
+function loadOverview() {
+    if (!overview.ready) {
+        overview.ready = (async () => {
+            if (!window.d3) await loadScript(D3_URL);
+            if (!window.topojson) await loadScript(TOPOJSON_URL);
+            var response = await fetch(LAND_URL);
+            if (!response.ok) throw new Error(`coastlines: HTTP ${response.status}`);
+            var topo = await response.json();
+            overview.land = topojson.feature(topo, topo.objects.land);
+            overview.section.querySelector('.overview-status').remove();
+        })().catch((err) => {
+            overview.section.querySelector('.overview-status').textContent = `Could not load the world map: ${err.message}`;
+        });
+    }
+    return overview.ready;
+}
+
+function drawOverview() {
+    if (!overview || !overview.land) return;
+    var canvas = overview.canvas, box = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    var w = box.width, h = box.height;
+    if (!w || !h) return;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+        canvas.width = Math.round(w * dpr);
+        canvas.height = Math.round(h * dpr);
+    }
+    var ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    var projection = overview.projection = d3.geoEqualEarth().fitExtent([[2, 2], [w - 2, h - 2]], { type: 'Sphere' });
+    var radius = w > 400 ? 1.6 : 1.1;  // Points, smaller on a small map
+    var path = d3.geoPath(projection, ctx);
+
+    // Sea, graticule and land, in the basemap's greys
+    ctx.beginPath();
+    path({ type: 'Sphere' });
+    ctx.fillStyle = '#dde3e6';
+    ctx.fill();
+    ctx.beginPath();
+    path(d3.geoGraticule10());
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.06)';
+    ctx.lineWidth = 0.5;
+    ctx.stroke();
+    ctx.beginPath();
+    path(overview.land);
+    ctx.fillStyle = '#f4f4f2';
+    ctx.fill();
+    ctx.strokeStyle = '#c4c9cc';
+    ctx.stroke();
+
+    var hidden = new Set(effectiveHidden());
+    var m = METRICS[colourBy];
+    var scale = m && d3.scaleLinear().domain(m.stops.map((s) => s[0])).range(m.stops.map((s) => s[1])).clamp(true);
+
+    // Satellite coverage: each hexagon projected corner by corner (corners past ±180
+    // are held at the edge, so a cell there doesn't stretch across the map). Cells of
+    // one colour are one path, so their shared edges aren't shaded twice
+    if (!hidden.has('sat-coverage')) {
+        var fills = new Map();
+        for (var cell of swathCells.values()) {
+            var feature = swathFeature(cell), p = feature.properties;
+            if (!passesFilters(p, hidden)) continue;
+            var value = m && m.targets === 'satellite' ? p[`m_${colourBy}`] : undefined;
+            if (colouredOnly && m && value == null) continue;
+            var fill = value != null ? scale(value) : p.color;
+            if (!fills.has(fill)) fills.set(fill, []);
+            fills.get(fill).push(feature.geometry.coordinates[0].map(([lon, lat]) => projection([Math.max(-180, Math.min(180, lon)), lat])));
+        }
+        ctx.globalAlpha = Math.max(0.15, swathOpacity[swathOpacityKey()]);
+        for (var [fill, rings] of fills) {
+            ctx.beginPath();
+            for (var ring of rings) {
+                ring.forEach((xy, i) => (i ? ctx.lineTo(...xy) : ctx.moveTo(...xy)));
+                ctx.closePath();
+            }
+            ctx.fillStyle = fill;
+            ctx.fill('nonzero');
+        }
+    }
+
+    // Points, gathered by colour so each colour is one path; origin copies are rings
+    var groups = new Map();
+    for (var record of records.values()) {
+        var q = record.feature.properties;
+        if (q.superseded || !passesFilters(q, hidden)) continue;
+        var target = m && isColourable(record, m);
+        var v = m ? q[`m_${colourBy}`] : undefined;
+        if (colouredOnly && m && !(target && v != null)) continue;
+        // As setColourBy: grey without a value, aircraft keep theirs under surface measures
+        var colour = !m ? q.color : target && v != null ? scale(v) : m.targets !== 'satellite' && /-aircraft$/.test(q.layer) ? q.color : NO_VALUE_COLOR;
+        var xy = projection(record.coords);
+        if (!xy) continue;
+        var key = `${colour}|${q.origin ? 'ring' : 'dot'}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(xy);
+    }
+    ctx.globalAlpha = 0.85;
+    for (var [group, points] of groups) {
+        var [fill, shape] = group.split('|');
+        ctx.beginPath();
+        for (var [x, y] of points) {
+            ctx.moveTo(x + radius, y);
+            ctx.arc(x, y, radius, 0, 2 * Math.PI);
+        }
+        if (shape === 'ring') {
+            ctx.strokeStyle = fill;
+            ctx.lineWidth = 0.8;
+            ctx.stroke();
+        } else {
+            ctx.fillStyle = fill;
+            ctx.fill();
+        }
+    }
+    ctx.globalAlpha = 1;
+
+    // The map's own view, as a frame, so it's clear where a click goes back from
+    ctx.beginPath();
+    var b = map.getBounds();
+    if (b.getEast() - b.getWest() < 300) {
+        path({ type: 'Polygon', coordinates: [[[b.getWest(), b.getSouth()], [b.getWest(), b.getNorth()], [b.getEast(), b.getNorth()],
+            [b.getEast(), b.getSouth()], [b.getWest(), b.getSouth()]]] });
+        ctx.strokeStyle = '#212529';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+    }
 }

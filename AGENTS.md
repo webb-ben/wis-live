@@ -42,7 +42,7 @@ Opening `index.html` via `file://` mostly works, but the local wheel fetch
 fails there and the decoder falls back to the jsDelivr copy on `main`.
 
 Verify changes in a real browser: watch for points appearing on the map,
-open the sidebar (☰), click a point, and try **Decode**. Check the console for
+open the sidebar (the tab on its edge, halfway down the left), click a point, and try **Decode**. Check the console for
 errors.
 
 ## External dependencies (all from CDNs, pinned versions)
@@ -51,6 +51,10 @@ errors.
 - MQTT.js `5.0.1` (unpkg)
 - Bootstrap CSS `5.1.3` (unpkg) — CSS only, used for buttons/forms/tables
 - Pyodide `v0.26.4` (jsDelivr), loaded lazily on first decode
+- h3-js `4.2.1` (jsDelivr): the H3 hexagons satellite coverage is drawn in
+  (`H3_RESOLUTION`)
+- D3 `7.9.0`, topojson-client `3.1.0` and world-atlas `2.0.2` land outlines
+  (jsDelivr), loaded as the page opens for the Equal Earth world map in the key
 - Basemap: Esri World Light Gray raster tiles
 - Google Analytics and Simple Analytics in `index.html`
 
@@ -76,9 +80,11 @@ first, roughly in this order:
 2. **De-duplication** — the origin and every global cache republish the same
    observation. `byDataId` keeps one point per `data_id`; a cache copy replaces
    an origin copy, later copies are skipped.
-3. **Controls** — `ProjectionControl` (Flat/Globe),
-   `LegendControl`, `MapKey` (style panel and key of what is drawn),
-   `QueueControl` (MapLibre `IControl` classes).
+3. **Controls** — `StyleControl` (top right: the key of what is drawn
+   (`updateMapKey`), then Style by; the zoom buttons are top left, and
+   `ProjectionControl`'s Flat/Globe isn't shown for now),
+   `MapKey` (bottom right: the world map and the broker status). `QueueControl` builds the sidebar and `LegendControl`
+   its Layers tab; neither is on the map itself (MapLibre `IControl` classes).
 4. **Popup** — `buildPopup`, decode flow, `renderDecoded` with headline
    `KEY_VALUES` tiles keyed by BUFR descriptor id. Popups have Data, Model
    forecast and Message tabs, plus the dataset's catalogue record.
@@ -111,9 +117,11 @@ soundings), URL state, weather radar, text SYNOPs, lightning, colouring by
 measured value (origin stations too, via `isColourable`), per-satellite layers, station
 merging, Global Replay, the Global Discovery Catalogue (Datasets tab: rows
 are kept sorted by when each dataset was last seen, via `sortDatasetRows`),
-airport METARs, satellite coverage (each swath file is packed into `swathFiles`
-and adds to running per-cell totals, not points; a report becomes a record only
-when clicked, via `swathRecord`) and tracks.
+airport METARs, the Equal Earth world map (a D3 canvas above the legend in the
+map key, as MapLibre has no Equal Earth; it filters with `passesFilters` like the key),
+satellite coverage (each swath file is packed into `swathFiles`
+and adds to running totals per H3 cell, not points; a report becomes a record only
+when clicked, via `swathRecord`) and aircraft tracks.
 
 Topic structure: `<channel>/a/wis2/<centre>/data/core/<discipline>/...`, where
 channel is `origin` or `cache`.
