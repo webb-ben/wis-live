@@ -4251,6 +4251,18 @@ class QueueControl {
             filters.format = queueFormat.value;
             applyFilters();
         });
+        // A tab on the sidebar's edge, halfway down: at the left of the map while it's
+        // collapsed (› opens it), on its edge while it's open (‹ closes it)
+        var handle = document.createElement('button');
+        handle.type = 'button';
+        handle.className = 'queue-handle';
+        handle.setAttribute('aria-label', 'Open or close the sidebar');
+        handle.addEventListener('click', () => {
+            var open = !document.body.classList.contains('queue-open');
+            document.body.classList.toggle('queue-open', open);
+            if (open) flushQueue();
+        });
+        sidebar.appendChild(handle);
         var chips = [...sidebar.querySelectorAll('.queue-chip')];
 
         queueFilter.addEventListener('input', function(){
@@ -4832,6 +4844,12 @@ function stationId(props) {
 }
 
 function parseMessage(topic, message) {
+// On desktop the sidebar starts open on its Layers tab; on phones it would cover the map
+if (!PHONE.matches) {
+    document.body.classList.add('queue-open');
+    selectQueueTab('layers');
+}
+
     // message is Buffer
     try {
         return JSON.parse(message.toString());

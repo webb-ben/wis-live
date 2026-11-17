@@ -36,6 +36,35 @@
 }
 
 /* The filters in force, at the bottom of the map, centred on the part of it left
+/* The tab on the sidebar's edge, halfway down: › to open it, ‹ to close it */
+.queue-handle {
+  position: absolute;
+  top: 50%;
+  right: -24px;
+  width: 22px;
+  height: 52px;
+  margin-top: -26px;
+  padding: 0;
+  border: 2px solid #bbbbbb;
+  border-left: 0;
+  border-radius: 0 8px 8px 0;
+  background-color: #ffffff;
+  box-shadow: 2px 0 4px rgba(0, 0, 0, 0.1);
+  color: #495057;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.queue-handle::before {
+  content: '›';
+}
+.queue-open .queue-handle::before {
+  content: '‹';
+}
+.queue-handle:hover {
+  color: #212529;
+  background-color: #f1f3f5;
+}
    showing between the sidebar (--left) and the info panel (--right); each chip
    removes its filter. */
 .filter-banner {
