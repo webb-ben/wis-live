@@ -18,6 +18,8 @@ https://benwebb.com/wis-live/). The page is not affiliated with WMO.
 ```
 index.html                 Page shell: meta tags, analytics, CDN scripts, #map
 src/main.js                The main page: map, sidebar, popups (being split up; see below)
+src/state.js               The shared state: state.colourBy, colouredOnly, modelFieldOn,
+                           filters, filterModes, hiddenLayers; setState / notify / subscribe
 src/config.js              COLORS, OBS_CLASSES (kinds of observation), METRICS (Style by
                            measures, with their colour scales), the layer lists they colour
 src/messages.js            parseMessage and what a notification says: topicClass,
@@ -154,6 +156,12 @@ channel is `origin` or `cache`.
 - Plain browser JavaScript in ES modules. Match the existing style: 4-space
   indent, single quotes, semicolons, `var` inside functions and `const`/`let`
   at top level, short comments that explain *why*.
+- **Shared state lives in `src/state.js`**, not in module-level variables. Read
+  `state.x`; change it with `setState({ x })`, or change a Set/object in place
+  and call `notify('x')`, so `subscribe(['x'], fn)` listeners (other modules,
+  other pages) hear about it. In `npm run dev` it's on `window.wisState` to
+  inspect or watch from the console. New state that more than one place reads
+  goes there too.
 - **Escape untrusted text.** Message content comes from third parties. Use
   `esc()` in template strings or set `textContent`; never interpolate raw
   message fields into `innerHTML`.

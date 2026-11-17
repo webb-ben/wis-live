@@ -1,5 +1,6 @@
 // The main page: the live map, its sidebar and popups. Pieces other pages can use
 // live in their own modules
+import { state, setState, notify } from './state.js';
 import { COLORS, OBS_CLASSES, METRICS, COLOURABLE, SATELLITE_LAYERS, ORIGIN_COLOURABLE, NO_VALUE_COLOR, SOURCE_COLORS } from './config.js';
 import { parseMessage, DISCIPLINES, FORMATS, isDataLink, isUpdate, formatOf, GATEWAY_TOPIC, GATEWAY_SATELLITE, GATEWAY_AIRCRAFT,
     GATEWAY_UPPER_AIR, isSpaceBased, disciplineOf, topicClass, stationId, pointFor, wis2boxVersion } from './messages.js';
@@ -22,7 +23,6 @@ const PULSE_MS = 1600;           // Length of the ripple on new arrivals
 // ---------- Model fields from ECCC GeoMet (WMS). GeoMet serves its default time,
 // the current hour; the hour in the URL only makes browsers fetch fresh tiles.
 const GEOMET = 'https://geo.weather.gc.ca/geomet';
-let modelFieldOn = false;
 
 function modelFieldUrl(key) {
     var hour = new Date().toISOString().slice(0, 13);
@@ -33,7 +33,7 @@ function modelFieldUrl(key) {
 // Shows the model base layer for the selected measure, if asked for, with its legend.
 // The switch is only offered while colouring by a measure, and says when that measure has no model field.
 function updateModelField(legend) {
-    var m = METRICS[colourBy], available = !!m && !!m.wms, on = modelFieldOn && available;
+    var m = METRICS[state.colourBy], available = !!m && !!m.wms, on = state.modelFieldOn && available;
     var row = legend.querySelector('.legend-model');
     row.hidden = !m;
     row.querySelector('input').disabled = !available;
@@ -46,7 +46,7 @@ function updateModelField(legend) {
     var info = legend.querySelector('.legend-model-info');
     info.hidden = !on;
     if (map.getLayer('model-field')) {
-        if (on) map.getSource('model-field').setTiles([modelFieldUrl(colourBy)]);
+        if (on) map.getSource('model-field').setTiles([modelFieldUrl(state.colourBy)]);
         map.setLayoutProperty('model-field', 'visibility', on ? 'visible' : 'none');
     }
     if (on) info.querySelector('img').src = `${GEOMET}?version=1.3.0&service=WMS&request=GetLegendGraphic&sld_version=1.1.0&layer=${m.wms}&format=image/png`;
@@ -55,7 +55,7 @@ function updateModelField(legend) {
 
 // Keeps the model field on the current hour
 setInterval(() => {
-    if (stylePanel && modelFieldOn) updateModelField(stylePanel);
+    if (stylePanel && state.modelFieldOn) updateModelField(stylePanel);
 }, 10 * 60 * 1000);
 
 // The layers a measure colours (stations, ships and buoys unless it says satellites)
@@ -66,13 +66,13 @@ function colourTargets(m) {
 // Styled by satellite (each its own colour) or by a satellite measure: only the
 // satellite layers are coloured, and their coverage is drawn strong
 function satelliteStyled() {
-    return colourBy === SATELLITE_STYLE || !!(METRICS[colourBy] && METRICS[colourBy].targets === 'satellite');
+    return state.colourBy === SATELLITE_STYLE || !!(METRICS[state.colourBy] && METRICS[state.colourBy].targets === 'satellite');
 }
 
 function isColourTarget() {
-    var m = METRICS[colourBy];
+    var m = METRICS[state.colourBy];
     var target = ['in', ['get', 'layer'], ['literal', colourTargets(m)]];
-    if (colourBy === SATELLITE_STYLE) return ['in', ['get', 'layer'], ['literal', SATELLITE_LAYERS]];
+    if (state.colourBy === SATELLITE_STYLE) return ['in', ['get', 'layer'], ['literal', SATELLITE_LAYERS]];
     if (m && m.targets === 'satellite') return target;
     return ['any', target, ['all', ['==', ['get', 'layer'], 'origin'], ['in', ['get', 'kind'], ['literal', ORIGIN_COLOURABLE]]]];
 }
@@ -85,10 +85,8 @@ function isColourable(record, m) {
 }
 const IS_AIRCRAFT = ['in', ['get', 'layer'], ['literal', ['cache-aircraft', 'gts-aircraft', 'replay-aircraft']]];
 const METRIC_QUEUE_MAX = 5000;  // Station files waiting to be decoded, newest kept (most carry their data inline, a few ms each)
-let colourBy = 'kind';
-// Style by: each satellite in its own colour (see satelliteColour), not a measure
+// Style by (state.colourBy): each satellite in its own colour (see satelliteColour), not a measure
 const SATELLITE_STYLE = 'satellite';
-let colouredOnly = false;  // Hide every point not coloured by the measure
 let metricQueue = [];
 // Replayed stations wait in a queue of their own, taken only when no live station is waiting,
 // newest first and capped: a past hour shouldn't hold up what's arriving now
@@ -148,8 +146,8 @@ const LAYER_GROUPS = [
             title: 'Airport weather reports: the latest METAR from every airport the Iowa Environmental Mesonet collects, refreshed every 20 minutes, nearest the view first. An airport that also reports through WIS2 is shown once, as the WIS2 station, with its METAR linked.' },
     ] },
 ];
-// Off at first: radar, the Global Replay, METAR, WIS2-to-GTS, aircraft and ground-based GNSS (cache, GTS and replay), and aircraft tracks
-const hiddenLayers = new Set(['radar', 'replay', 'cache-gnss', 'gts-gnss', 'replay-gnss', 'airports', 'wis2gts', 'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks']);
+// Layer switches that are off, and which start off: kept in state.js
+const hiddenLayers = state.hiddenLayers;
 // How far back the Global Replay reaches, set by a continuous slider on a log scale:
 // 12 hours ago at the left, 5 minutes at the right, so time runs left to right and
 // recent windows get most of the track. Long windows over a busy view stop at
@@ -399,11 +397,11 @@ function arrowSdf() {
 
 // Wind measures draw points with a direction as arrows (calm ones stay as points)
 function windArrows() {
-    return colourBy === 'wind' || colourBy === 'satWind';
+    return state.colourBy === 'wind' || state.colourBy === 'satWind';
 }
 
 function isArrow() {
-    return ['all', isColourTarget(), ['has', 'm_windDir'], ['>', ['coalesce', ['get', `m_${colourBy}`], 0], 0]];
+    return ['all', isColourTarget(), ['has', 'm_windDir'], ['>', ['coalesce', ['get', `m_${state.colourBy}`], 0], 0]];
 }
 
 // A square as a signed distance field, for points from other sources (airports)
@@ -518,8 +516,8 @@ map.on('load', () => {
         var f = e.features[0].properties;
         outlineSwathCell(e.lngLat, f.swath);
         map.getCanvas().style.cursor = 'pointer';
-        var m = METRICS[colourBy];
-        var reading = m && m.targets === 'satellite' && typeof f[`m_${colourBy}`] === 'number' ? ` · ${formatMetric(f[`m_${colourBy}`], m)}` : '';
+        var m = METRICS[state.colourBy];
+        var reading = m && m.targets === 'satellite' && typeof f[`m_${state.colourBy}`] === 'number' ? ` · ${formatMetric(f[`m_${state.colourBy}`], m)}` : '';
         var clouds = typeof f.m_cloudAmount === 'number' ? ` · cloud ${Math.round(f.m_cloudAmount)}%` : '';
         hoverLabel.setLngLat(e.lngLat).setText(`${f.label}${reading || clouds}`).addTo(map);
     });
@@ -646,7 +644,7 @@ map.on('load', () => {
     // Open coloured by observation type, or as the link says (style=temp and so on), near the visitor
     if (stylePanel) {
         stylePanel.querySelector('.legend-colour select').value = startColour;
-        stylePanel.querySelector('.legend-coloured-only input').checked = colouredOnly;
+        stylePanel.querySelector('.legend-coloured-only input').checked = state.colouredOnly;
         setColourBy(startColour, stylePanel);
     }
     // A link to a dataset shows it as its Show on map would (the catalogue code is wired up just after load)
@@ -698,7 +696,7 @@ map.on('load', () => {
         if (!record) return hoverLabel.remove();
         var route = record.subLayer && record.subLayer.endsWith('-aircraft') ? trackRoute([record]) : null;
         // While colouring by a measure, the point's value too
-        var m = METRICS[colourBy], value = m && e.features[0].properties[`m_${colourBy}`];
+        var m = METRICS[state.colourBy], value = m && e.features[0].properties[`m_${state.colourBy}`];
         var text = m && typeof value === 'number' ? formatMetric(value, m)
             : [record.wsi || record.props.metadata_id || record.centre, route].filter(Boolean).join(' · ');
         hoverLabel.setLngLat(record.coords).setText(text).addTo(map);
@@ -874,7 +872,7 @@ function paintAge() {
     var opacity = ['interpolate', ['linear'], ['-', Date.now(), ['get', 'born']], 0, 1, FADE_MS, 0.35];
     // While stations are coloured by a measure, everything else steps back
     // (aircraft keep their own colour and opacity: they aren't coloured by the measures)
-    if (colourBy !== 'kind') {
+    if (state.colourBy !== 'kind') {
         // Surface measures leave aircraft alone (they aren't coloured); satellite measures dim them too
         var kept = satelliteStyled() ? isColourTarget() : ['any', isColourTarget(), IS_AIRCRAFT];
         opacity = ['case', kept, opacity, ['*', opacity, 0.25]];
@@ -890,7 +888,7 @@ function paintAge() {
     // it (clear 0.05 to overcast 0.8 at 30%). Coverage doesn't fade with age: the slider
     // alone sets how strong it is
     var level = swathOpacity[swathOpacityKey()];
-    var cloud = colourBy !== 'cloudAmount' ? level
+    var cloud = state.colourBy !== 'cloudAmount' ? level
         : ['case', ['has', 'm_cloudAmount'], ['min', 1, ['*', level / 0.3,
             ['interpolate', ['linear'], ['get', 'm_cloudAmount'], 0, 0.05, 100, 0.8]]], level];
     map.setPaintProperty('swaths-fill', 'fill-opacity', cloud);
@@ -1005,6 +1003,7 @@ class LegendControl {
             var key = row.dataset.layer;
             row.querySelector('input').addEventListener('change', (e) => {
                 e.target.checked ? hiddenLayers.delete(key) : hiddenLayers.add(key);
+                notify('hiddenLayers');
                 syncDecoding();
                 syncSublayers();
                 applyMapFilter();
@@ -1129,12 +1128,12 @@ function buildStylePanel() {
         </div>`;
     stylePanel.querySelector('select').addEventListener('change', (e) => setColourBy(e.target.value, stylePanel));
     stylePanel.querySelector('.legend-coloured-only input').addEventListener('change', (e) => {
-        colouredOnly = e.target.checked;
+        setState({ colouredOnly: e.target.checked });
         applyMapFilter();
         writeFiltersToUrl();
     });
     stylePanel.querySelector('.legend-model input').addEventListener('change', (e) => {
-        modelFieldOn = e.target.checked;
+        setState({ modelFieldOn: e.target.checked });
         updateModelField(stylePanel);
         writeFiltersToUrl();
     });
@@ -1157,10 +1156,10 @@ function passesFilters(p, hidden) {
 
 function drawnLayers() {
     var hidden = new Set(effectiveHidden());
-    var m = colouredOnly && METRICS[colourBy];
+    var m = state.colouredOnly && METRICS[state.colourBy];
     var out = new Set();
     // Satellites only (styled by satellite, with the checkbox on) leaves out the rest
-    var satellitesOnly = colouredOnly && colourBy === SATELLITE_STYLE;
+    var satellitesOnly = state.colouredOnly && state.colourBy === SATELLITE_STYLE;
     var passes = (p) => passesFilters(p, hidden) && !(satellitesOnly && !SATELLITE_LAYERS.includes(p.layer));
     var mark = (p) => {
         out.add(p.layer);
@@ -1169,12 +1168,12 @@ function drawnLayers() {
     for (var record of records.values()) {
         var p = record.feature.properties;
         if (out.has(p.layer) && (!p.via || out.has(p.via))) continue;
-        if (!passes(p) || (m && !(isColourable(record, m) && p[`m_${colourBy}`] != null))) continue;
+        if (!passes(p) || (m && !(isColourable(record, m) && p[`m_${state.colourBy}`] != null))) continue;
         mark(p);
     }
     if (!hidden.has('sat-coverage')) {
         for (var file of swathFiles.values()) {
-            if (passes(file.props) && !(m && !(isColourable(file.template, m) && file.means[colourBy] != null))) mark(file.props);
+            if (passes(file.props) && !(m && !(isColourable(file.template, m) && file.means[state.colourBy] != null))) mark(file.props);
         }
     }
     return out;
@@ -1188,22 +1187,22 @@ function updateMapKey() {
     var drawnAny = (prefix) => [...shown].some((k) => k.startsWith(prefix));
     var symbol = (shape, color) => `<span class="legend-dot${shape === 'diamond' ? ' key-diamond' : ''}${shape === 'square' ? ' key-square' : ''}${shape === 'ring' ? ' legend-ring' : ''}" style="--color: ${color}; --outline: ${darken(color)}"></span>`;
     var rows = [];
-    var m = METRICS[colourBy];
+    var m = METRICS[state.colourBy];
     var coverage = SATELLITE_LAYERS.some(drawn) && !hidden.includes('sat-coverage') && swathCells.size;
     var swatch = '<span class="legend-dot key-swath" title="Coverage"></span>';
     if (m) {
         // The measure and its scale are in the style panel above
         // With "Require value" on, points without one aren't drawn, so there's nothing to explain
         // The same grey "Other" row as styled by satellite: whatever the style doesn't colour
-        if (!colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}Other</div>`);
-        if (coverage) rows.push(`<div class="key-row">${swatch}Satellite coverage${colourBy === 'cloudAmount' ? ', darker = cloudier' : ''}</div>`);
-    } else if (colourBy === SATELLITE_STYLE) {
+        if (!state.colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}Other</div>`);
+        if (coverage) rows.push(`<div class="key-row">${swatch}Satellite coverage${state.colourBy === 'cloudAmount' ? ', darker = cloudier' : ''}</div>`);
+    } else if (state.colourBy === SATELLITE_STYLE) {
         // Each satellite switched on, in its colour, by name; everything else is grey
         [...satelliteColours].filter(([sat]) => !hidden.includes(sat))
             .sort(([a], [b]) => satelliteLabel(a).localeCompare(satelliteLabel(b)))
             .forEach(([sat, colour]) => rows.push(`<div class="key-row">${symbol('circle', colour)}${esc(satelliteLabel(sat))}</div>`));
         // Nothing else is drawn with Satellites only on
-        if (!colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}Other</div>`);
+        if (!state.colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}Other</div>`);
     } else {
         for (var [key, c] of Object.entries(OBS_CLASSES)) {
             var shapes = [drawn(`cache-${key}`) && 'circle', drawn(`gts-${key}`) && 'diamond', drawn(`replay-${key}`) && 'square'].filter(Boolean);
@@ -1220,7 +1219,7 @@ function updateMapKey() {
     if (!hidden.includes('gts-tracks') && drawn('gts-aircraft')) {
         rows.push(`<div class="key-row"><span class="legend-dot legend-line" style="--color: linear-gradient(90deg, #99e9f2, #22b8cf, #1971c2, #5f3dc4)"></span>Aircraft tracks by altitude</div>`);
     }
-    if (modelFieldOn && m && m.wms) rows.push(`<div class="key-note">Base layer: ECCC model ${esc(m.label.toLowerCase())}</div>`);
+    if (state.modelFieldOn && m && m.wms) rows.push(`<div class="key-note">Base layer: ECCC model ${esc(m.label.toLowerCase())}</div>`);
     if (windArrows()) {
         rows.push('<div class="key-note"><span class="key-arrow">➜</span>Arrows point the way the wind blows; longer is stronger. Zoom in for more.</div>');
         rows.push(`<div class="key-note">${symbol('ring', m.stops[0][1])}Calm</div>`);
@@ -2063,7 +2062,7 @@ function metricTileAttr(id, satellite) {
 function syncMetricTile(tile) {
     // A measure, or satellite (the Satellite tile: each satellite in its colour)
     var key = tile.dataset.metric;
-    var on = colourBy === key, label = key === SATELLITE_STYLE ? 'satellite' : METRICS[key].label.toLowerCase();
+    var on = state.colourBy === key, label = key === SATELLITE_STYLE ? 'satellite' : METRICS[key].label.toLowerCase();
     tile.setAttribute('aria-pressed', on);
     tile.title = on ? `The map is coloured by ${label}. Click to colour it by observation type` : `Colour the map by ${label}`;
 }
@@ -2075,7 +2074,7 @@ function bindMetricTiles(out) {
         tile.setAttribute('role', 'button');
         syncMetricTile(tile);
         var choose = () => {
-            var next = colourBy === tile.dataset.metric ? 'kind' : tile.dataset.metric;
+            var next = state.colourBy === tile.dataset.metric ? 'kind' : tile.dataset.metric;
             stylePanel.querySelector('select').value = next;
             setColourBy(next, stylePanel);
         };
@@ -3485,10 +3484,10 @@ let queuePaused = false;
 let queueNew = null;  // The button that shows messages held while reading
 let queueList, queueCount, queueFilter, queueMapped, queuePause, queueToggle;
 
-// Filters shared by the map and the sidebar
-const filters = { text: '', centres: new Set(), format: '', disciplines: new Set() };
-// Each filter either keeps only what matches ('only') or hides what matches ('hide')
-const filterModes = { text: 'only', centres: 'only', format: 'only', disciplines: 'only' };
+// Filters shared by the map and the sidebar, and whether each keeps or hides what
+// matches: kept in state.js (applyFilters tells its listeners)
+const filters = state.filters;
+const filterModes = state.filterModes;
 
 const centres = new Map();  // centre-id -> its item in the picker
 let centreList, centreSearch, centreToggle, centreChips;
@@ -3557,9 +3556,9 @@ function applyMapFilter() {
     var tracksOn = !effectiveHidden().includes('gts-tracks');
     // With aircraft tracks on, tracked aircraft are drawn in the air instead of on the ground
     // Optionally only the points coloured by the selected measure
-    if (colouredOnly && METRICS[colourBy]) expr.push(['all', isColourTarget(), ['has', `m_${colourBy}`]]);
+    if (state.colouredOnly && METRICS[state.colourBy]) expr.push(['all', isColourTarget(), ['has', `m_${state.colourBy}`]]);
     // Or, styled by satellite, only what came from a satellite
-    if (colouredOnly && colourBy === SATELLITE_STYLE) expr.push(isColourTarget());
+    if (state.colouredOnly && state.colourBy === SATELLITE_STYLE) expr.push(isColourTarget());
     // Swath reports are only points while coverage is switched off (see syncSwathPoints)
     var coverage = !effectiveHidden().includes('sat-coverage');
     syncSwathPoints();
@@ -3638,6 +3637,7 @@ function renderFilterBanner() {
 }
 
 function applyFilters() {
+    notify('filters', 'filterModes');
     applyMapFilter();
     rebuildQueue();
     var active = filtersActive();
@@ -3674,8 +3674,7 @@ function readFiltersFromUrl() {
     list('hide').filter((key) => filterModes.hasOwnProperty(key)).forEach((key) => { filterModes[key] = 'hide'; });
     var style = params.get('style');
     if (style === 'kind' || style === SATELLITE_STYLE || METRICS.hasOwnProperty(style)) startColour = style;
-    colouredOnly = params.get('require') === '1';
-    modelFieldOn = params.get('base') === '1';
+    setState({ colouredOnly: params.get('require') === '1', modelFieldOn: params.get('base') === '1' });
     if (/^urn:wmo:md:/.test(params.get('dataset') || '')) startDataset = params.get('dataset');
 }
 
@@ -3692,10 +3691,10 @@ function writeFiltersToUrl() {
     set('hide', Object.keys(filterModes).filter((key) => filterModes[key] === 'hide' && (key === 'text' ? filters.text
         : key === 'format' ? filters.format : filters[key].size)).join(','));
     // The options only count while colouring by a measure (and the base layer only for one with a model field)
-    var m = METRICS[colourBy];
-    set('style', colourBy !== DEFAULT_COLOUR ? colourBy : '');
-    set('require', colouredOnly && (m || colourBy === SATELLITE_STYLE) ? '1' : '');
-    set('base', modelFieldOn && m && m.wms ? '1' : '');
+    var m = METRICS[state.colourBy];
+    set('style', state.colourBy !== DEFAULT_COLOUR ? state.colourBy : '');
+    set('require', state.colouredOnly && (m || state.colourBy === SATELLITE_STYLE) ? '1' : '');
+    set('base', state.modelFieldOn && m && m.wms ? '1' : '');
     if (!startDataset) set('dataset', shownDataset ? shownDataset.id : '');  // Kept while a link's dataset is still loading
     var share = document.querySelector('.queue-share');
     if (share) share.hidden = !['topic', 'centre', 'format', 'discipline', 'style', 'require', 'base', 'dataset'].some((p) => params.has(p));
@@ -5237,7 +5236,7 @@ function metricValues(record) {
 }
 
 function setColourBy(key, legend) {
-    colourBy = key;
+    setState({ colourBy: key });
     var m = METRICS[key];
     var color = ['get', 'color'];
     var swathColor = color;
@@ -5329,16 +5328,16 @@ function setColourBy(key, legend) {
 function showColourStatus(legend) {
     var el = legend.querySelector('.legend-colour-status');
     // Only measures have values to count (not observation type, nor satellite)
-    if (!METRICS[colourBy]) { el.hidden = true; return; }
-    var points = [...records.values()].filter((r) => isColourable(r, METRICS[colourBy]));
-    var known = points.filter((r) => r.feature && r.feature.properties[`m_${colourBy}`] !== undefined).length;
+    if (!METRICS[state.colourBy]) { el.hidden = true; return; }
+    var points = [...records.values()].filter((r) => isColourable(r, METRICS[state.colourBy]));
+    var known = points.filter((r) => r.feature && r.feature.properties[`m_${state.colourBy}`] !== undefined).length;
     var total = points.length;
     // Swath reports drawn as coverage, not points
     if (!swathPointsShown) {
         for (var file of swathFiles.values()) {
-            if (!isColourable(file.template, METRICS[colourBy])) continue;
+            if (!isColourable(file.template, METRICS[state.colourBy])) continue;
             total += file.n;
-            var values = file.metrics[colourBy];
+            var values = file.metrics[state.colourBy];
             if (values) known += values.filter((v) => !isNaN(v)).length;
         }
     }
@@ -5356,7 +5355,7 @@ function queueStationDecodes() {
 }
 
 function queueStationDecode(record) {
-    if (!METRICS[colourBy] || record.decoded || !record.source || !isColourable(record)) return;
+    if (!METRICS[state.colourBy] || record.decoded || !record.source || !isColourable(record)) return;
     if (record.replay) {
         // Replays arrive newest first, so once the queue is full the rest are older still
         if (replayMetricQueue.length < REPLAY_DECODE_MAX) replayMetricQueue.push(record);
@@ -5368,7 +5367,7 @@ function queueStationDecode(record) {
 }
 
 async function pumpStationDecodes() {
-    if (metricBusy || (!metricQueue.length && !replayMetricQueue.length) || !METRICS[colourBy]) return;
+    if (metricBusy || (!metricQueue.length && !replayMetricQueue.length) || !METRICS[state.colourBy]) return;
     metricBusy = true;
     // Live stations newest first; replayed ones only once none are waiting
     var record = metricQueue.length ? metricQueue.pop() : replayMetricQueue.shift();
@@ -5447,7 +5446,7 @@ function satelliteMatch(dark, fallback) {
 // The satellites' rows under Space-based take their colours while the map is styled by satellite
 function syncSatelliteRows() {
     document.querySelectorAll('.legend-satellite').forEach((row) => {
-        var colour = colourBy === SATELLITE_STYLE ? satelliteColour(row.dataset.layer) : OBS_CLASSES.satellite.color;
+        var colour = state.colourBy === SATELLITE_STYLE ? satelliteColour(row.dataset.layer) : OBS_CLASSES.satellite.color;
         var dot = row.querySelector('.legend-dot');
         dot.style.setProperty('--color', colour);
         dot.style.setProperty('--outline', darken(colour));
@@ -5463,11 +5462,11 @@ function addSatelliteRow(key) {
     LAYER_PARENTS[key] = parent;
     satelliteColour(key);
     // A new satellite joins the colours on the map while styled by satellite
-    if (colourBy === SATELLITE_STYLE && stylePanel) requestAnimationFrame(() => setColourBy(colourBy, stylePanel));
+    if (state.colourBy === SATELLITE_STYLE && stylePanel) requestAnimationFrame(() => setColourBy(state.colourBy, stylePanel));
     var row = document.createElement('label');
     row.className = 'legend-toggle legend-sub legend-depth-2 legend-satellite';
     row.dataset.layer = key;
-    var colour = colourBy === SATELLITE_STYLE ? satelliteColour(key) : OBS_CLASSES.satellite.color;
+    var colour = state.colourBy === SATELLITE_STYLE ? satelliteColour(key) : OBS_CLASSES.satellite.color;
     row.innerHTML = `<input type="checkbox" class="form-check-input"${hiddenLayers.has(key) ? '' : ' checked'}><span class="legend-dot" style="--color: ${colour}; --outline: ${darken(colour)}"></span><span></span>`;
     row.lastElementChild.textContent = satelliteLabel(key);
     var input = row.querySelector('input');
@@ -5476,6 +5475,7 @@ function addSatelliteRow(key) {
     row.classList.toggle('legend-disabled', parentOff);
     input.addEventListener('change', () => {
         input.checked ? hiddenLayers.delete(key) : hiddenLayers.add(key);
+        notify('hiddenLayers');
         applyMapFilter();
     });
     // Alphabetical among this group's satellites, right after the group's row
@@ -6809,7 +6809,7 @@ function drawOverview() {
     ctx.stroke();
 
     var hidden = new Set(effectiveHidden());
-    var m = METRICS[colourBy];
+    var m = METRICS[state.colourBy];
     var scale = m && d3.scaleLinear().domain(m.stops.map((s) => s[0])).range(m.stops.map((s) => s[1])).clamp(true);
 
     // Satellite coverage: each hexagon projected corner by corner (corners past ±180
@@ -6820,9 +6820,9 @@ function drawOverview() {
         for (var cell of swathCells.values()) {
             var feature = swathFeature(cell), p = feature.properties;
             if (!passesFilters(p, hidden)) continue;
-            var value = m && m.targets === 'satellite' ? p[`m_${colourBy}`] : undefined;
-            if (colouredOnly && m && value == null) continue;
-            var fill = colourBy === SATELLITE_STYLE ? satelliteColours.get(p.sat) || p.color : value != null ? scale(value) : p.color;
+            var value = m && m.targets === 'satellite' ? p[`m_${state.colourBy}`] : undefined;
+            if (state.colouredOnly && m && value == null) continue;
+            var fill = state.colourBy === SATELLITE_STYLE ? satelliteColours.get(p.sat) || p.color : value != null ? scale(value) : p.color;
             if (!fills.has(fill)) fills.set(fill, []);
             fills.get(fill).push(feature.geometry.coordinates[0].map(([lon, lat]) => projection([Math.max(-180, Math.min(180, lon)), lat])));
         }
@@ -6844,11 +6844,11 @@ function drawOverview() {
         var q = record.feature.properties;
         if (q.superseded || !passesFilters(q, hidden)) continue;
         var target = m && isColourable(record, m);
-        var v = m ? q[`m_${colourBy}`] : undefined;
-        if (colouredOnly && m && !(target && v != null)) continue;
-        if (colouredOnly && colourBy === SATELLITE_STYLE && !SATELLITE_LAYERS.includes(q.layer)) continue;
+        var v = m ? q[`m_${state.colourBy}`] : undefined;
+        if (state.colouredOnly && m && !(target && v != null)) continue;
+        if (state.colouredOnly && state.colourBy === SATELLITE_STYLE && !SATELLITE_LAYERS.includes(q.layer)) continue;
         // As setColourBy: grey without a value, aircraft keep theirs under surface measures
-        var colour = colourBy === SATELLITE_STYLE ? (SATELLITE_LAYERS.includes(q.layer) && satelliteColours.get(q.sat)) || NO_VALUE_COLOR
+        var colour = state.colourBy === SATELLITE_STYLE ? (SATELLITE_LAYERS.includes(q.layer) && satelliteColours.get(q.sat)) || NO_VALUE_COLOR
             : !m ? q.color : target && v != null ? scale(v) : m.targets !== 'satellite' && /-aircraft$/.test(q.layer) ? q.color : NO_VALUE_COLOR;
         var xy = projection(record.coords);
         if (!xy) continue;
