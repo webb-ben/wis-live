@@ -1543,6 +1543,7 @@ async function decodeSource(source, wsi, out, index) {
     var key = source.dataId || data.url || String(Date.now());
     var result = JSON.parse(await callDecoder('decode_bufr', data.bytes, wsi || '', key, index ?? -1));
     result.key = key;
+    result.source = source;  // So the pager can fetch the file again if the decoder has let it go
     return result;
 }
 
@@ -1943,10 +1944,18 @@ function isUtf8(bytes) {
     }
 }
 
-async function showReport(out, title, key, index) {
+// Another report from a file the decoder has (it keeps the last few); one it has let
+// go is downloaded and decoded again
+async function showReport(out, title, key, index, source) {
     try {
-        var result = JSON.parse(await callDecoder('decode_bufr', null, '', key, index));
-        result.key = key;
+        try {
+            var result = JSON.parse(await callDecoder('decode_bufr', null, '', key, index));
+            result.key = key;
+            result.source = source;
+        } catch (err) {
+            if (!source || !/no longer cached/.test(err.message)) throw err;
+            result = await decodeSource(source, '', out, index);
+        }
         renderDecoded(out, title, result);
     } catch (err) {
         out.innerHTML = `<div class="pp-status pp-error">Could not decode: ${esc(err.message)}</div>`;
@@ -2217,7 +2226,7 @@ function renderDecoded(out, title, result) {
             <pre class="pp-text">${esc(result.tac)}</pre>
         </details>` : ''}`;
     out.querySelectorAll('.pp-pager button').forEach((button) => button.addEventListener('click', () => {
-        showReport(out, title, result.key, result.index + Number(button.dataset.step));
+        showReport(out, title, result.key, result.index + Number(button.dataset.step), result.source);
     }));
     bindMetricTiles(out);
     if (marine && marine.spectrum && marine.spectrum.peak) {
@@ -3109,6 +3118,7 @@ function showWindProfiles(container, result) {
                     var key = r.source.dataId || data.url;
                     var decoded = JSON.parse(await callDecoder('decode_bufr', data.bytes, r.wsi || '', key));
                     decoded.key = key;
+                    decoded.source = r.source;  // For the pager, should the decoder let the file go
                     r.decoded = decoded;
                     setFeatureProperties(r, metricValues(r));
                 }
@@ -5474,6 +5484,7 @@ async function pumpStationDecodes() {
                 var key = record.source.dataId || data.url;
                 var result = JSON.parse(await callDecoder('decode_bufr', data.bytes, record.wsi || '', key));
                 result.key = key;
+                result.source = record.source;  // For the pager, should the decoder let the file go
                 record.decoded = result;
                 setFeatureProperties(record, metricValues(record));
             }
