@@ -2145,7 +2145,9 @@ function satelliteTiles(rows, values) {
     var sat = number(1007), inst = number(2019);
     var name = sat === null ? null : SATELLITE_NAMES[sat] || `Satellite ${sat}`;
     var instrument = inst === null ? null : INSTRUMENT_NAMES[inst] || `instrument ${inst}`;
-    tiles.push(tile('Satellite', `${esc(name || 'Unknown')}${instrument ? ` <small>${esc(instrument)}</small>` : ''}`));
+    // A known satellite's tile styles the map by satellite, each in its colour
+    tiles.push(tile('Satellite', `${esc(name || 'Unknown')}${instrument ? ` <small>${esc(instrument)}</small>` : ''}`)
+        .replace('class="pp-tile"', `class="pp-tile"${name ? ` data-metric="${SATELLITE_STYLE}"` : ''}`));
 
     // What kind of product, from the elements it carries
     var product = count(15037) ? 'Radio occultation'
@@ -2403,7 +2405,9 @@ function metricTileAttr(id, satellite) {
 }
 
 function syncMetricTile(tile) {
-    var on = colourBy === tile.dataset.metric, label = METRICS[tile.dataset.metric].label.toLowerCase();
+    // A measure, or satellite (the Satellite tile: each satellite in its colour)
+    var key = tile.dataset.metric;
+    var on = colourBy === key, label = key === SATELLITE_STYLE ? 'satellite' : METRICS[key].label.toLowerCase();
     tile.setAttribute('aria-pressed', on);
     tile.title = on ? `The map is coloured by ${label}. Click to colour it by observation type` : `Colour the map by ${label}`;
 }
