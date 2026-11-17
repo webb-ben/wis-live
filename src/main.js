@@ -6,7 +6,7 @@ import './bootstrap.scss';  // Only the parts of Bootstrap the page uses
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './style.css';
 import { state, setState, notify, subscribe } from './state.js';
-import { corsFriendly, canDownload, noteCacheLinks, noteLatency, noteBlocked, downloadOrder } from './caches.js';
+import { canDownload, noteCacheLinks, noteTrying, noteLatency, noteFailed, downloadOrder } from './caches.js';
 import { COLORS, OBS_CLASSES, METRICS, COLOURABLE, SATELLITE_LAYERS, ORIGIN_COLOURABLE, NO_VALUE_COLOR, SOURCE_COLORS } from './config.js';
 import { parseMessage, DISCIPLINES, FORMATS, isDataLink, isUpdate, formatOf, GATEWAY_TOPIC, GATEWAY_SATELLITE, GATEWAY_AIRCRAFT,
     GATEWAY_UPPER_AIR, isSpaceBased, disciplineOf, topicClass, stationId, pointFor, wis2boxVersion } from './messages.js';
@@ -1242,23 +1242,31 @@ function updateMapKey() {
     var shapes = [drawnAny('cache-') && shape('circle', '#adb5bd', 'WIS2'), drawn('origin') && shape('ring', COLORS.origin, 'WIS2 origin'),
         drawnAny('gts-') && shape('diamond', '#adb5bd', 'GTS'), squares.length && shape('square', '#adb5bd', squares.join(', '))].filter(Boolean);
     if (shapes.length) rows.push(`<div class="key-shapes">${shapes.join('')}</div>`);
-    // The Global Broker messages come from, and whether it is connected
-    var broker = brokerState.host ? esc(brokerState.host) : '';
-    // One line: a long host name is cut short (it's in full on hover)
+    // Under the world map, apart from the key: the Global Broker messages come from, the
+    // fastest Global Discovery Catalogue (dataset records come from it) and the fastest
+    // global cache (downloads try it first), each host with how long it took to answer
+    var ms = (n) => (n == null || !isFinite(n) ? '' : ` · ${Math.round(n)} ms`);
+    var line = (dot, text, title) => `<div class="key-note key-broker"><span class="broker-dot ${dot}"></span>`
+        + `<span class="key-broker-text" title="${esc(title)}">${esc(text)}</span></div>`;
+    var broker = brokerState.host || '';
     var status = {
-        connected: `Broker: ${broker}`,
+        connected: `Broker: ${broker}${ms(brokerState.ms)}`,
         reconnecting: `Reconnecting to ${broker}…`,
         connecting: 'Connecting to a broker…',
         retrying: 'No Global Broker reachable, retrying…',
     }[brokerState.state];
-    // Under the world map, bottom right, apart from the key
-    var brokerHtml = `<div class="key-note key-broker"><span class="broker-dot broker-${brokerState.state}"></span><span class="key-broker-text" title="WIS2 Global Broker the live messages come from: ${status}">${status}</span></div>`;
-    // Under it, the fastest Global Discovery Catalogue (dataset records come from it) and
-    // the fastest global cache (downloads try it first), each with how long it took to answer
-    var service = (label, s, title) => s ? `<div class="key-note key-broker"><span class="broker-dot key-service-dot"></span>`
-        + `<span class="key-broker-text" title="${esc(title)}">${label}: ${esc(s.name)} · ${Math.round(s.ms)} ms</span></div>` : '';
-    brokerHtml += service('Catalogue', state.catalogue, 'Global Discovery Catalogue the dataset records come from: the one that answered fastest')
-        + service('Cache', state.cache, state.cache ? `Global cache downloads try first: the one answering fastest (${state.cache.id}, ${state.cache.host})` : '');
+    var brokerHtml = line(`broker-${brokerState.state}`, status, 'WIS2 Global Broker the live messages come from (time to connect)');
+    // Grey while being found, green once one has answered, like the broker's dot
+    brokerHtml += state.catalogue && state.catalogue.failed
+        ? line('broker-retrying', 'Catalogue: none reachable', 'No Global Discovery Catalogue answered; dataset records are tried again on demand')
+        : state.catalogue
+        ? line('broker-connected', `Catalogue: ${state.catalogue.host}${ms(state.catalogue.ms)}`,
+            `Global Discovery Catalogue the dataset records come from: the fastest to answer (${state.catalogue.name})`)
+        : line('broker-connecting', 'Catalogue: finding the fastest…', 'Timing the Global Discovery Catalogues');
+    brokerHtml += state.cache
+        ? line('broker-connected', `Cache: ${state.cache.host}${ms(state.cache.ms)}`,
+            `Global cache downloads try first: the fastest to answer (${state.cache.name})`)
+        : line('broker-connecting', 'Cache: finding the fastest…', 'Timing the global caches as their messages arrive');
     if (mapKeyStatus && brokerHtml !== mapKeyStatus.dataset.html) {
         mapKeyStatus.innerHTML = mapKeyStatus.dataset.html = brokerHtml;
     }
@@ -4580,12 +4588,7 @@ function satelliteSkipped(kind, topic) {
 
 function queueDecode(kind, topic, feature) {
     var key = decodeKey(topic, feature);
-    // Each cache republishes the file; take the copy from the fastest cache a browser
-    // can download from (see caches.js), among this message's links and any already
-    // seen for it (e.g. the origin's). Hosts not known to allow browsers are left out
-    // until they have, so a background download doesn't waste its one try
-    var seen = [...(feature.links || []).filter(isDataLink).map((l) => l.href), ...(dataLinks.get((feature.properties || {}).data_id) || [])];
-    var href = downloadOrder(seen).find((url) => corsFriendly(url) || canDownload(url));
+    var href = decodeHref(feature);
     if (!href || !key || decodeSeen.has(key)) return;
     if (satelliteSkipped(kind, topic)) return;
     if (kind === 'radar' && radarThrottled(feature)) return;
@@ -4593,7 +4596,7 @@ function queueDecode(kind, topic, feature) {
     if (decodeSeen.size > DATA_LINKS_MAX) decodeSeen.delete(decodeSeen.values().next().value);
     // XML needs no decoder, so it skips the queue rather than waiting behind BUFR
     if (formatOf(feature) === 'xml') {
-        fetch(href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) })
+        fetchTracked(href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) })
             .then((response) => (response.ok ? response.text() : null))
             .then((xml) => xml && decodeEnabled.has(kind) && plotCitypage({ kind, key, topic, feature, href }, xml))
             .catch((err) => console.debug(`Could not fetch ${href}: ${err.message}`));
@@ -4601,7 +4604,7 @@ function queueDecode(kind, topic, feature) {
     }
     // So do text SYNOPs (JMA sends them as .txt, DWD with no extension)
     if (kind === 'gts-text') {
-        fetch(href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) })
+        fetchTracked(href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) })
             .then((response) => (response.ok ? response.text() : null))
             .then((text) => text && decodeEnabled.has(kind) && plotSynopBulletin({ kind, key, topic, feature, href }, text))
             .catch((err) => console.debug(`Could not fetch ${href}: ${err.message}`));
@@ -4609,7 +4612,7 @@ function queueDecode(kind, topic, feature) {
     }
     // And text lightning reports, which are a short CSV
     if (formatOf(feature) === 'text') {
-        fetch(href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) })
+        fetchTracked(href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) })
             .then((response) => (response.ok ? response.text() : null))
             .then((text) => text && decodeEnabled.has(kind) && plotLightningText({ kind, key, topic, feature, href }, text))
             .catch((err) => console.debug(`Could not fetch ${href}: ${err.message}`));
@@ -4618,6 +4621,30 @@ function queueDecode(kind, topic, feature) {
     decodeQueue.push({ kind, key, topic, feature, href });
     if (decodeQueue.length > DECODE_QUEUE_MAX) decodeQueue.shift();
     pumpDecode();
+}
+
+// Each cache republishes the file; take the copy from the fastest cache a browser
+// can download from (see caches.js), among this message's links and any already
+// seen for it (e.g. the origin's). Hosts that blocked a download, and ones not known
+// to allow browsers, are left out, so a background download doesn't waste its one try
+function decodeHref(feature) {
+    var seen = [...(feature.links || []).filter(isDataLink).map((l) => l.href), ...(dataLinks.get((feature.properties || {}).data_id) || [])];
+    return downloadOrder(seen).find(canDownload);
+}
+
+// fetch, telling caches.js how it went: how long the host took to answer, or that it
+// blocked the browser (so it isn't asked again)
+async function fetchTracked(url, options) {
+    noteTrying(url);
+    var start = performance.now();
+    try {
+        var response = await fetch(url, options);
+    } catch (err) {
+        noteFailed(url, err);
+        throw err;
+    }
+    noteLatency(url, performance.now() - start, true);
+    return response;
 }
 
 // Downloads take far longer than decoding (tens of ms), so several files are
@@ -4637,16 +4664,16 @@ async function fetchForDecode(job) {
     try {
         // A stalled server would otherwise hold up the queue
         // Radar volumes can run to tens of MB, so they get longer
-        var start = performance.now();
-        var response = await fetch(job.href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS * (job.kind === 'radar' ? 4 : 1)) });
-        noteLatency(job.href, performance.now() - start, true);  // How fast this cache answers
+        // Picked again now, as it may have waited in the queue while a host was found to block
+        // browsers, or while another download was the first try of the host it picked
+        job.href = decodeHref(job.feature);
+        if (!job.href) throw new Error('no copy on a host that allows browser downloads');
+        var response = await fetchTracked(job.href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS * (job.kind === 'radar' ? 4 : 1)) });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         var raw = new Uint8Array(await response.arrayBuffer());
         var bytes = job.kind === 'radar' ? raw : bufrPart(raw);
         if (bytes) decodeReady.push({ job, bytes });
     } catch (err) {
-        // A network error (not a timeout or an HTTP status) is a cache blocking browsers
-        if (err.name === 'TypeError') noteBlocked(job.href);
         decodeSeen.delete(job.key);  // Let another cache's copy try
         console.debug(`Could not fetch ${job.href}: ${err.message}`);
     }
@@ -5748,7 +5775,7 @@ function rankGdcs() {
         })).then(() => {
             GDCS.sort((a, b) => a.ms - b.ms);
             // The one in use, shown in the map key
-            if (isFinite(GDCS[0].ms)) setState({ catalogue: { name: GDCS[0].name, ms: GDCS[0].ms } });
+            setState({ catalogue: isFinite(GDCS[0].ms) ? { name: GDCS[0].name, host: new URL(GDCS[0].api).host, ms: GDCS[0].ms } : { failed: true } });
         });
     }
     return gdcRanked;
@@ -6709,21 +6736,18 @@ async function fetchData(source) {
         if (bufrPart(bytes)) return { bytes: bufrPart(bytes), bufr: true };
         if (isText(bytes)) text = { bytes: bytes, bufr: false };
     }
-    // Every cache's copy, fastest cache first; ones that block browser downloads last
-    // (see caches.js, which learns from how each attempt goes)
+    // Every cache's copy, fastest cache first; hosts that blocked a browser download are
+    // skipped (see caches.js, which learns from how each attempt goes)
     var urls = downloadOrder([...source.urls, ...(dataLinks.get(source.dataId) || [])]);
     for (var url of urls) {
         try {
-            var start = performance.now();
-            var response = await fetch(url);
-            noteLatency(url, performance.now() - start, true);
+            var response = await fetchTracked(url);
             if (!response.ok) continue;
             var bytes = new Uint8Array(await response.arrayBuffer());
             if (bufrPart(bytes)) return { bytes: bufrPart(bytes), bufr: true, url: url };
             if (!text && isText(bytes)) text = { bytes: bytes, bufr: false, url: url };
         } catch (err) {
             // Thrown before any answer could be read: blocked by CORS, or unreachable
-            noteBlocked(url);
             console.debug(`Could not fetch ${url}`);
         }
     }

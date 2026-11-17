@@ -29,11 +29,12 @@ let client = null;
 let handlers = { onMessage() {}, onState() {} };
 
 // Which Global Broker the page is on: connecting (racing them all), connected,
-// reconnecting (to the same one), or retrying (none could be reached)
-export let brokerState = { state: 'connecting', host: null };
+// reconnecting (to the same one), or retrying (none could be reached); ms is how long
+// it took to connect and subscribe
+export let brokerState = { state: 'connecting', host: null, ms: null };
 
-function setBrokerState(state, host) {
-    brokerState = { state, host: host === undefined ? brokerState.host : host };
+function setBrokerState(state, host, ms) {
+    brokerState = { state, host: host === undefined ? brokerState.host : host, ms: ms === undefined ? brokerState.ms : ms };
     handlers.onState(brokerState);
 }
 
@@ -42,10 +43,11 @@ function setBrokerState(state, host) {
 export function connectFastest({ onMessage, onState } = handlers) {
     handlers = { onMessage: onMessage || handlers.onMessage, onState: onState || handlers.onState };
     console.log('Connecting mqtt client');
-    setBrokerState('connecting', null);
+    setBrokerState('connecting', null, null);
     let failures = 0;
 
     hosts.forEach((host) => {
+        const start = performance.now();
         const candidate = mqtt.connect(host, { ...options, reconnectPeriod: 0 });
         candidate.setMaxListeners(10);
         let failed = false;
@@ -56,7 +58,7 @@ export function connectFastest({ onMessage, onState } = handlers) {
             candidate.end(true);
             if (!client && ++failures === hosts.length) {
                 console.log('All brokers failed, retrying...');
-                setBrokerState('retrying', null);
+                setBrokerState('retrying', null, null);
                 setTimeout(() => connectFastest(), 5000);
             }
         };
@@ -78,7 +80,7 @@ export function connectFastest({ onMessage, onState } = handlers) {
                 });
                 client.on('connect', () => setBrokerState('connected'));  // After a reconnect
                 console.log(`Connected to ${host}!`);
-                setBrokerState('connected', new URL(host).host);
+                setBrokerState('connected', new URL(host).host, performance.now() - start);
             });
         });
 

@@ -61,10 +61,37 @@ async function probe(cache, href) {
     }
 }
 
+// Every host a download has been tried from, cache or not: blocked once the browser
+// refused one (CORS) and none has ever got through, after which it isn't asked again;
+// ok once one has; trying while its first request is out, so a host not yet known
+// gets one request rather than a burst of them that all fail together
+const BLOCKED_MAX = 200;
+const blockedHosts = new Set();
+const okHosts = new Set();
+const tryingHosts = new Set();
+
+function isBlocked(host) {
+    return blockedHosts.has(host);
+}
+
+// Call as a download starts; a host with nothing known about it is then left alone
+// by background downloads (canDownload) until this one answers
+export function noteTrying(url) {
+    var host = hostOf(url);
+    if (host && !okHosts.has(host)) tryingHosts.add(host);
+}
+
 // How long a request to url took to answer (ms), and whether the browser could
 // read it (ok). Later timings count for less than the running figure
 export function noteLatency(url, ms, ok) {
-    var cache = cacheHosts.get(hostOf(url));
+    var host = hostOf(url);
+    tryingHosts.delete(host);
+    if (ok && host) {
+        okHosts.add(host);
+        if (okHosts.size > BLOCKED_MAX) okHosts.delete(okHosts.values().next().value);
+        blockedHosts.delete(host);
+    }
+    var cache = cacheHosts.get(host);
     if (!cache) return;
     cache.ms = isFinite(cache.ms) ? cache.ms * 0.7 + ms * 0.3 : ms;
     if (ok) {
@@ -74,34 +101,44 @@ export function noteLatency(url, ms, ok) {
     publish();
 }
 
-// A download the browser wasn't allowed (or able) to make: a cache that has never
-// let one through goes to the back
-export function noteBlocked(url) {
-    var cache = cacheHosts.get(hostOf(url));
-    if (!cache || cache.ok || cache.blocked) return;
-    cache.blocked = true;
-    publish();
+// A download that failed before any answer: a TypeError is the browser refusing it
+// (CORS) or the host being unreachable, and a host that has never let one through is
+// then skipped. Other errors (a timeout) only end its trial
+export function noteFailed(url, err) {
+    var host = hostOf(url);
+    tryingHosts.delete(host);
+    if (!host || (err && err.name !== 'TypeError') || okHosts.has(host) || isBlocked(host)) return;
+    blockedHosts.add(host);
+    if (blockedHosts.size > BLOCKED_MAX) blockedHosts.delete(blockedHosts.values().next().value);
+    console.debug(`${host} blocks browser downloads; its copies are skipped from now on`);
+    var cache = cacheHosts.get(host);
+    if (cache) {
+        cache.blocked = true;
+        publish();
+    }
 }
 
-// Whether url is on a global cache not known to block browser downloads (one not yet
-// tried counts: its first try says). Other hosts, such as a centre's own server,
-// aren't tracked here, so go by corsFriendly
+// Whether a background download may use url: not on a blocked host, and on a host
+// known to let browsers download (one that has, or corsFriendly), or on a global
+// cache that hasn't been tried and has no first request out. Others, such as a
+// centre's own server, aren't tried in the background at all
 export function canDownload(url) {
-    var cache = cacheHosts.get(hostOf(url));
-    return !!cache && !cache.blocked;
+    var host = hostOf(url);
+    if (!host || isBlocked(host)) return false;
+    if (okHosts.has(host) || corsFriendly(url)) return true;
+    return cacheHosts.has(host) && !tryingHosts.has(host);
 }
 
-// The order to try a file's copies: caches by how fast they answer (one not yet
-// tried included, so the fastest gets its chance), then other hosts that allow
-// browser downloads, then the rest; caches that block browsers last
+// The copies of a file worth trying, in order: caches by how fast they answer (one
+// not yet timed included, so the fastest gets its chance), then other hosts that
+// allow browser downloads, then the rest. Hosts that blocked a download are left out
 export function downloadOrder(urls) {
     var score = (url) => {
         var cache = cacheHosts.get(hostOf(url));
-        if (cache && cache.blocked) return 4e9;
         if (cache && isFinite(cache.ms)) return cache.ms;
-        return corsFriendly(url) ? 1e9 : 2e9;
+        return corsFriendly(url) || okHosts.has(hostOf(url)) ? 1e9 : 2e9;
     };
-    return [...new Set(urls)].sort((a, b) => score(a) - score(b));
+    return [...new Set(urls)].filter((url) => !isBlocked(hostOf(url))).sort((a, b) => score(a) - score(b));
 }
 
 // The fastest cache that isn't known to block browsers, as state.cache. Only a new

@@ -1693,11 +1693,6 @@
 .broker-dot.broker-retrying {
   background-color: #e03131;
 }
-/* The catalogue and cache lines under the broker's: a hollow dot, as they have no state */
-.broker-dot.key-service-dot {
-  border: 1px solid #adb5bd;
-  background-color: transparent;
-}
 .key-broker + .key-broker {
   margin-top: 0;
 }

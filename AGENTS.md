@@ -26,11 +26,12 @@ src/messages.js            parseMessage and what a notification says: topicClass
                            disciplineOf, formatOf, GATEWAY_* headings, stationId, pointFor
 src/mqtt.js                connectFastest({ onMessage, onState }): races the Global Brokers
 src/caches.js              The global caches seen and how fast each answers: downloadOrder
-                           (fastest first, browser-blocking last), noteLatency/noteBlocked;
-                           the fastest is state.cache (the GDC in use is state.catalogue)
+                           (fastest first; hosts that blocked a browser download are skipped
+                           for good), canDownload; main.js's fetchTracked reports each
+                           download. The fastest is state.cache (the GDC in use: state.catalogue)
 src/decoder.js             callDecoder(fn, ...args): Pyodide + pybufrkit in Web Workers
                            (DECODE_PY); onDecoderSettled(fn) once it has started or failed
-src/lib/util.js            esc, darken, svgEl, knots, loadScript
+src/lib/util.js            esc, darken, svgEl, knots
 src/lib/geo.js             distances, hulls, lines across ±180, H3 cells (h3Cell, cellRing)
 src/satellite/names.js     satellite and instrument names from BUFR code tables
 src/satellite/spectrum.js  CrIS/IASI infrared spectra (showSpectrum)
@@ -101,7 +102,7 @@ Keep versions pinned. When bumping one, check the API still matches how
 
 ## How `src/main.js` is organized
 
-It is one large file (~7,900 lines), the former `wis.js`, loaded as an ES
+It is one large file (~6,900 lines), the former `wis.js`, loaded as an ES
 module (so strict mode, and nothing it declares is a global). Read top to
 bottom; the core comes first, roughly in this order:
 
@@ -141,7 +142,9 @@ bottom; the core comes first, roughly in this order:
    Pyodide, install `bitstring==3.1.9` and `six`, unpack the bundled wheel, and
    run the embedded `DECODE_PY`.
    `fetchData` tries inline base64 content, then every canonical link seen
-   for the `data_id`, preferring CORS-friendly hosts.
+   for the `data_id`, fastest cache first. Downloads go through `fetchTracked`, so
+   a host that refuses a browser (no CORS headers, e.g. `gc.wis.cma.cn`) is not
+   asked again, and a host not yet tried gets one background request at a time.
 
 After the core, each feature is its own section headed `// ---------- <name>`
 (grep for that to list them): GeoMet model fields, Environment Canada
