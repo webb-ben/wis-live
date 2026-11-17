@@ -284,8 +284,8 @@ const LAYER_GROUPS = [
             title: 'Airport weather reports: the latest METAR from every airport the Iowa Environmental Mesonet collects, refreshed every 20 minutes, nearest the view first. An airport that also reports through WIS2 is shown once, as the WIS2 station, with its METAR linked.' },
     ] },
 ];
-// Off at first: radar, the Global Replay, METAR, WIS2-to-GTS, satellites, aircraft and ground-based GNSS (cache, GTS and replay), and aircraft tracks
-const hiddenLayers = new Set(['radar', 'replay', 'cache-gnss', 'gts-gnss', 'replay-gnss', 'airports', 'wis2gts', 'satellite', 'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks']);
+// Off at first: radar, the Global Replay, METAR, WIS2-to-GTS, aircraft and ground-based GNSS (cache, GTS and replay), and aircraft tracks
+const hiddenLayers = new Set(['radar', 'replay', 'cache-gnss', 'gts-gnss', 'replay-gnss', 'airports', 'wis2gts', 'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks']);
 // How far back the Global Replay reaches, set by a continuous slider on a log scale:
 // 12 hours ago at the left, 5 minutes at the right, so time runs left to right and
 // recent windows get most of the track. Long windows over a busy view stop at
@@ -342,7 +342,7 @@ try {
 
 // Opacity of satellite coverage, from the slider under Space-based (kept in localStorage).
 // Shaded evenly it stays faint; styled by a satellite measure it's solid, so the colours read true
-const SWATH_OPACITY_DEFAULT = 0.3;
+const SWATH_OPACITY_DEFAULT = 0.1;
 const swathOpacity = { plain: SWATH_OPACITY_DEFAULT, styled: 1 };
 try {
     for (const key of Object.keys(swathOpacity)) {
@@ -443,6 +443,10 @@ const attribution = new maplibregl.AttributionControl({
 });
 
 const records = new Map();  // id -> record for every point on the map
+// Satellite coverage (see the Satellite coverage section). Declared here as the key,
+// built while the page loads, lists what they hold
+const swathFiles = new Map();  // file data_id -> swath file, oldest first
+const swathCells = new Map();  // satellite + H3 cell -> totals of the files covering it
 const pools = { wis2: new Map(), decoded: new Map(), satellite: new Map() };  // Same records, in arrival order per cap
 const POOL_CAPS = { wis2: MAX_POINTS, decoded: MAX_DECODED_POINTS, satellite: MAX_SATELLITE_POINTS };
 
@@ -1055,14 +1059,16 @@ function paintAge() {
     map.setPaintProperty('points-gts', 'icon-opacity', opacity);
     map.setPaintProperty('points-ext', 'icon-opacity', opacity);
     map.setPaintProperty('points-arrow', 'icon-opacity', opacity);
-    // Satellite coverage: even shading, fading with age like the points. Only while
-    // colouring by cloud amount does opacity follow it (clear 0.05, overcast 0.8).
-    // The coverage slider sets the even shading, and scales the cloud-amount range with it
+    // Satellite coverage: even shading. Only while colouring by cloud amount does
+    // opacity follow the value (clear see-through, overcast strong).
+    // The coverage slider sets the even shading, and scales the cloud-amount range with
+    // it (clear 0.05 to overcast 0.8 at 30%). Coverage doesn't fade with age: the slider
+    // alone sets how strong it is
     var level = swathOpacity[swathOpacityKey()];
     var cloud = colourBy !== 'cloudAmount' ? level
-        : ['case', ['has', 'm_cloudAmount'], ['min', 1, ['*', level / SWATH_OPACITY_DEFAULT,
+        : ['case', ['has', 'm_cloudAmount'], ['min', 1, ['*', level / 0.3,
             ['interpolate', ['linear'], ['get', 'm_cloudAmount'], 0, 0.05, 100, 0.8]]], level];
-    map.setPaintProperty('swaths-fill', 'fill-opacity', ['*', cloud, ['interpolate', ['linear'], ['-', Date.now(), ['get', 'born']], 0, 1, FADE_MS, 0.4]]);
+    map.setPaintProperty('swaths-fill', 'fill-opacity', cloud);
     // The selected cell: a little stronger than the coverage so it stands out, never solid
     map.setPaintProperty('swath-lift', 'fill-opacity', Math.min(0.8, level + 0.2));
     map.setPaintProperty('tracks', 'line-opacity', ['interpolate', ['linear'], ['-', Date.now(), ['get', 'born']], 0, 0.9, FADE_MS, 0.35]);
@@ -6931,8 +6937,6 @@ const SWATH_FILES_MAX = 3000;  // Files whose coverage is kept, oldest dropped f
 const SWATH_KEEP_MS = 12 * 3600e3;  // ...and none older than this
 const SWATH_DETAIL_MAX = 30000;  // Reports whose decoded values are kept, so their popups open at once; older ones are decoded again
 const SWATH_FLUSH_MS = 1000;
-const swathFiles = new Map();  // file data_id -> swath file, oldest first
-const swathCells = new Map();  // satellite + cell -> totals of the files covering it
 const swathDirty = new Set();  // cell ids to redraw
 let swathRemoved = [];  // feature ids of cells no file covers any more
 let swathDetail = 0;  // Reports with their decoded values kept
