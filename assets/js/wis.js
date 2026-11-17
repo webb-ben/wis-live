@@ -39,9 +39,8 @@ const OBS_CLASSES = {
     radarwind: { label: 'Radar wind profiles', color: '#f59f00', title: 'Winds at heights above a radar, measured from the ground by wind profilers and other radars (e.g. weather radar VAD winds), not soundings' },
     buoy: { label: 'Buoys and floats', color: '#f76707', title: 'Ocean observations from buoys, floats and moorings' },
     gnss: { label: 'Ground-based GNSS', color: '#a5662b', title: 'Atmospheric path delays and water vapour from GNSS receivers (e.g. E-GVAP), not weather observations' },
-    warning: { label: 'Warnings and alerts', color: '#e03131', cacheOnly: true, title: 'Weather warnings, alerts and advisories, including CAP messages and Environment Canada city forecasts' },
-    lightning: { label: 'Lightning', color: '#e64980', cacheOnly: true, title: 'Lightning flashes located by detection networks (e.g. the Met Office LEELA network)' },
-    satellite: { label: 'Space-based (satellites)', color: '#9c36b5', title: 'Observations from satellites (winds, radiances, occultations)' },
+    warning: { label: 'Warnings and alerts', color: '#e03131', cacheOnly: true, title: 'Weather warnings, alerts and advisories, including CAP messages and Environment Canada city forecasts, and lightning flashes from detection networks (e.g. the Met Office LEELA network)' },
+    satellite: { label: 'Space-based (satellites)', short: 'Satellite', color: '#9c36b5', title: 'Observations from satellites (winds, radiances, occultations)' },
     upperair: { label: 'Upper-air soundings', color: '#7048e8', title: 'Profiles through the atmosphere from balloons (radiosondes, TEMP, PILOT)' },
     webcam: { label: 'Webcam images', color: '#fcc419', cacheOnly: true, title: 'Camera images' },
     other: { label: 'Other', color: '#868e96', title: 'Anything not in the groups above' },
@@ -254,7 +253,7 @@ const LAYER_GROUPS = [
             title: 'Reflectivity from the lowest scan of each radar volume (ODIM HDF5) in the cache (e.g. RMI, Belgium), drawn around the radar; downloaded only while this is on' },
     ] },
     { key: 'gts', label: 'GTS gateways', subtitle: 'Bulletins relayed with the GTS', layers: [
-        { key: 'gts', label: 'GTS-to-WIS2 (decode required)', color: COLORS.gts, optIn: true,
+        { key: 'gts', label: 'GTS-to-WIS2', color: COLORS.gts, optIn: true,
             title: 'Download and decode the BUFR bulletins republished from the GTS into WIS2 (centres ending -gts-to-wis2), and plot the reports inside' },
         // Each decoded report is sorted by the identifiers it carries (see reportClass)
         ...Object.entries(OBS_CLASSES).filter(([key, c]) => !c.cacheOnly && !OWN_SECTION.includes(key)).flatMap(([key, c]) => [
@@ -274,7 +273,7 @@ const LAYER_GROUPS = [
             title: OBS_CLASSES.satellite.title + ', from the WIS2 cache, the GTS gateways and the Global Replay. Files without a location are downloaded and decoded only while this is on.' },
         // Off: every report is its own point, e.g. to read cloud-motion winds one by one
         { key: 'sat-coverage', parent: 'satellite', option: true, label: 'Draw as coverage areas',
-            title: 'Draw files with many reports as shaded coverage, and satellites as tracks. Off: every report is a point, coloured by the selected measure.' },
+            title: 'Draw files with many reports as shaded hexagons of coverage. Off: every report is a point, coloured by the selected measure.' },
     ] },
     { key: 'other', label: 'Other sources', subtitle: 'More live observations, from services outside the Global Brokers', layers: [
         { key: 'replay', label: 'Global Replay', color: COLORS.replay, optIn: true,
@@ -316,8 +315,9 @@ const LAYER_PARENTS = Object.fromEntries([
     ['files', 'obs'],
     // Text SYNOPs join GTS-to-WIS2's groups, so they're decoded while it is on
     ['gts-text', 'gts'],
-    // The replay window slider is greyed out with its row
+    // The replay window and coverage opacity sliders are greyed out with their rows
     ['replay-window', 'replay'],
+    ['sat-opacity', 'sat-coverage'],
 ]);
 
 function ancestors(key) {
@@ -338,6 +338,33 @@ try {
     projection = localStorage.getItem('wis-projection') === 'mercator' ? 'mercator' : 'globe';
 } catch (err) {
     // Storage unavailable; use the default
+}
+
+// Opacity of satellite coverage, from the slider under Space-based (kept in localStorage).
+// Shaded evenly it stays faint; styled by a satellite measure it's solid, so the colours read true
+const SWATH_OPACITY_DEFAULT = 0.3;
+const swathOpacity = { plain: SWATH_OPACITY_DEFAULT, styled: 1 };
+try {
+    for (const key of Object.keys(swathOpacity)) {
+        const stored = parseFloat(localStorage.getItem(`wis-coverage-opacity-${key}`));
+        if (stored >= 0 && stored <= 1) swathOpacity[key] = stored;
+    }
+} catch (err) {
+    // Storage unavailable; use the defaults
+}
+
+// Which opacity the coverage uses now
+function swathOpacityKey() {
+    return METRICS[colourBy] && METRICS[colourBy].targets === 'satellite' ? 'styled' : 'plain';
+}
+let opacitySlider = null;  // Set by LegendControl; follows the measure
+
+// Shows the opacity in use: the plain one, or the one for a satellite measure
+function syncOpacitySlider() {
+    if (!opacitySlider) return;
+    var percent = Math.round(swathOpacity[swathOpacityKey()] * 100);
+    opacitySlider.querySelector('input').value = percent;
+    opacitySlider.querySelector('output').textContent = `${percent}%${swathOpacityKey() === 'styled' ? ' while styled' : ''}`;
 }
 
 // Start near the visitor without asking for their location: the time zone's
@@ -611,13 +638,27 @@ map.on('load', () => {
     map.addSource('swaths', { type: 'geojson', data: empty });
     // No antialiasing, so neighbouring cells meet without hairline seams
     map.addLayer({ id: 'swaths-fill', type: 'fill', source: 'swaths', paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.3, 'fill-antialias': false } });
+    // The selected coverage cell sinks a pixel into the map: a thin shadow along its
+    // top edge, the cell itself (coloured like the coverage) a pixel lower, and a light edge
+    map.addSource('swath-selected', { type: 'geojson', data: empty });
+    map.addLayer({ id: 'swath-lift-shadow', type: 'fill', source: 'swath-selected',
+        paint: { 'fill-color': '#000000', 'fill-opacity': 0.3, 'fill-translate': [0, -1] } });
+    map.addLayer({ id: 'swath-lift', type: 'fill', source: 'swath-selected',
+        paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.6, 'fill-translate': [0, 1] } });
+    map.addLayer({ id: 'swath-lift-edge', type: 'line', source: 'swath-selected',
+        paint: { 'line-color': '#ffffff', 'line-width': 1.5, 'line-translate': [0, 1] } });
+    // The hovered coverage cell, outlined like the selected-point marker: dark on a white halo
+    map.addSource('swath-hover', { type: 'geojson', data: empty });
+    map.addLayer({ id: 'swath-hover-halo', type: 'line', source: 'swath-hover', paint: { 'line-color': '#ffffff', 'line-width': 5 } });
+    map.addLayer({ id: 'swath-hover', type: 'line', source: 'swath-hover', paint: { 'line-color': '#212529', 'line-width': 2 } });
     map.on('click', 'swaths-fill', (e) => {
         if (nearestPoint(e.point)) return;
         openPopup(nearestSwathReport(e.features[0].properties.swath, e.lngLat));
     });
     map.on('mousemove', 'swaths-fill', (e) => {
-        if (map.queryRenderedFeatures(e.point, { layers: POINT_LAYERS }).length) return;
+        if (map.queryRenderedFeatures(e.point, { layers: POINT_LAYERS }).length) return outlineSwathCell(null);
         var f = e.features[0].properties;
+        outlineSwathCell(e.lngLat, f.swath);
         map.getCanvas().style.cursor = 'pointer';
         var m = METRICS[colourBy];
         var reading = m && m.targets === 'satellite' && typeof f[`m_${colourBy}`] === 'number' ? ` · ${formatMetric(f[`m_${colourBy}`], m)}` : '';
@@ -627,8 +668,9 @@ map.on('load', () => {
     map.on('mouseleave', 'swaths-fill', () => {
         map.getCanvas().style.cursor = '';
         hoverLabel.remove();
+        outlineSwathCell(null);
     });
-    // Aircraft flight paths and satellite ground tracks, under the points
+    // Aircraft flight paths, under the points
     map.addSource('tracks', { type: 'geojson', data: empty });
     map.addLayer({
         id: 'tracks',
@@ -637,9 +679,9 @@ map.on('load', () => {
         layout: { 'line-join': 'round', 'line-cap': 'round' },
         filter: ['==', ['geometry-type'], 'LineString'],
         paint: {
-            // Aircraft segments are coloured by altitude; satellites by their sublayer
+            // Aircraft segments are coloured by altitude
             'line-color': ['case', ['has', 'alt'], ALTITUDE_COLORS, ['get', 'color']],
-            'line-width': ['interpolate', ['linear'], ['zoom'], 1, ['case', ['==', ['get', 'kind'], 'satellite'], 1, 2], 6, 3.5],
+            'line-width': ['interpolate', ['linear'], ['zoom'], 1, 2, 6, 3.5],
         },
     });
     // Aircraft paths float at their altitude: a band coloured by height, dark
@@ -767,9 +809,7 @@ map.on('load', () => {
     map.on('click', 'tracks', (e) => {
         // Points take precedence where both are under the pointer
         if (nearestPoint(e.point)) return;
-        var p = e.features[0].properties;
-        var file = p.swathFile && swathFiles.get(p.swathFile);
-        openPopup(file ? swathRecord(file, p.swathIndex) : records.get(p.recordId || p.lastId));
+        openPopup(records.get(e.features[0].properties.recordId || e.features[0].properties.lastId));
     });
     map.on('mousemove', 'tracks', (e) => {
         if (map.queryRenderedFeatures(e.point, { layers: POINT_LAYERS }).length) return;
@@ -924,8 +964,16 @@ function topicClass(record) {
     if (record.webcam) return 'webcam';
     if (record.props.cap_info || /warning|alert|advisor|\/cap(\/|$)/.test(t)) return 'warning';
     if (/space-based-observations/.test(t)) return 'satellite';
-    // Before upper air: the Met Office publishes under upper-air-observations/lightning
-    if (/lightning/.test(t)) return 'lightning';
+    // GTS bulletins say what they hold in their heading (data/core/I/E/L/X/...)
+    if (GATEWAY_SATELLITE.test(record.topic)) return 'satellite';
+    if (GATEWAY_AIRCRAFT.test(record.topic)) return 'aircraft';
+    if (GATEWAY_UPPER_AIR.test(record.topic)) return 'upperair';
+    if (/-gts-to-wis2\/data\/core\/I\/S\/S\//.test(record.topic)) return 'ship';
+    if (/-gts-to-wis2\/data\/core\/I\/S\//.test(record.topic)) return 'station';
+    if (/-gts-to-wis2\/data\/core\/I\/O\//.test(record.topic)) return 'buoy';
+    // Lightning goes with the warnings; before upper air, as the Met Office publishes
+    // it under upper-air-observations/lightning
+    if (/lightning/.test(t)) return 'warning';
     if (/aircraft|amdar|aviation/.test(t)) return 'aircraft';
     // Before upper air: wind profilers publish under upper-air-observations too.
     // Ocean profilers (e.g. ocean/.../drifting-ocean-profilers, Argo floats) are buoys
@@ -1009,9 +1057,14 @@ function paintAge() {
     map.setPaintProperty('points-arrow', 'icon-opacity', opacity);
     // Satellite coverage: even shading, fading with age like the points. Only while
     // colouring by cloud amount does opacity follow it (clear 0.05, overcast 0.8).
-    var cloud = colourBy !== 'cloudAmount' ? 0.3
-        : ['case', ['has', 'm_cloudAmount'], ['interpolate', ['linear'], ['get', 'm_cloudAmount'], 0, 0.05, 100, 0.8], 0.3];
+    // The coverage slider sets the even shading, and scales the cloud-amount range with it
+    var level = swathOpacity[swathOpacityKey()];
+    var cloud = colourBy !== 'cloudAmount' ? level
+        : ['case', ['has', 'm_cloudAmount'], ['min', 1, ['*', level / SWATH_OPACITY_DEFAULT,
+            ['interpolate', ['linear'], ['get', 'm_cloudAmount'], 0, 0.05, 100, 0.8]]], level];
     map.setPaintProperty('swaths-fill', 'fill-opacity', ['*', cloud, ['interpolate', ['linear'], ['-', Date.now(), ['get', 'born']], 0, 1, FADE_MS, 0.4]]);
+    // The selected cell: a little stronger than the coverage so it stands out, never solid
+    map.setPaintProperty('swath-lift', 'fill-opacity', Math.min(0.8, level + 0.2));
     map.setPaintProperty('tracks', 'line-opacity', ['interpolate', ['linear'], ['-', Date.now(), ['get', 'born']], 0, 0.9, FADE_MS, 0.35]);
 }
 
@@ -1055,7 +1108,7 @@ class LegendControl {
             ${LAYER_GROUPS.map((g) => `
             <section class="legend-section legend-section-${g.key}">
             <div class="legend-group">${g.label}<small>${g.subtitle}</small></div>
-            <div class="legend-style"><span class="legend-dot legend-sample"></span>${g.key === 'gts' ? 'Diamonds on the map' : g.key === 'other' ? 'Squares on the map' : g.key === 'space' ? 'Coverage on the map: circles from WIS2, diamonds from the GTS' : 'Circles on the map'}</div>
+            <div class="legend-style"><span class="legend-dot legend-sample"></span>${g.key === 'gts' ? 'Diamonds on the map' : g.key === 'other' ? 'Squares on the map' : g.key === 'space' ? 'Hexagons of coverage on the map; single reports as circles from WIS2, diamonds from the GTS' : 'Circles on the map'}</div>
             ${g.layers.map((l) => `
             ${l.option ? `
             <label class="legend-toggle legend-option form-switch" data-layer="${l.key}"${l.title ? ` title="${l.title}"` : ''}>
@@ -1089,6 +1142,31 @@ class LegendControl {
         setInterval(showWindow, 30 * 1000);  // The start time moves with the clock
         range.addEventListener('input', showWindow);
         range.addEventListener('change', () => setReplayWindow(minutesShown()));
+
+        // How see-through satellite coverage is
+        container.querySelector('.legend-toggle[data-layer="sat-coverage"]').insertAdjacentHTML('afterend', `
+            <label class="legend-option legend-range legend-range-satellite" data-layer="sat-opacity">
+                <span class="legend-range-value">Coverage opacity <output></output></span>
+                <input type="range" min="0" max="100" step="5" aria-label="Opacity of satellite coverage">
+                <span class="legend-range-ticks" aria-hidden="true">${[0, 25, 50, 75, 100].map((p) =>
+                    `<span style="--at: ${p / 100}">${p}%</span>`).join('')}</span>
+            </label>`);
+        opacitySlider = container.querySelector('.legend-range-satellite');
+        var opacityRange = opacitySlider.querySelector('input');
+        syncOpacitySlider();
+        opacityRange.addEventListener('input', () => {
+            swathOpacity[swathOpacityKey()] = opacityRange.value / 100;
+            syncOpacitySlider();
+            paintAge();
+        });
+        opacityRange.addEventListener('change', () => {
+            var key = swathOpacityKey();
+            try {
+                localStorage.setItem(`wis-coverage-opacity-${key}`, String(swathOpacity[key]));
+            } catch (err) {
+                // Storage unavailable; the setting lasts until the page is closed
+            }
+        });
 
         container.querySelectorAll('.legend-toggle[data-layer]').forEach((row) => {
             var key = row.dataset.layer;
@@ -1352,9 +1430,34 @@ function openPopup(record) {
     infobar.classList.remove('infobar-full');
     document.body.classList.add('info-open');
     var inAir = record.track && record.track.startsWith('aircraft:') && !effectiveHidden().includes('gts-tracks');
+    // A report drawn as part of satellite coverage is shown by outlining its cell
+    var inCoverage = record.swath && !swathPointsShown;
     selectedMarker.setLngLat(record.coords);
-    if (inAir) selectedMarker.remove(); else selectedMarker.addTo(map);
+    if (inAir || inCoverage) selectedMarker.remove(); else selectedMarker.addTo(map);
+    liftSwathCell(inCoverage ? record : null);
     keepPopupInView();
+}
+
+// Lifts the coverage cell under the pointer (null puts it back); props carry its colour and values
+// Sinks the coverage cell holding a selected report (null puts it back)
+function liftSwathCell(record) {
+    var source = map.getSource('swath-selected');
+    if (!source) return;
+    var file = record && swathFiles.get(record.fileKey);
+    var cell = file && swathCells.get(swathCellId(file.sat, ...record.coords));
+    source.setData({ type: 'FeatureCollection', features: cell ? [swathFeature(cell)] : [] });
+}
+
+// Outlines the coverage cell under the pointer (null takes the outline away)
+let hoveredCell = null;
+function outlineSwathCell(lngLat, sat) {
+    var source = map.getSource('swath-hover');
+    var hex = lngLat && hexOf(lngLat.lng, lngLat.lat);
+    var id = hex ? `${sat}|${hex.q}|${hex.r}` : null;
+    if (!source || id === hoveredCell) return;
+    hoveredCell = id;
+    source.setData({ type: 'FeatureCollection', features: hex ? [{ type: 'Feature', properties: {},
+        geometry: { type: 'LineString', coordinates: hexRing(hex.x, hex.y) } }] : [] });
 }
 
 document.addEventListener('keydown', (e) => {
@@ -1366,6 +1469,7 @@ document.addEventListener('keydown', (e) => {
 function closeInfo() {
     document.body.classList.remove('info-open');
     selectedMarker.remove();
+    liftSwathCell(null);
 }
 
 function buildPopup(record) {
@@ -3823,10 +3927,9 @@ function applyMapFilter() {
     map.setFilter('points-ext', [...shown, square, twinShown]);
     map.setFilter('pulses', tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr);
     map.setFilter('swaths-fill', !coverage ? ['boolean', false] : expr.length > 1 ? expr : null);
-    var trackExpr = coverage ? expr : [...expr, ['!=', ['get', 'kind'], 'satellite']];
-    map.setFilter('tracks', [...trackExpr, ['==', ['geometry-type'], 'LineString']]);
+    map.setFilter('tracks', [...expr, ['==', ['geometry-type'], 'LineString']]);
     updateMapKey();
-    map.setFilter('track-ribbons', [...trackExpr, ['==', ['geometry-type'], 'Polygon']]);
+    map.setFilter('track-ribbons', [...expr, ['==', ['geometry-type'], 'Polygon']]);
     var radarShown = effectiveHidden().includes('radar') ? 'none' : 'visible';
     radars.forEach((r) => map.getLayer(r.id) && map.setLayoutProperty(r.id, 'visibility', radarShown));
 }
@@ -4261,6 +4364,8 @@ function queueMessage(topic, message, record, feature) {
         centre: t.split('/', 1)[0],
         path: t.slice(t.indexOf('/') + 1),
         discipline: disciplineOf(t),
+        // What the topic says it holds, for messages that aren't on the map
+        kind: topicClass({ topic, webcam: false, props: (feature && feature.properties) || {} }),
         format: feature ? formatOf(feature) : 'other',
         dataId: feature && feature.properties ? feature.properties.data_id : null,
         decodeKey: feature ? decodeKey(topic, feature) : null,
@@ -4352,7 +4457,7 @@ function findGroup(key, time, satellite) {
 function addToGroup(row, entry) {
     row.groupEntries.push(entry);
     row.latest = entry.time;
-    row.querySelector('.queue-meta').textContent = `${entry.channel} · ${entry.time.toLocaleTimeString()}`;
+    row.querySelector('.queue-meta').textContent = queueMeta(entry);
     row.querySelector('.queue-topic').textContent = row.dataset.group.split(' ').slice(2).join(' ');
     var badge = row.querySelector('.queue-group-count');
     if (!badge) {
@@ -4459,8 +4564,15 @@ function paintQueueDot(dot, entry) {
         if (['gts', 'gts-satellite', 'gts-text', 'wis2gts'].includes(entry.decodeKind)) dot.classList.add('is-gts');
         dot.style.borderColor = COLORS[entry.decodeKind];
     } else {
-        dot.classList.add('queue-dot-none');  // Not on the map
+        dot.classList.add('queue-dot-none');  // Not on the map, coloured by what its topic says it holds
+        if (entry.kind && entry.kind !== 'other') dot.style.background = OBS_CLASSES[entry.kind].color;
     }
+}
+
+// Channel, the kind of data its topic says it holds, and time
+function queueMeta(entry) {
+    var kind = entry.kind && entry.kind !== 'other' ? ` · ${OBS_CLASSES[entry.kind].short || OBS_CLASSES[entry.kind].label}` : '';
+    return `${entry.channel}${kind} · ${entry.time.toLocaleTimeString()}`;
 }
 
 // The point a message is drawn as now: a cache copy may have replaced the
@@ -4528,7 +4640,7 @@ function renderQueueRow(entry) {
     centre.textContent = entry.centre;
     var meta = document.createElement('span');
     meta.className = 'queue-meta';
-    meta.textContent = `${entry.channel} · ${entry.time.toLocaleTimeString()}`;
+    meta.textContent = queueMeta(entry);
     head.append(dot, centre, meta);
     if (entry.wis2box || wis2boxByCentre.has(entry.centre)) {
         var version = document.createElement('span');
@@ -5388,13 +5500,14 @@ function plotDecodedReport(job, rows, profile, index, fileIndex, swath) {
     if (cls === 'station' && GATEWAY_UPPER_AIR.test(job.topic)) cls = 'upperair';
     // WIS2 topics say what they hold (…/moored-buoys-and-moorings), which beats guessing from
     // the identifiers: buoys and ships with WIGOS ids would otherwise read as weather stations
+    // Lightning flashes join the warnings, which are cache-only, but do come as BUFR
+    var lightning = /lightning/i.test(job.topic);
     if (!GATEWAY_TOPIC.test(job.topic)) {
         var fromTopic = topicClass({ topic: job.topic, webcam: false, props });
-        // Lightning is cache-only too, but does come as BUFR
-        if (fromTopic !== 'other' && (fromTopic === 'lightning' || !OBS_CLASSES[fromTopic].cacheOnly)) cls = fromTopic;
+        if (fromTopic !== 'other' && (lightning || !OBS_CLASSES[fromTopic].cacheOnly)) cls = fromTopic;
     }
     var subLayer = job.kind === 'gts' || job.kind === 'gts-satellite' ? `gts-${cls}` : job.kind === 'files' || job.kind === 'cache-satellite' ? `cache-${cls}` : null;
-    if (cls === 'lightning' && seenFlash(flashTime(values), lat, lon)) return;
+    if (lightning && seenFlash(flashTime(values), lat, lon)) return;
     if (subLayer && subLayer.endsWith('-satellite') && effectiveHidden().includes(subLayer)) return;
     var kept = subLayer && subLayer.endsWith('-satellite') ? trimRows(rows) : rows;
     var record = {
@@ -5844,14 +5957,14 @@ function plotLightningText(job, text) {
             discipline: disciplineOf(t),
             webcam: false,
             decodedLayer: job.kind,
-            subLayer: 'cache-lightning',
+            subLayer: 'cache-warning',
             observed: time,
             props: { data_id: `${props.data_id}#${i}`, pubtime: props.pubtime, datetime: new Date(time).toISOString() },
             links: job.feature.links || [],
             notification: job.feature,
             wsi: null,
             format: 'text',
-            color: OBS_CLASSES.lightning.color,
+            color: OBS_CLASSES.warning.color,
             source: null,
             decoded: { subsets: 1, index: 0, rows: rows, profile: null },
             born: Date.now(),
@@ -5998,7 +6111,9 @@ function setColourBy(key, legend) {
         map.setLayoutProperty('points-arrow', 'symbol-sort-key', ['-', 0, speed]);
     }
     map.setPaintProperty('swaths-fill', 'fill-color', swathColor);
+    map.setPaintProperty('swath-lift', 'fill-color', swathColor);
     paintAge();
+    syncOpacitySlider();
     var scale = legend.querySelector('.legend-scale');
     if (scale) scale.hidden = !m;
     var colouredOnlyRow = legend.querySelector('.legend-coloured-only');
@@ -6812,7 +6927,7 @@ setInterval(() => { if (airportStations.size) queueAirports(); }, 5 * 60 * 1000)
 // map, and a report only becomes a full record when it is clicked (or drawn as a
 // point, with coverage switched off).
 const SWATH_MIN_REPORTS = 5;
-const SWATH_CELL = 2;  // Grid cell size in degrees
+const SWATH_CELL = 2;  // Grid cell (hexagon) width in degrees; must divide 360
 const SWATH_FILES_MAX = 3000;  // Files whose coverage is kept, oldest dropped first...
 const SWATH_KEEP_MS = 12 * 3600e3;  // ...and none older than this
 const SWATH_DETAIL_MAX = 30000;  // Reports whose decoded values are kept, so their popups open at once; older ones are decoded again
@@ -6861,9 +6976,34 @@ function inOrNearRing([x, y], ring, margin) {
     return false;
 }
 
+// Coverage cells are hexagons, pointy side up, rows offset by half a hexagon.
+// SWATH_CELL is their width east to west; 360 is a whole number of them, so the
+// grid meets itself round the globe
+const HEX_SIZE = SWATH_CELL / Math.sqrt(3);  // Centre to corner
+const HEX_ROW = HEX_SIZE * 1.5;  // Centre to centre, row to row
+
+// The hexagon a point falls in: axial q, r (rounded as cube coordinates) and its
+// centre, with q wrapped so the centre is between -180 and 180
+function hexOf(lon, lat) {
+    var fq = (Math.sqrt(3) / 3 * lon - lat / 3) / HEX_SIZE, fr = 2 / 3 * lat / HEX_SIZE, fs = -fq - fr;
+    var q = Math.round(fq), r = Math.round(fr), s = Math.round(fs);
+    var dq = Math.abs(q - fq), dr = Math.abs(r - fr), ds = Math.abs(s - fs);
+    if (dq > dr && dq > ds) q = -r - s;
+    else if (dr > ds) r = -q - s;
+    q -= Math.floor((SWATH_CELL * (q + r / 2) + 180) / 360) * 360 / SWATH_CELL;
+    return { q, r, x: SWATH_CELL * (q + r / 2), y: HEX_ROW * r };
+}
+
 function swathCellId(sat, lon, lat) {
-    var cx = Math.floor((((lon + 180) % 360 + 360) % 360 - 180) / SWATH_CELL) * SWATH_CELL;
-    return `${sat}|${cx}|${Math.floor(lat / SWATH_CELL) * SWATH_CELL}`;
+    var hex = hexOf(lon, lat);
+    return `${sat}|${hex.q}|${hex.r}`;
+}
+
+function hexRing(x, y) {
+    return [0, 1, 2, 3, 4, 5, 0].map((k) => {
+        var a = Math.PI / 180 * (60 * k + 30);
+        return [x + HEX_SIZE * Math.cos(a), Math.max(-90, Math.min(90, y + HEX_SIZE * Math.sin(a)))];
+    });
 }
 
 // Packs a decoded satellite file's reports into one swath file and adds it to the cells
@@ -6900,7 +7040,6 @@ function addSwathFile(job, reports) {
         wsi: reports.map((r) => r.wsi),
         metrics,
         detail: reports.map((r) => r.decoded),  // Until SWATH_DETAIL_MAX drops it
-        track: first.track,
         born: Date.now(),
         // For the same filters as the points
         props: {
@@ -6918,18 +7057,17 @@ function addSwathFile(job, reports) {
         if (known.length) file.means[m] = known.reduce((a, b) => a + b, 0) / known.length;
     }
     var cellFor = (lon, lat) => {
-        var id = swathCellId(sat, lon, lat);
-        if (!file.cells.has(id)) {
-            var x = Math.floor((((lon + 180) % 360 + 360) % 360 - 180) / SWATH_CELL) * SWATH_CELL;
-            file.cells.set(id, { x, y: Math.floor(lat / SWATH_CELL) * SWATH_CELL, fill: false, sums: {}, counts: {} });
-        }
+        var hex = hexOf(lon, lat), id = `${sat}|${hex.q}|${hex.r}`;
+        if (!file.cells.has(id)) file.cells.set(id, { x: hex.x, y: hex.y, fill: false, sums: {}, counts: {} });
         return file.cells.get(id);
     };
-    // Cells the file's footprint covers
+    // Cells the file's footprint covers: hexagons whose centre is in it, or near its edge
     var xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
-    for (var lat = Math.floor(Math.min(...ys) / SWATH_CELL) * SWATH_CELL; lat < Math.max(...ys); lat += SWATH_CELL) {
-        for (var lon = Math.floor(Math.min(...xs) / SWATH_CELL) * SWATH_CELL; lon < Math.max(...xs); lon += SWATH_CELL) {
-            if (inOrNearRing([lon + SWATH_CELL / 2, lat + SWATH_CELL / 2], ring, SWATH_CELL * 0.75)) cellFor(lon, lat).fill = true;
+    var xMin = Math.min(...xs), xMax = Math.max(...xs);
+    for (var r = Math.floor(Math.min(...ys) / HEX_ROW) - 1; r <= Math.ceil(Math.max(...ys) / HEX_ROW) + 1; r++) {
+        for (var q = Math.floor(xMin / SWATH_CELL - r / 2) - 1; q <= Math.ceil(xMax / SWATH_CELL - r / 2) + 1; q++) {
+            var centre = [SWATH_CELL * (q + r / 2), HEX_ROW * r];
+            if (inOrNearRing(centre, ring, SWATH_CELL * 0.75)) cellFor(...centre).fill = true;
         }
     }
     // Reports in each cell give it its own values
@@ -6947,7 +7085,6 @@ function addSwathFile(job, reports) {
     trimSwathFiles();
     if (!seenLayers.has(first.subLayer)) showLegendRow(first.subLayer);
     if (file.props.sat) addSatelliteRow(file.props.sat);
-    if (file.track) tracksDirty = true;
     decodePlotted[job.kind] += n;
     if (!job.linked) {
         job.linked = true;
@@ -6993,7 +7130,6 @@ function removeSwathFile(file) {
     applySwathFile(file, -1);
     if (file.detail) swathDetail -= file.n;
     hideSwathPoints(file);
-    if (file.track) tracksDirty = true;
     mapKeyDirty = true;
 }
 
@@ -7034,11 +7170,10 @@ function swathFeature(cell) {
     var file = cell.files.values().next().value;
     var born = 0;
     cell.files.forEach((f) => { born = Math.max(born, f.born); });
-    var { x, y } = cell;
     return {
         type: 'Feature',
         id: cell.fid,
-        geometry: { type: 'Polygon', coordinates: [[[x, y], [x + SWATH_CELL, y], [x + SWATH_CELL, y + SWATH_CELL], [x, y + SWATH_CELL], [x, y]]] },
+        geometry: { type: 'Polygon', coordinates: [hexRing(cell.x, cell.y)] },
         properties: {
             ...file.props,
             swath: cell.sat,
@@ -7128,14 +7263,10 @@ function syncSwathPoints() {
 }
 
 // ---------- Tracks. Aircraft reports are joined by identifier in time order.
-// A satellite scan has many reports at once, so its track follows the centre of
-// each minute's reports; steps that don't move at orbital speed are dropped,
-// which leaves polar orbiters' ground tracks and no tracks for geostationary ones.
+// (Satellites aren't: their coverage already shows where they've been.)
 const TRACK_REBUILD_MS = 2000;
 const TRACK_MAX_GAP_MS = 90 * 60e3;
 const AIRCRAFT_MAX_KMH = 1300;           // Faster than this means a mixed-up identifier
-const ORBIT_KM_PER_MIN = [250, 550];     // Ground speed of a low orbit is about 400 km a minute
-const SATELLITE_MIN_STEPS = 4;
 let tracksDirty = false;
 let tracksBuilt = 0;
 
@@ -7145,7 +7276,6 @@ function trackKey(subLayer, values) {
         var id = text(1008) || text(1006);
         return id ? `aircraft:${id}` : null;
     }
-    if (subLayer === 'gts-satellite' && values.has(1007)) return `satellite:${values.get(1007)}`;
     return null;
 }
 
@@ -7153,17 +7283,6 @@ function distanceKm([lon1, lat1], [lon2, lat2]) {
     var r = Math.PI / 180;
     var a = Math.sin((lat2 - lat1) * r / 2) ** 2 + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin((lon2 - lon1) * r / 2) ** 2;
     return 12742 * Math.asin(Math.min(1, Math.sqrt(a)));
-}
-
-// Average position of points on the sphere, so a scan across the antimeridian averages correctly
-function sphericalMean(coords) {
-    var r = Math.PI / 180, x = 0, y = 0, z = 0;
-    for (var [lon, lat] of coords) {
-        x += Math.cos(lat * r) * Math.cos(lon * r);
-        y += Math.cos(lat * r) * Math.sin(lon * r);
-        z += Math.sin(lat * r);
-    }
-    return [Math.atan2(y, x) / r, Math.atan2(z, Math.hypot(x, y)) / r];
 }
 
 // Splits time-ordered positions into runs where every step passes the test
@@ -7195,78 +7314,36 @@ function unwrap(coords) {
 
 function buildTracks() {
     var groups = new Map();
-    var add = (key, item) => {
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(item);
-    };
-    for (var record of [...pools.decoded.values(), ...pools.satellite.values()]) {
-        // Swath reports drawn as points are taken from their file below
-        if (record.track && records.has(record.id) && !record.swath) add(record.track, record);
-    }
-    // Swath files' reports, with just what a ground track needs
-    for (var file of swathFiles.values()) {
-        if (!file.track) continue;
-        for (var i = 0; i < file.n; i++) add(file.track, { observed: file.observed[i], coords: [file.coords[2 * i], file.coords[2 * i + 1]], file, i });
+    for (var record of pools.decoded.values()) {
+        if (!record.track || !records.has(record.id)) continue;
+        if (!groups.has(record.track)) groups.set(record.track, []);
+        groups.get(record.track).push(record);
     }
     var features = [];
     for (var [key, reports] of groups) {
-        var kind = key.slice(0, key.indexOf(':'));
         reports.sort((a, b) => a.observed - b.observed);
-        var points, runs;
-        if (kind === 'aircraft') {
-            points = reports.map((r) => ({ t: r.observed, c: r.coords, alt: r.alt, id: r.id }));
-            runs = segments(points, (a, b) => b.t - a.t <= TRACK_MAX_GAP_MS
-                && distanceKm(a.c, b.c) / Math.max((b.t - a.t) / 3600e3, 1 / 60) <= AIRCRAFT_MAX_KMH, 2);
-        } else {
-            var minutes = new Map();
-            for (var r of reports) {
-                var m = Math.floor(r.observed / 60e3);
-                if (!minutes.has(m)) minutes.set(m, []);
-                minutes.get(m).push(r.coords);
-            }
-            points = [...minutes].sort((a, b) => a[0] - b[0]).map(([m, cs]) => ({ t: m * 60e3, c: sphericalMean(cs) }));
-            runs = segments(points, (a, b) => {
-                var mins = (b.t - a.t) / 60e3, speed = distanceKm(a.c, b.c) / mins;
-                return mins <= 3 && speed >= ORBIT_KM_PER_MIN[0] && speed <= ORBIT_KM_PER_MIN[1];
-            }, SATELLITE_MIN_STEPS + 1);
-        }
+        var points = reports.map((r) => ({ t: r.observed, c: r.coords, alt: r.alt, id: r.id }));
+        var runs = segments(points, (a, b) => b.t - a.t <= TRACK_MAX_GAP_MS
+            && distanceKm(a.c, b.c) / Math.max((b.t - a.t) / 3600e3, 1 / 60) <= AIRCRAFT_MAX_KMH, 2);
         if (!runs.length) continue;
-        var lastItem = reports[reports.length - 1];
-        var last = lastItem.file ? swathRecord(lastItem.file, lastItem.i) : lastItem;
-        // Satellite tracks carry the same name and layer key as the satellite's row
-        // under Space-based, so switching that row off hides the track too
-        var sat = kind === 'satellite' ? satelliteKey(last) : null;
-        if (sat) addSatelliteRow(sat);
-        var common = {
-            kind,
-            label: kind === 'aircraft' ? `Aircraft ${key.slice(9)}` : satelliteName(last) || `Satellite ${key.slice(10)}`,
+        var last = reports[reports.length - 1];
+        var route = trackRoute(reports);
+        features.push(...aircraftShapes(runs, {
+            kind: 'aircraft',
+            label: `Aircraft ${key.slice(9)}${route ? ` · ${route}` : ''}`,
             count: reports.length,
             lastId: last.id,
-            // A swath report isn't a record until it's wanted, so the track says where to find it
-            swathFile: lastItem.file ? lastItem.file.key : '',
-            swathIndex: lastItem.file ? lastItem.i : -1,
             color: last.color,
             born: last.born,
-            layer: last.subLayer,
-            sat,
+            layer: 'gts-tracks',
+            sat: null,
             channel: last.channel,
             centre: last.centre,
             format: last.format,
             discipline: last.discipline,
             space: isSpaceRecord(last),
             topic: last.topic.toLowerCase(),
-        };
-        if (kind === 'aircraft') {
-            var route = trackRoute(reports);
-            if (route) common.label += ` · ${route}`;
-            features.push(...aircraftShapes(runs, { ...common, layer: 'gts-tracks' }));
-            continue;
-        }
-        features.push({
-            type: 'Feature',
-            geometry: { type: 'MultiLineString', coordinates: runs.map((run) => unwrap(run.map((p) => p.c))) },
-            properties: common,
-        });
+        }));
     }
     return features;
 }

@@ -1302,6 +1302,9 @@
   border-radius: 6px;
   font-size: 11px;
 }
+.legend-range-satellite {
+  --accent-range: #9c36b5;  /* OBS_CLASSES.satellite */
+}
 .legend-range-value {
   display: block;
   margin-bottom: 4px;
