@@ -148,6 +148,10 @@ bottom; the core comes first, roughly in this order:
    for the `data_id`, fastest cache first. Downloads go through `fetchTracked`, so
    a host that refuses a browser (no CORS headers, e.g. `gc.wis.cma.cn`) is not
    asked again, and a host not yet tried gets one background request at a time.
+   Background files wait in `decodeQueues`: one for satellites and one for
+   everything else, each with its own downloads and cap, taking turns on the
+   decoder. A satellite swath keeps only the values the map can be styled by
+   (`file.metrics`); its popups decode the report again.
 
 After the core, each feature is its own section headed `// ---------- <name>`
 (grep for that to list them): GeoMet model fields, Environment Canada

@@ -4579,10 +4579,18 @@ function decodableFile(topic, feature) {
 }
 
 const DECODE_FETCH_TIMEOUT_MS = 20000;
-const DECODE_QUEUE_MAX = 100;  // Oldest files are dropped when decoding falls behind
 const decodeEnabled = new Set();
 const decodePlotted = { gts: 0, 'gts-satellite': 0, 'gts-text': 0, wis2gts: 0, files: 0, 'cache-satellite': 0, radar: 0 };
-let decodeQueue = [];
+// Two queues, so satellite files (large, and many at once after each pass) don't hold
+// up stations, ships and aircraft, nor the other way round. Each has its own downloads
+// (fetches at once) and cap (oldest dropped when it falls behind); they share the
+// background decoder, taking turns
+const decodeQueues = {
+    obs: { queue: [], ready: [], fetching: 0, fetches: 3, max: 100 },
+    satellite: { queue: [], ready: [], fetching: 0, fetches: 2, max: 40 },
+};
+const queueFor = (kind) => decodeQueues[/satellite$/.test(kind) ? 'satellite' : 'obs'];
+let lastDecoded = 'satellite';  // Which queue the decoder took from last
 let decodeBusy = false;
 const decodeSeen = new Set();
 
@@ -4634,8 +4642,9 @@ function queueDecode(kind, topic, feature) {
             .catch((err) => console.debug(`Could not fetch ${href}: ${err.message}`));
         return;
     }
-    decodeQueue.push({ kind, key, topic, feature, href });
-    if (decodeQueue.length > DECODE_QUEUE_MAX) decodeQueue.shift();
+    var q = queueFor(kind);
+    q.queue.push({ kind, key, topic, feature, href });
+    if (q.queue.length > q.max) decodeSeen.delete(q.queue.shift().key);  // A later copy may try again
     pumpDecode();
 }
 
@@ -4664,19 +4673,17 @@ async function fetchTracked(url, options) {
 }
 
 // Downloads take far longer than decoding (tens of ms), so several files are
-// fetched at once while the decoder works through the ones already here
-const DECODE_FETCHES = 4;
-let decodeFetching = 0;
-const decodeReady = [];  // { job, bytes } downloaded and waiting for the decoder
-
+// fetched at once while the decoder works through the ones already here (ready)
 function pumpDecode() {
-    while (decodeFetching < DECODE_FETCHES && decodeReady.length < DECODE_FETCHES && decodeQueue.length) {
-        fetchForDecode(decodeQueue.pop());  // Newest first, to stay close to real time
+    for (var q of Object.values(decodeQueues)) {
+        while (q.fetching < q.fetches && q.ready.length < q.fetches && q.queue.length) {
+            fetchForDecode(q, q.queue.pop());  // Newest first, to stay close to real time
+        }
     }
 }
 
-async function fetchForDecode(job) {
-    decodeFetching++;
+async function fetchForDecode(q, job) {
+    q.fetching++;
     try {
         // A stalled server would otherwise hold up the queue
         // Radar volumes can run to tens of MB, so they get longer
@@ -4688,20 +4695,24 @@ async function fetchForDecode(job) {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         var raw = new Uint8Array(await response.arrayBuffer());
         var bytes = job.kind === 'radar' ? raw : bufrPart(raw);
-        if (bytes) decodeReady.push({ job, bytes });
+        if (bytes) q.ready.push({ job, bytes });
     } catch (err) {
         decodeSeen.delete(job.key);  // Let another cache's copy try
         console.debug(`Could not fetch ${job.href}: ${err.message}`);
     }
-    decodeFetching--;
+    q.fetching--;
     decodeNext();
     pumpDecode();
 }
 
 async function decodeNext() {
-    if (decodeBusy || !decodeReady.length) return;
+    // The queues take turns; one with nothing ready lets the other go again
+    var turn = lastDecoded === 'satellite' ? ['obs', 'satellite'] : ['satellite', 'obs'];
+    var from = turn.find((name) => decodeQueues[name].ready.length);
+    if (decodeBusy || !from) return;
     decodeBusy = true;
-    var { job, bytes } = decodeReady.shift();
+    lastDecoded = from;
+    var { job, bytes } = decodeQueues[from].ready.shift();
     try {
         if (job.kind === 'radar') {
             plotRadar(job, JSON.parse(await callDecoder('radar_scan', bytes)));
@@ -6234,15 +6245,14 @@ setInterval(() => { if (airportStations.size) queueAirports(); }, 5 * 60 * 1000)
 // and what it adds to each cell is worked out once, when it arrives, and taken
 // off again when it goes. So coverage can stay up for hours without slowing the
 // map, and a report only becomes a full record when it is clicked (or drawn as a
-// point, with coverage switched off).
+// point, with coverage switched off). Of each report only the values the map can be
+// styled by are kept (metrics, in typed arrays): a popup decodes the rest again.
 const SWATH_MIN_REPORTS = 5;
 const SWATH_FILES_MAX = 3000;  // Files whose coverage is kept, oldest dropped first...
 const SWATH_KEEP_MS = 12 * 3600e3;  // ...and none older than this
-const SWATH_DETAIL_MAX = 30000;  // Reports whose decoded values are kept, so their popups open at once; older ones are decoded again
 const SWATH_FLUSH_MS = 1000;
 const swathDirty = new Set();  // cell ids to redraw
 let swathRemoved = [];  // feature ids of cells no file covers any more
-let swathDetail = 0;  // Reports with their decoded values kept
 let swathFeatureIds = 0;
 let swathsBuilt = 0;
 let swathPointsShown = false;  // Coverage switched off: swath reports are drawn as points
@@ -6284,7 +6294,6 @@ function addSwathFile(job, reports) {
         datetime: reports.map((r) => r.props.datetime),
         wsi: reports.map((r) => r.wsi),
         metrics,
-        detail: reports.map((r) => r.decoded),  // Until SWATH_DETAIL_MAX drops it
         born: Date.now(),
         // For the same filters as the points
         props: {
@@ -6326,7 +6335,6 @@ function addSwathFile(job, reports) {
         }
     }
     swathFiles.set(file.key, file);
-    swathDetail += n;
     applySwathFile(file, 1);
     trimSwathFiles();
     if (!seenLayers.has(first.subLayer)) showLegendRow(first.subLayer);
@@ -6374,24 +6382,16 @@ function applySwathFile(file, sign) {
 function removeSwathFile(file) {
     swathFiles.delete(file.key);
     applySwathFile(file, -1);
-    if (file.detail) swathDetail -= file.n;
     hideSwathPoints(file);
     mapKeyDirty = true;
 }
 
-// Drops the oldest files beyond the caps, then the oldest decoded values; their
-// reports are decoded again from the file when clicked
+// Drops the oldest files beyond the caps
 function trimSwathFiles() {
     var oldest = Date.now() - SWATH_KEEP_MS;
     for (var file of swathFiles.values()) {
         if (swathFiles.size <= SWATH_FILES_MAX && file.born >= oldest) break;
         removeSwathFile(file);
-    }
-    for (var kept of swathFiles.values()) {
-        if (swathDetail <= SWATH_DETAIL_MAX) break;
-        if (!kept.detail) continue;
-        kept.detail = null;
-        swathDetail -= kept.n;
     }
 }
 
@@ -6434,7 +6434,7 @@ function swathFeature(cell) {
 
 // A full record for one report in a swath file, made when it's wanted
 function swathRecord(file, i) {
-    var t = file.template, decoded = file.detail && file.detail[i];
+    var t = file.template;
     var metrics = {};
     for (var [m, values] of Object.entries(file.metrics)) {
         if (!isNaN(values[i])) metrics[`m_${m}`] = values[i];
@@ -6446,9 +6446,10 @@ function swathRecord(file, i) {
         observed: file.observed[i],
         props: { ...t.props, data_id: `${file.key}#${i}`, datetime: file.datetime[i] },
         wsi: file.wsi[i],
-        decoded: decoded || null,
-        // Without its decoded values, the popup decodes the report from the file again
-        source: decoded ? null : bufrSource(t.notification, t.notification.properties || {}),
+        decoded: null,
+        // Only the values the map can be styled by are kept (metrics); the popup decodes
+        // the rest of the report from the file again
+        source: bufrSource(t.notification, t.notification.properties || {}),
         subsetIndex: file.index[i],
         fileIndex: file.index[i],
         metrics,
@@ -6779,7 +6780,7 @@ function reportTime(values) {
 
 function setDecodeEnabled(kind, enabled) {
     enabled ? decodeEnabled.add(kind) : decodeEnabled.delete(kind);
-    if (!enabled) decodeQueue = decodeQueue.filter((job) => job.kind !== kind);
+    if (!enabled) queueFor(kind).queue = queueFor(kind).queue.filter((job) => job.kind !== kind);
     applyMapFilter();
     pumpDecode();
 }
