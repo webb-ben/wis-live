@@ -29,6 +29,10 @@
 .queue-open .queue {
   transform: none;
 }
+/* The satellite page has no sidebar (see main.js); its tab, inside it, goes with it */
+[data-page="satellites"] .queue {
+  display: none;
+}
 /* The zoom buttons, top left, step aside as the sidebar opens */
 .maplibregl-ctrl-top-left {
   transition: left 0.2s;
@@ -359,6 +363,36 @@
 .legend-section-space {
   --accent: #9c36b5;
   --tint: #fbf3fd;
+}
+/* Where a satellite's data came from (WIS2, GTS), after its name in the map key */
+.key-source {
+  margin-left: 6px;
+  color: #868e96;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+/* The links to the other pages (all observations, GBON, satellites), above the layer
+   groups, or on the satellite page under About */
+.legend-pages {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.legend-page-link {
+  display: block;
+  padding: 6px 8px;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  color: #1c7ed6;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.legend-page-link:hover,
+.legend-page-link:focus-visible {
+  background: #f1f3f5;
 }
 .legend-group {
   margin-bottom: 2px;
@@ -1383,8 +1417,7 @@
 .info-open .maplibregl-ctrl-top-right,
 .info-open .maplibregl-ctrl-bottom-right {
   right: min(380px, calc(100vw - 52px));
-}
-.selected-marker {
+}.selected-marker {
   width: 26px;
   height: 26px;
   border: 2px solid #212529;
@@ -1456,8 +1489,7 @@
 }
 .legend-range-satellite {
   --accent-range: #9c36b5;  /* OBS_CLASSES.satellite */
-}
-.legend-range-value {
+}.legend-range-value {
   display: block;
   margin-bottom: 4px;
   color: #495057;
@@ -1813,6 +1845,29 @@
   font-size: 11px;
   line-height: 1.45;
 }
+/* The satellite page's links to the other pages, under About: hidden with it while the
+   panel is folded */
+.key-about .legend-pages {
+  margin: 4px 0 2px;
+}
+.map-world.map-key-minimized .key-about .legend-pages {
+  display: none;
+}
+/* The map's credits, with the panel's −/+ at the end of their line (see addAbout) */
+.key-credits {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.key-credits .maplibregl-ctrl-attrib {
+  flex: 1;
+  min-width: 0;
+}
+.key-credits .map-key-min-toggle {
+  position: static;
+  flex: none;
+  margin-top: 1px;
+}
 /* The key minimized keeps what the colours mean (the measure's name, as text, and its
    scale) but none of Style by's controls */
 .map-world.map-key-minimized .key-status,
@@ -2039,6 +2094,10 @@
   gap: 2px 10px;
   margin-top: 4px;
 }
+/* Nothing to show (the satellite page never has Require value): no space taken */
+.key-options:not(:has(> :not([hidden]))) {
+  display: none;
+}
 .key-options .legend-coloured-only {
   margin: 0;
   gap: 4px;
@@ -2088,8 +2147,8 @@
   display: flex;
   align-items: flex-start;
   gap: 6px;
-  margin-top: 6px;
-  padding: 4px 6px 4px 0;
+  margin-top: 4px;
+  padding: 4px 6px 0 0;
   border-top: 1px solid #e9ecef;
   color: #212529;
   font-size: 11px;

@@ -148,6 +148,10 @@ export const METRICS = {
 export const COLOURABLE = [...['station', 'ship', 'buoy'].flatMap((k) => [`cache-${k}`, `gts-${k}`, `replay-${k}`]), 'airports'];
 export const SATELLITE_LAYERS = ['cache-satellite', 'gts-satellite', 'replay-satellite'];
 
+// The satellite measures in Style by, most often seen first (cloud-top pressure is rare)
+export const SATELLITE_METRIC_ORDER = ['brightness', 'cloudAmount', 'satWind', 'skinTemp', 'vapour', 'seaWind',
+    'satWaves', 'seaLevel', 'ozone', 'cloudTop'];
+
 // Origin copies are one layer; the kinds of them coloured like the stations above
 export const ORIGIN_COLOURABLE = ['station', 'ship', 'buoy'];
 

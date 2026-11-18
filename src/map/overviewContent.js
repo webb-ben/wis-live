@@ -1,7 +1,7 @@
 import { effectiveHidden } from './layers.js';
 import { METRICS, SATELLITE_STYLE, SATELLITE_LAYERS, NO_VALUE_COLOR } from '../config.js';
 import { state } from '../state.js';
-import { swathCells, swathFeature, swathOpacity, swathOpacityKey } from '../data/satellite/coverage.js';
+import { globalGrid, swathCells, swathFeature, swathOpacity, swathOpacityKey } from '../data/satellite/coverage.js';
 import { passesFilters } from '../lib/filters.js';
 import { satelliteColours } from '../data/satellite/rows.js';
 import { records } from './points.js';
@@ -22,7 +22,7 @@ export function drawOverviewContent(ctx, projection, d3, width) {
     if (!hidden.has('sat-coverage')) {
         var fills = new Map();
         for (var cell of swathCells.values()) {
-            var feature = swathFeature(cell), p = feature.properties;
+            var feature = swathFeature(cell, globalGrid), p = feature.properties;
             if (!passesFilters(p, hidden)) continue;
             var value = m && m.targets === 'satellite' ? p[`m_${state.colourBy}`] : undefined;
             if (state.colouredOnly && m && value == null) continue;

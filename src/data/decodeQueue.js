@@ -199,10 +199,7 @@ export async function decodeNext() {
             // Satellite files big enough for coverage are kept as one swath, not as points
             var swath = subsets.length >= SWATH_MIN_REPORTS ? [] : null;
             subsets.forEach(([rows, profile, index], i) => plotDecodedReport(job, rows, profile, i, index, swath));
-            // except cloud-motion winds, which stay points (arrows): each is the wind at one
-            // tracked cloud, so averaged into cells they'd show winds no cloud had
-            var winds = swath && swath.some((record) => 'm_satWind' in metricValues(record));
-            if (swath && swath.length >= SWATH_MIN_REPORTS && !winds) addSwathFile(job, swath);
+            if (swath && swath.length >= SWATH_MIN_REPORTS) addSwathFile(job, swath);
             else if (swath) swath.forEach((record) => plotRecord(job, record));
         }
     } catch (err) {
@@ -295,9 +292,11 @@ export function plotRecord(job, record) {
 }
 
 // The first SATELLITE_ROWS_MAX values, plus the first of any value a measure colours by
+// (and wind direction, 011001, for the coverage's wind arrows)
+const WANTED_IDS = [...Object.values(METRICS).flatMap((m) => m.ids || []), 11001];
 export function trimRows(rows) {
     if (rows.length <= SATELLITE_ROWS_MAX) return rows;
-    var wanted = new Set(Object.values(METRICS).flatMap((m) => m.ids || []));
+    var wanted = new Set(WANTED_IDS);
     var kept = rows.slice(0, SATELLITE_ROWS_MAX);
     kept.forEach((r) => wanted.delete(r[0]));
     for (var i = SATELLITE_ROWS_MAX; i < rows.length && wanted.size; i++) {

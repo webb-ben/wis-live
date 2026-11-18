@@ -2,11 +2,15 @@
 // the layer switches. Read it from `state`; change it with setState (or, for the
 // Sets and objects changed in place, change them and call notify), and anything
 // subscribed hears which keys changed. Mirrored in the URL by the main page.
+import { SATELLITE_PAGE } from './page.js';
 
 export const state = {
-    // Style by: 'kind' (observation type), 'satellite' (a colour each), or a METRICS key
-    colourBy: 'kind',
-    colouredOnly: false,  // Hide whatever the style doesn't colour (Require value / Satellites only)
+    // Style by: 'kind' (observation type), 'satellite' (a colour each, where the
+    // satellite page opens), or a METRICS key
+    colourBy: SATELLITE_PAGE ? 'satellite' : 'kind',
+    // Hide whatever the style doesn't colour (Require value / Satellites only). Always on
+    // the satellite page, which has no "Other": coverage without the measure isn't drawn
+    colouredOnly: SATELLITE_PAGE,
     modelFieldOn: false,  // ECCC model field for the measure, under the points
     // Filters shared by the map, the message list and the dataset list
     filters: { text: '', centres: new Set(), format: '', disciplines: new Set() },
@@ -14,9 +18,9 @@ export const state = {
     filterModes: { text: 'only', centres: 'only', format: 'only', disciplines: 'only' },
     // Layer switches that are off. Off at first: radar, the Global Replay, METAR,
     // WIS2-to-GTS, aircraft and ground-based GNSS (cache, GTS and replay), aircraft
-    // tracks, and satellites (on when the URL styles the map by a satellite measure)
+    // tracks. Satellites are only on the satellite page, where they start on
     hiddenLayers: new Set(['radar', 'replay', 'cache-gnss', 'gts-gnss', 'replay-gnss', 'airports', 'wis2gts',
-        'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks', 'satellite']),
+        'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks', ...(SATELLITE_PAGE ? [] : ['satellite'])]),
     // The services in use, fastest first: { name, ms } of the Global Discovery
     // Catalogue, and { host, id, name, ms } of the global cache downloads try first
     catalogue: null,

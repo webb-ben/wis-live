@@ -5,7 +5,7 @@ import { map } from './map.js';
 import { state } from '../state.js';
 import { METRICS, SATELLITE_STYLE, WAVE_STYLE } from '../config.js';
 import { isColourTarget, windArrows, isArrow } from './colour.js';
-import { syncSwathPoints } from '../data/satellite/coverage.js';
+import { syncSwathPoints, refreshSatelliteOutline } from '../data/satellite/coverage.js';
 import { TWIN_LAYERS } from './twins.js';
 import { radars } from '../data/radar/radar.js';
 import { DECODE_LAYERS } from '../data/decodeQueue.js';
@@ -61,6 +61,10 @@ export function applyMapFilter() {
     // value for (too far from any report to fill) is left out rather than drawn plain
     var swathExpr = METRICS[state.colourBy] ? [...expr, ['!=', ['get', `no_${state.colourBy}`], true]] : expr;
     map.setFilter('swaths-fill', !coverage ? ['boolean', false] : swathExpr.length > 1 ? swathExpr : null);
+    refreshSatelliteOutline();
+    map.setFilter('swath-arrows', coverage && state.colourBy === 'satWind'
+        ? [...expr, ['has', 'm_windDir'], ['>', ['coalesce', ['get', 'm_satWind'], 0], 0]]
+        : ['boolean', false]);
     map.setFilter('tracks', [...expr, ['==', ['geometry-type'], 'LineString']]);
     updateMapKey();
     map.setFilter('track-ribbons', [...expr, ['==', ['geometry-type'], 'Polygon']]);

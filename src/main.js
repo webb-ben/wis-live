@@ -43,7 +43,9 @@ import { TRACK_REBUILD_MS, rebuildTracks, shipTrackLayers, trackKey, markTracksD
 import { tickPulses } from './map/pulses.js';
 import { satelliteColours, satelliteLabel, satelliteMatch, syncSatelliteRows, satelliteKey, satelliteName, addSatelliteRow, satelliteLink } from './data/satellite/rows.js';
 import { metricValues } from './data/metrics.js';
-import { swathOpacity, openCellSummary, outlineSwathCell, syncSwathGrid, swathsBuilt, SWATH_FLUSH_MS, flushSwaths, swathOpacityKey, opacitySlider, syncOpacitySlider, hoveredCell, swathFiles, swathCells, swathPointsShown, liftSwathCell, syncSwathPoints, onMap, SWATH_MIN_REPORTS, addSwathFile, swathFeature, setOpacitySlider } from './data/satellite/coverage.js';
+import { swathsBuilt, SWATH_FLUSH_MS, flushSwaths } from './data/satellite/coverage.js';
+import { addCoverageLayers } from './data/satellite/coverageLayers.js';
+import { SATELLITE_PAGE } from './page.js';
 import { isColourable, isColourTarget, satelliteStyled, IS_AIRCRAFT, setColourBy, paintAge, showColourStatus, windArrows } from './map/colour.js';
 import { showDatasetFromUrl, gdcSearched, searchCatalogue, sortDatasetRows, datasetId, showDatasetInPopup, filterDatasetRows, initCatalogue, noteDataset, rankGdcs, startDataset, shownDataset, setShownDataset, setStartDataset } from './data/catalogue.js';
 import { scheduleReplay, replayPosition, replayWindowMs, REPLAY_TICKS, replayMinutesAt, replayWindowLabel, setReplayWindow, setReplayWindowMs, REPLAY_RANGE_MINUTES } from './messages/replay.js';
@@ -53,7 +55,7 @@ import { rebuildQueue, QueueControl, selectQueueTab, queueMessage, decodeKey } f
 import { passesFilters } from './lib/filters.js';
 import { decodePlotted, decodeEnabled, DECODE_LAYERS, setDecodeEnabled } from './data/decodeQueue.js';
 import { wis2boxOf } from './messages/wis2box.js';
-import { onMessage } from './messages/handle.js';
+import { onMessage, topicOnPage } from './messages/handle.js';
 import { updateModelField, modelFieldUrl } from './map/modelFields.js';
 import { attachSpectrum } from './data/stationDecode.js';
 import { hoverLabel, openPopup, closeInfo, infobar } from './lib/ui/popup.js';
@@ -163,48 +165,8 @@ map.on('load', () => {
             'circle-pitch-alignment': 'map',
         },
     });
-    // Each decoded satellite file as one footprint (the area its reports cover), under the points
-    // tolerance 0: MapLibre's default simplification cuts corners off cells this small
-    // at low zooms, which shows as a clipped outline on the selected or hovered cell
-    map.addSource('swaths', { type: 'geojson', data: empty, tolerance: 0 });
-    // No antialiasing, so neighbouring cells meet without hairline seams
-    map.addLayer({ id: 'swaths-fill', type: 'fill', source: 'swaths', paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.3, 'fill-antialias': false } });
-    // The selected coverage cell: filled more strongly (coloured like the coverage), with
-    // a white edge on a soft dark halo, the same all the way round
-    map.addSource('swath-selected', { type: 'geojson', data: empty, tolerance: 0 });
-    map.addLayer({ id: 'swath-lift', type: 'fill', source: 'swath-selected',
-        paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.6 } });
-    map.addLayer({ id: 'swath-lift-halo', type: 'line', source: 'swath-selected',
-        layout: { 'line-join': 'round' }, paint: { 'line-color': '#000000', 'line-width': 4, 'line-opacity': 0.3 } });
-    map.addLayer({ id: 'swath-lift-edge', type: 'line', source: 'swath-selected',
-        layout: { 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 1.5 } });
-    // On hover: a very thin line round all of that satellite's coverage, and the cell
-    // itself in black on a white halo, like the selected-point marker
-    map.addSource('swath-hover', { type: 'geojson', data: empty, tolerance: 0 });
-    var isRole = (role) => ['==', ['get', 'role'], role];
-    map.addLayer({ id: 'swath-hover-sat', type: 'line', source: 'swath-hover', filter: isRole('sat'),
-        paint: { 'line-color': '#000000', 'line-width': 0.75, 'line-opacity': 0.6 } });
-    map.addLayer({ id: 'swath-hover-halo', type: 'line', source: 'swath-hover', filter: isRole('cell'), paint: { 'line-color': '#ffffff', 'line-width': 5 } });
-    map.addLayer({ id: 'swath-hover', type: 'line', source: 'swath-hover', filter: isRole('cell'), paint: { 'line-color': '#000000', 'line-width': 2 } });
-    map.on('click', 'swaths-fill', (e) => {
-        if (nearestPoint(e.point)) return;
-        openCellSummary(e.features[0].properties.swath, e.lngLat);
-    });
-    map.on('mousemove', 'swaths-fill', (e) => {
-        if (map.queryRenderedFeatures(e.point, { layers: POINT_LAYERS }).length) return outlineSwathCell(null);
-        var f = e.features[0].properties;
-        outlineSwathCell(e.lngLat, f.swath);
-        map.getCanvas().style.cursor = 'pointer';
-        var m = METRICS[state.colourBy];
-        var reading = m && m.targets === 'satellite' && typeof f[`m_${state.colourBy}`] === 'number' ? ` · ${formatMetric(f[`m_${state.colourBy}`], m)}` : '';
-        var clouds = typeof f.m_cloudAmount === 'number' ? ` · cloud ${Math.round(f.m_cloudAmount)}%` : '';
-        hoverLabel.setLngLat(e.lngLat).setText(`${f.label}${reading || clouds}`).addTo(map);
-    });
-    map.on('mouseleave', 'swaths-fill', () => {
-        map.getCanvas().style.cursor = '';
-        hoverLabel.remove();
-        outlineSwathCell(null);
-    });
+    // Satellite coverage, under the points (src/data/satellite/coverageLayers.js)
+    addCoverageLayers({ pointLayers: POINT_LAYERS, nearestPoint });
     // Aircraft flight paths, under the points
     map.addSource('tracks', { type: 'geojson', data: empty });
     map.addLayer({
@@ -271,8 +233,6 @@ map.on('load', () => {
     // Wind arrows point the way the wind blows (reports give where it comes from)
     map.addImage('arrow', arrowSdf(), { sdf: true, pixelRatio: 2 });
     map.on('moveend', () => scheduleReplay());
-    // Finer coverage cells zoomed in (see syncSwathGrid)
-    map.on('moveend', () => syncSwathGrid());
     scheduleReplay(0);  // If switched on (it starts off), once the decoder has loaded
     // Points from other sources (airports) are squares
     map.addImage('square', squareSdf(), { sdf: true, pixelRatio: 2 });
@@ -443,8 +403,10 @@ new QueueControl().onAdd(map);
 // read-only key of what is currently drawn
 document.querySelector('.queue-pane-layers').appendChild(new LegendControl().onAdd(map));
 // The key and Style by top right; the zoom buttons top left (they
-// step aside as the sidebar opens); the world map and broker status bottom right
-map.addControl(new StyleControl(), 'top-right');
+// step aside as the sidebar opens); the world map and broker status bottom right.
+// The satellite page, which has no sidebar, keeps the top of the map clear: its key and
+// Style by are bottom left instead
+map.addControl(new StyleControl(), SATELLITE_PAGE ? 'bottom-left' : 'top-right');
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-left');
 map.addControl(new MapKey(), 'bottom-right');
 addAbout();
@@ -471,16 +433,22 @@ function updateMapPadding() {
 new MutationObserver(updateMapPadding).observe(document.body, { attributes: true, attributeFilter: ['class'] });
 window.addEventListener('resize', () => { panelPadding = ''; updateMapPadding(); });
 
-// On desktop the sidebar starts open on its Layers tab; on phones it would cover the map
-if (!PHONE.matches) {
+// On desktop the sidebar starts open on its Layers tab; on phones it would cover the map.
+// The satellite page has none: it's built, as its layer switches start the decoding and
+// other panels look things up in it, but hidden (style.css) and never opened
+if (!PHONE.matches && !SATELLITE_PAGE) {
     document.body.classList.add('queue-open');
     selectQueueTab('layers');
 }
 
 connectFastest({
     onMessage: (topic, message) => {
+        // Each page (page.js) lists only its own messages
         var feature = parseMessage(topic, message);
-        queueMessage(topic, message, feature && onMessage(topic, feature), feature);
+        if (!topicOnPage(topic, feature)) return;
+        var record = feature && onMessage(topic, feature);
+        // Listed in the sidebar's messages, which the satellite page doesn't show
+        if (!SATELLITE_PAGE) queueMessage(topic, message, record, feature);
     },
     // The map key shows which broker the page is on
     onState: updateMapKey,
@@ -498,4 +466,3 @@ rankGdcs();
 setInterval(() => document.hidden || rankGdcs(true), 60e3);
 
 // ---------- Tracks. Aircraft and ship reports are joined by identifier in time order:
-

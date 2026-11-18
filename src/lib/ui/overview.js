@@ -13,7 +13,8 @@ const OVERVIEW_REFRESH_MS = 2000;
 // Returns the section to put on the page, and:
 //   draw()               redraws (also every OVERVIEW_REFRESH_MS, and after a pan or zoom)
 //   hover(lngLat|null)   marks where the map's hover label is
-//   select(sel|null)     marks what the info panel shows: { at: [lon, lat], colour, h3 }
+//   select(sel|null)     marks what the info panel shows: { at: [lon, lat], colour, h3 }, or
+//                        for a satellite, border ([lon, lat] segments) in place of h3
 export function createOverview({ map, drawContent, hoveredCell }) {
     var section = document.createElement('div');
     section.className = 'key-overview';
@@ -168,6 +169,15 @@ export function createOverview({ map, drawContent, hoveredCell }) {
                 ctx.stroke();
             }
             ctx.restore();
+            // A selected satellite's whole coverage outlined, as on the map, where the lines
+            // cross is enough to mark the cell: no dot. Otherwise a cell's own outline and the dot
+            if (selected.border) {
+                stroke(() => selected.border.forEach((segment) => segment.forEach(([x, y], i) => {
+                    var xy = projection([Math.max(-180, Math.min(180, x)), y]);
+                    i ? ctx.lineTo(...xy) : ctx.moveTo(...xy);
+                })));
+                return drawHover();
+            }
             if (selected.h3) outline(selected.h3, 2);
             stroke(() => ctx.arc(picked[0], picked[1], 8, 0, 2 * Math.PI), 2);
             ctx.beginPath();
@@ -178,14 +188,18 @@ export function createOverview({ map, drawContent, hoveredCell }) {
             ctx.strokeStyle = '#ffffff';
             ctx.stroke();
         }
+        drawHover();
 
-        if (!hovered) return;
-        var at = projection([wrap(hovered.lng), hovered.lat]);
-        if (!at) return;
-        var cell = hoveredCell();
-        var h3 = cell && cell.split('|').pop();
-        if (h3) outline(h3);
-        stroke(() => ctx.arc(at[0], at[1], 6, 0, 2 * Math.PI));
+        // What the map's pointer is over: its cell outlined, in a plain ring
+        function drawHover() {
+            if (!hovered) return;
+            var at = projection([wrap(hovered.lng), hovered.lat]);
+            if (!at) return;
+            var cell = hoveredCell();
+            var h3 = cell && cell.split('|').pop();
+            if (h3) outline(h3);
+            stroke(() => ctx.arc(at[0], at[1], 6, 0, 2 * Math.PI));
+        }
     }
 
     return {

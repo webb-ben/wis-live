@@ -2,6 +2,7 @@ import { filters, filterModes } from './filters.js';
 import { FORMATS, DISCIPLINES } from '../messages/messages.js';
 import { SATELLITE_STYLE, WAVE_STYLE, METRICS } from '../config.js';
 import { hiddenLayers } from '../map/layers.js';
+import { SATELLITE_PAGE, GBON_PAGE, metricOnPage } from '../page.js';
 import { setState, state } from '../state.js';
 import { setStartDataset, shownDataset, startDataset, setShownDataset } from '../data/catalogue.js';
 import { setReplayWindowMs, REPLAY_RANGE_MINUTES, replayWindowMs } from '../messages/replay.js';
@@ -14,7 +15,7 @@ import { setReplayWindowMs, REPLAY_RANGE_MINUTES, replayWindowMs } from '../mess
 // left out for the default, observation type). Other parameters are kept.
 export const FILTER_PARAMS = { text: 'topic', centres: 'centre', format: 'format', disciplines: 'discipline' };
 
-export const DEFAULT_COLOUR = 'kind';
+export const DEFAULT_COLOUR = SATELLITE_PAGE ? SATELLITE_STYLE : 'kind';
 
 export let startColour = DEFAULT_COLOUR;  // The measure the page opens coloured by
 
@@ -26,12 +27,14 @@ export function readFiltersFromUrl() {
     filters.format = FORMATS.hasOwnProperty(params.get(FILTER_PARAMS.format)) ? params.get(FILTER_PARAMS.format) : '';
     list(FILTER_PARAMS.disciplines).filter((d) => DISCIPLINES.hasOwnProperty(d)).forEach((d) => filters.disciplines.add(d));
     list('hide').filter((key) => filterModes.hasOwnProperty(key)).forEach((key) => { filterModes[key] = 'hide'; });
+    // Only the styles this page offers (see page.js); another page's are ignored. Wave
+    // spectra are ships' and buoys', which the GBON page doesn't show
     var style = params.get('style');
-    if (style === 'kind' || style === SATELLITE_STYLE || style === WAVE_STYLE || METRICS.hasOwnProperty(style)) startColour = style;
-    // Satellites are off at first (their files are the heaviest downloads), unless the
-    // link styles the map by satellite or by a satellite measure, which needs them on
-    if (style === SATELLITE_STYLE || (METRICS[style] && METRICS[style].targets === 'satellite')) hiddenLayers.delete('satellite');
-    setState({ colouredOnly: params.get('require') === '1', modelFieldOn: params.get('base') === '1' });
+    var onPage = SATELLITE_PAGE ? style === SATELLITE_STYLE || (METRICS[style] && metricOnPage(METRICS[style]))
+        : style === 'kind' || (style === WAVE_STYLE && !GBON_PAGE) || (METRICS[style] && metricOnPage(METRICS[style]));
+    if (onPage) startColour = style;
+    // The satellite page has no Require value / Satellites only checkbox: it's always on there (see state.js)
+    setState({ colouredOnly: SATELLITE_PAGE || params.get('require') === '1', modelFieldOn: params.get('base') === '1' });
     // The full id, or without its urn:wmo:md: (dataset=ma-marocmeteo:h6vqw6); either may be URL-encoded or not
     var dataset = (params.get('dataset') || '').trim();
     if (/^[a-z0-9-]+:\S+$/i.test(dataset) && !/^urn:/i.test(dataset)) dataset = `urn:wmo:md:${dataset}`;
@@ -75,7 +78,7 @@ export function writeFiltersToUrl() {
     // The options only count while colouring by a measure (and the base layer only for one with a model field)
     var m = METRICS[state.colourBy];
     set('style', state.colourBy !== DEFAULT_COLOUR ? state.colourBy : '');
-    set('require', state.colouredOnly && (m || state.colourBy === SATELLITE_STYLE) ? '1' : '');
+    set('require', !SATELLITE_PAGE && state.colouredOnly && (m || state.colourBy === SATELLITE_STYLE) ? '1' : '');
     set('base', state.modelFieldOn && m && m.wms ? '1' : '');
     if (!startDataset) set('dataset', shownDataset ? shownDataset.id : '');  // Kept while a link's dataset is still loading
     // A duration, not a time, so the link still means something tomorrow

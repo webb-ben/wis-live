@@ -16,6 +16,7 @@ import { clearStationDecodes, queueStationDecodes, attachSpectrum, metricQueue, 
 import { writeFiltersToUrl } from '../lib/url.js';
 import { syncMetricTile } from '../lib/ui/popup.js';
 import { stylePanel } from '../lib/ui/legend.js';
+import { SATELLITE_PAGE } from '../page.js';
 
 // The layers a measure colours (stations, ships and buoys unless it says satellites)
 export function colourTargets(m) {
@@ -75,13 +76,16 @@ export function paintAge() {
     // The coverage slider sets the even shading, and scales the cloud-amount range with
     // it (clear 0.05 to overcast 0.8 at 30%). Coverage doesn't fade with age: the slider
     // alone sets how strong it is
-    var level = swathOpacity[swathOpacityKey()];
-    var cloud = state.colourBy !== 'cloudAmount' ? level
+    // The satellite page's coverage is opaque, whatever the style: where passes overlap,
+    // the latest observed (drawn on top) is the one seen, rather than a blend of them
+    var level = SATELLITE_PAGE ? 1 : swathOpacity[swathOpacityKey()];
+    var cloud = state.colourBy !== 'cloudAmount' || SATELLITE_PAGE ? level
         : ['case', ['has', 'm_cloudAmount'], ['min', 1, ['*', level / 0.3,
             ['interpolate', ['linear'], ['get', 'm_cloudAmount'], 0, 0.05, 100, 0.8]]], level];
     map.setPaintProperty('swaths-fill', 'fill-opacity', cloud);
     // The selected cell: a little stronger than the coverage so it stands out, never solid
-    map.setPaintProperty('swath-lift', 'fill-opacity', Math.min(0.8, level + 0.2));
+    // (on the satellite page, as opaque as the rest: its white edge marks it)
+    map.setPaintProperty('swath-lift', 'fill-opacity', SATELLITE_PAGE ? 1 : Math.min(0.8, level + 0.2));
     map.setPaintProperty('tracks', 'line-opacity', ['interpolate', ['linear'], ['-', Date.now(), ['get', 'born']], 0, 0.9, FADE_MS, 0.35]);
 }
 
@@ -145,6 +149,10 @@ export function setColourBy(key, legend) {
     map.setPaintProperty('points-ext', 'icon-color', pointColor);
     map.setPaintProperty('points-ext', 'icon-halo-color', styledOutline);
     map.setPaintProperty('points-arrow', 'icon-color', color);
+    var swathArrowColor = key === 'satWind'
+        ? ['interpolate', ['linear'], ['get', 'm_satWind'], ...METRICS.satWind.stops.flat()]
+        : ['get', 'color'];
+    map.setPaintProperty('swath-arrows', 'icon-color', swathArrowColor);
     if (windArrows()) {
         // Longer arrows for stronger winds, which also win where arrows would overlap
         var speed = ['to-number', ['get', `m_${key}`], 0];
@@ -152,6 +160,8 @@ export function setColourBy(key, legend) {
         map.setLayoutProperty('points-arrow', 'icon-size', ['interpolate', ['linear'], ['zoom'],
             1, ['*', 0.6, length], 6, ['*', 0.9, length], 10, ['*', 1.2, length]]);
         map.setLayoutProperty('points-arrow', 'symbol-sort-key', ['-', 0, speed]);
+        if (key === 'satWind') map.setLayoutProperty('swath-arrows', 'icon-size', ['interpolate', ['linear'], ['zoom'],
+            1, ['*', 0.4, length], 6, ['*', 0.6, length], 10, ['*', 0.8, length]]);
     }
     map.setPaintProperty('swaths-fill', 'fill-color', swathColor);
     map.setPaintProperty('swath-lift', 'fill-color', swathColor);
@@ -163,11 +173,12 @@ export function setColourBy(key, legend) {
     var scale = legend.querySelector('.legend-scale');
     if (scale) scale.hidden = !m;
     // The same checkbox hides whatever the style doesn't colour: points without a value
-    // for a measure, or anything not from a satellite
+    // for a measure, or anything not from a satellite. The satellite page has nothing
+    // else, and its coverage already leaves out cells without a value
     var colouredOnlyRow = legend.querySelector('.legend-coloured-only');
     if (colouredOnlyRow) {
         var bySatellite = key === SATELLITE_STYLE, byWaves = key === WAVE_STYLE;
-        colouredOnlyRow.hidden = !m && !bySatellite && !byWaves;
+        colouredOnlyRow.hidden = SATELLITE_PAGE || (!m && !bySatellite && !byWaves);
         colouredOnlyRow.querySelector('span').textContent = bySatellite ? 'Satellites only' : byWaves ? 'Spectra only' : 'Require value';
         colouredOnlyRow.title = bySatellite ? 'Only satellite observations are drawn'
             : byWaves ? 'Only ships and buoys that report a wave spectrum are drawn' : 'Only points with a value for the measure are drawn';

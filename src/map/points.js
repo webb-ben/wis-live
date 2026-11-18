@@ -13,6 +13,7 @@ import { satelliteKey, addSatelliteRow } from '../data/satellite/rows.js';
 import { metricValues } from '../data/metrics.js';
 import { indexTwin, unindexTwin } from './twins.js';
 import { showLegendRow } from '../lib/ui/legend.js';
+import { PAGE_CLASSES, classOnPage } from '../page.js';
 
 export const records = new Map();  // id -> record for every point on the map
 export const byDataId = new Map();  // data_id -> record, so each observation is drawn once
@@ -86,6 +87,15 @@ export function isSpaceRecord(record) {
     return isSpaceBased(record.topic) || /-satellite$/.test(layerOf(record));
 }
 
+// A record's kind of observation (an OBS_CLASSES key): from its layer (cache-station,
+// gts-upperair...), or for an origin copy from its topic. Airports' METARs are their own
+export function recordClass(record) {
+    var layer = layerOf(record);
+    if (layer === 'origin') return topicClass(record);
+    var match = /^(?:cache|gts|replay)-(.+)$/.exec(layer);
+    return match ? match[1] : layer;
+}
+
 export function layerOf(record) {
     if (record.subLayer) return record.subLayer;
     if (record.decodedLayer) return record.decodedLayer;
@@ -97,6 +107,9 @@ export function layerOf(record) {
 // The origin and every global cache each republish an observation, so a cache
 // copy replaces an origin one but later copies are skipped
 export function addPoint(record) {
+    // Only the kinds the page shows (see page.js): on the GBON page, the stations and
+    // soundings in a file that holds other kinds too. Nothing is drawn for the rest
+    if (PAGE_CLASSES && !classOnPage(recordClass(record))) return null;
     var existing = byDataId.get(record.props.data_id);
     if (existing && records.has(existing.id)) {
         // An update replaces the data published earlier under its data_id; the caches'
