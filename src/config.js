@@ -132,7 +132,8 @@ export const METRICS = {
         stops: GEOMET_STOPS.waves },
     seaLevel: { group: 'Space-based (satellites)', targets: 'satellite', label: 'Sea-level anomaly', unit: 'cm', ids: [10102], convert: (v) => v * 100,
         stops: [[-30, '#2166ac'], [-10, '#92c5de'], [0, '#f7f7f7'], [10, '#f4a582'], [30, '#b2182b']] },
-    skinTemp: { group: 'Space-based (satellites)', targets: 'satellite', label: 'Surface (skin) temperature', unit: '°C', ids: [12061], convert: (v) => v - 273.15,
+    // GeoMet has no skin temperature; the 2 m air temperature is the nearest model field
+    skinTemp: { group: 'Space-based (satellites)', targets: 'satellite', wms: 'GDPS_15km_AirTemp_2m', wmsLabel: 'air temperature at 2 m', label: 'Surface (skin) temperature', unit: '°C', ids: [12061], convert: (v) => v - 273.15,
         stops: GEOMET_STOPS.temp },
     // Low values purple, so an ozone hole stands out
     ozone: { group: 'Space-based (satellites)', targets: 'satellite', label: 'Total ozone', unit: 'DU', ids: [15001],

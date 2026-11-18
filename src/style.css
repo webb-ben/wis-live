@@ -1330,6 +1330,19 @@
   margin-left: 52px;
 }
 
+/* A satellite's link to its page in OSCAR/Space, after its name */
+.legend-oscar {
+  margin-left: 4px;
+  padding: 0 2px;
+  color: #6c757d;
+  font-size: 11px;
+  text-decoration: none;
+}
+.legend-oscar:hover,
+.legend-oscar:focus-visible {
+  color: #0d6efd;
+}
+
 /* An option within a group (no map symbol of its own) */
 /* A setting within a group, set apart from the layers: a switch with a note */
 .legend-toggle.legend-option {
@@ -1740,6 +1753,16 @@
   min-width: 0;
   aspect-ratio: 2 / 1;
   cursor: crosshair;
+}
+/* What's hovered on the map, drawn over the overview; clicks go through to it */
+.overview-frame {
+  position: relative;
+}
+.key-overview canvas.overview-hover {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  pointer-events: none;
 }
 /* Style by and Layers, top right: the parts of the key that change the map */
 /* Top right: the key, then Style by, then Layers and Flat/Globe */

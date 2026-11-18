@@ -46,23 +46,36 @@ export const SATELLITE_NAMES = {
 };
 export const INSTRUMENT_NAMES = { 203: 'MHS', 221: 'IASI', 570: 'AMSU-A', 591: 'AVHRR/3', 616: 'VIIRS', 620: 'CrIS', 621: 'ATMS' };
 
-// Satellite catalogue pages in OSCAR/Space. Add links by WMO identifier or name so
-// decoded and topic-derived satellite reports are linked consistently.
-export const SATELLITE_URLS = {
-    3: 'https://space.oscar.wmo.int/satellites/view/metop_1',
-    4: 'https://space.oscar.wmo.int/satellites/view/metop_b',
-    5: 'https://space.oscar.wmo.int/satellites/view/metop_c',
+// Satellite pages in OSCAR/Space (space.oscar.wmo.int/satellites/view/<slug>).
+// Most slugs follow from the name (see satelliteOscarUrl); these are the WMO
+// identifiers whose slug doesn't, checked against OSCAR's satellites.json.
+// Null: OSCAR has no page (combinations, or satellites it doesn't list)
+const range = (from, to, slug) => Object.fromEntries(Array.from({ length: to - from + 1 }, (_, i) => [from + i, slug(from + i)]));
+const OSCAR_SLUGS = {
+    3: 'metop_b', 4: 'metop_a', 5: 'metop_c', 20: 'spot_1', 21: 'spot_2', 22: 'spot_3', 23: 'spot_4', 40: null, 44: 'seosar_paz',
+    121: 'adeos_2', 122: 'gcom_w', 150: 'himawari_3_gms_3', 151: 'himawari_4_gms_4', 152: 'himawari_5_gms_5',
+    153: 'himawari_1_gms_1', 154: 'himawari_2_gms_2', 171: 'himawari_6_mtsat_1r', 172: 'himawari_7_mtsat_2', 224: 'snpp',
+    // DMSP 7 to 16 (240-249) and 17 to 19 (285-287) are OSCAR's DMSP-F07 to F19
+    ...range(240, 249, (id) => `dmsp_f${String(id - 233).padStart(2, '0')}`),
+    ...range(285, 287, (id) => `dmsp_f${id - 268}`),
+    258: 'ews_g3_formerly_goes_14', 269: null, 288: 'gpm_core_observatory', 289: 'oco_2', 310: 'electro_goms', 311: null,
+    322: 'meteor_3m', 323: null, 341: 'resurs_o1_4', 423: 'oceansat_3_eos_06', 472: null, 502: 'hy_2a', 503: 'hy_2b',
+    510: null, 700: 'itos_1_tiros_m', 710: 'sms_1', 711: 'sms_2', 720: 'topex_poseidon', 721: 'gfo',
+    // COSMIC-2's twelve (724-729, 750-755) share one page; 740-745 are the six of the first COSMIC
+    ...range(724, 729, () => 'cosmic_2'), ...range(750, 755, () => 'cosmic_2'), ...range(740, 745, () => 'cosmic_1'),
+    782: 'toms_earth_probe', 786: 'c_nofs', 800: null, 801: null, 810: 'coms', ...range(850, 855, () => null),
 };
 
-// OSCAR's satellite pages use a URL-safe acronym: lowercase ASCII letters and digits,
-// with runs of hyphens/spaces converted to underscores and all other punctuation removed.
+// The OSCAR/Space page of a satellite, by WMO identifier (BUFR 0 01 007) or by name
+// (the table's, or a WIS2 topic's). OSCAR's slugs are mostly the name in lowercase
+// ASCII letters and digits, runs of spaces and hyphens as underscores. Null if none
 export function satelliteOscarUrl(number, name) {
     var id = number;
     if (id === null && name) {
         var match = Object.keys(SATELLITE_NAMES).find((key) => SATELLITE_NAMES[key] === name);
         if (match) id = Number(match);
     }
-    if (id !== null && SATELLITE_URLS[id]) return SATELLITE_URLS[id];
+    if (id !== null && id in OSCAR_SLUGS) return OSCAR_SLUGS[id] && `https://space.oscar.wmo.int/satellites/view/${OSCAR_SLUGS[id]}`;
 
     var acronym = String(name || '').trim();
 

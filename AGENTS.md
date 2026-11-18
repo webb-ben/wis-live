@@ -128,8 +128,9 @@ bottom; the core comes first, roughly in this order:
    tabs (`selectQueueTab`). `filters` is shared by the map (via
    `applyMapFilter` → layer filter expressions), the message list (via
    `matchesFilters`) and the dataset list (via `datasetMatchesFilters`).
-   Keep all three in sync when adding a filter. Filters, styling and a shown
-   dataset are mirrored in the URL (`readFiltersFromUrl`/`writeFiltersToUrl`).
+   Keep all three in sync when adding a filter. Filters, styling, a shown
+   dataset and the Global Replay (`?replay=2h`, `90m`, or a URL-encoded ISO time;
+   it turns the layer on) are mirrored in the URL (`readFiltersFromUrl`/`writeFiltersToUrl`).
 6. **MQTT** (`src/mqtt.js`) — `connectFastest` races the brokers in `hosts`
    and keeps the first one that connects and subscribes to `origin/a/wis2/#`
    and `cache/a/wis2/#`; the page passes `onMessage` and `onState`. It stays
@@ -168,10 +169,16 @@ measured value (origin stations too, via `isColourable`), per-satellite layers, 
 merging, Global Replay, the Global Discovery Catalogue (Datasets tab: rows
 are kept sorted by when each dataset was last seen, via `sortDatasetRows`),
 airport METARs, the Equal Earth world map (a D3 canvas above the legend in the
-map key, as MapLibre has no Equal Earth; it filters with `passesFilters` like the key),
+map key, as MapLibre has no Equal Earth; it filters with `passesFilters` like the key,
+and marks what the map's pointer is over on a canvas of its own, `drawOverviewHover`),
 satellite coverage (each swath file is packed into `swathFiles`
 and adds to running totals per H3 cell, not points; a report becomes a record only
-when clicked, via `swathRecord`) and tracks (`buildTracks`: aircraft float at their
+when clicked, via `swathRecord`. Cells are kept in grids: `globalGrid` at
+`H3_RESOLUTION` (2) for the whole globe, which the overview and key use, and from
+zoom 3 a finer `viewGrid` over the area in view, built a slice at a time
+(`syncSwathGrid`). One-cell gaps are filled from their neighbours' files
+(`refreshSatelliteHoles`); a file's mean fills its empty cells only when its values
+agree (`FILL_SPREAD_MAX`); cloud-motion wind files stay points) and tracks (`buildTracks`: aircraft float at their
 altitude; ships, joined by call sign or WIGOS id via `shipTrackKey`, are lines on
 the Tracks rows under Cache and GTS Ships).
 

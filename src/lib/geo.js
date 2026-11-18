@@ -1,6 +1,7 @@
 // Geometry on the globe: distances, hulls and rings, lines across ±180, and the
 // H3 hexagon cells satellite coverage is drawn in.
-import { latLngToCell, cellToBoundary, cellsToMultiPolygon, gridDisk } from 'h3-js';
+import { latLngToCell, cellToBoundary, cellsToMultiPolygon, gridDisk, getHexagonEdgeLengthAvg, getResolution, UNITS } from 'h3-js';
+export { getResolution };
 
 export function distanceKm([lon1, lat1], [lon2, lat2]) {
     var r = Math.PI / 180;
@@ -71,12 +72,20 @@ export function inOrNearRing([x, y], ring, margin) {
 }
 
 // Coverage cells are H3 hexagons (h3-js), the same everywhere on the globe with
-// no seam at ±180. Resolution 3 cells are about 60 km a side.
-export const H3_RESOLUTION = 3;
-export const H3_SAMPLE_DEG = 0.5;  // Sample finely enough to find resolution 3 cells across a footprint
+// no seam at ±180. The whole globe's (the overview and the map zoomed out) are
+// resolution 2, about 180 km a side; each resolution up is about 2.6 times smaller,
+// down to H3_RESOLUTION_MAX zoomed in
+export const H3_RESOLUTION = 2;
+export const H3_RESOLUTION_MAX = 5;
 
-export function h3Cell(lon, lat) {
-    return latLngToCell(lat, ((lon + 540) % 360) - 180, H3_RESOLUTION);
+export function h3Cell(lon, lat, resolution = H3_RESOLUTION) {
+    return latLngToCell(lat, ((lon + 540) % 360) - 180, resolution);
+}
+
+// A step in degrees fine enough to find every cell of a resolution across a footprint
+// (about 1.2° at resolution 2, 0.45° at 3, 0.06° at 5)
+export function h3SampleDeg(resolution) {
+    return getHexagonEdgeLengthAvg(resolution, UNITS.km) / 111 * 0.72;
 }
 
 export function h3Neighbors(cell) {

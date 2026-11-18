@@ -11,7 +11,7 @@ import { COLORS, OBS_CLASSES, METRICS, COLOURABLE, SATELLITE_LAYERS, ORIGIN_COLO
 import { parseMessage, DISCIPLINES, FORMATS, isDataLink, isUpdate, formatOf, GATEWAY_TOPIC, GATEWAY_SATELLITE, GATEWAY_AIRCRAFT,
     GATEWAY_UPPER_AIR, isSpaceBased, disciplineOf, topicClass, stationId, pointFor, wis2boxVersion } from './messages.js';
 import { esc, darken, svgEl, knots } from './lib/util.js';
-import { distanceKm, segments, unwrap, convexHull, inOrNearRing, H3_RESOLUTION, H3_SAMPLE_DEG, h3Cell, h3Neighbors, cellRing, cellsOutline } from './lib/geo.js';
+import { distanceKm, segments, unwrap, convexHull, inOrNearRing, H3_RESOLUTION, H3_RESOLUTION_MAX, h3SampleDeg, getResolution, h3Cell, h3Neighbors, cellRing, cellsOutline } from './lib/geo.js';
 import { connectFastest, brokerState } from './mqtt.js';
 import { callDecoder, preloadDecoder, decoderReady, decoderGaveUp, onDecoderSettled } from './decoder.js';
 import { SATELLITE_NAMES, satelliteOscarUrl, INSTRUMENT_NAMES, AMV_METHODS, PIXEL_TYPES, satelliteNamed } from './satellite/names.js';
@@ -22,6 +22,7 @@ const MAX_POINTS = 100000;        // Oldest points are dropped beyond this...
 const MAX_DECODED_POINTS = 30000;  // ...with reports decoded from files capped separately so they can't crowd out the rest,
 const MAX_SATELLITE_POINTS = 100000;  // ...and satellite points apart again: small files, and swaths while coverage is off (see SWATH_FILES_MAX)
 const SATELLITE_ROWS_MAX = 200;  // Decoded values kept per satellite report (IASI has thousands of channels)
+const FILL_SPREAD_MAX = 0.1;  // A file's mean fills its empty coverage cells only if its values' spread (SD) is within this share of the colour scale
 const FADE_MS = 4 * 60 * 60 * 1000;  // Points fade over four hours
 const PULSE_MS = 1600;           // Length of the ripple on new arrivals
 // Colours, kinds of observation and the measures to colour by are in config.js
@@ -48,7 +49,7 @@ function updateModelField(legend) {
     row.classList.toggle('legend-disabled', !available);
     row.querySelector('.legend-model-note').textContent = !m ? ''
         : !available ? `No model field for ${m.label.toLowerCase()}`
-        : `ECCC ${m.wms.split('_')[0]} ${m.label.toLowerCase()}, ${new Date().toISOString().slice(11, 13)}:00 UTC, under the points`;
+        : `ECCC ${m.wms.split('_')[0]} ${m.wmsLabel || m.label.toLowerCase()},${new Date().toISOString().slice(11, 13)}:00 UTC, under the points`;
     var info = legend.querySelector('.legend-model-info');
     info.hidden = !on;
     if (map.getLayer('model-field')) {
@@ -323,7 +324,12 @@ const records = new Map();  // id -> record for every point on the map
 // built while the page loads, lists what they hold
 const swathFiles = new Map();  // file data_id -> swath file, oldest first
 let shipTrackLayers = new Set();  // Layers with a ship track drawn, for the map key (set by buildTracks)
-const swathCells = new Map();  // satellite + H3 cell -> totals of the files covering it
+// Coverage is kept in grids of H3 cells (see the Satellite coverage section): the whole
+// globe's, always (the overview and the map key use it), and while zoomed in a finer one
+// over the area in view, which the map then draws instead
+const globalGrid = { key: 'global', res: H3_RESOLUTION, bounds: null, cells: new Map(), dirty: new Set(), removed: [] };
+let viewGrid = null;
+const swathCells = globalGrid.cells;  // satellite + H3 cell -> totals of the files covering it
 const pools = { wis2: new Map(), decoded: new Map(), satellite: new Map() };  // Same records, in arrival order per cap
 const POOL_CAPS = { wis2: MAX_POINTS, decoded: MAX_DECODED_POINTS, satellite: MAX_SATELLITE_POINTS };
 
@@ -470,6 +476,23 @@ const hoverLabel = new maplibregl.Popup({
     className: 'hover-label',
     offset: 10,
 });
+// Whatever the label is put on (a point, a track, a coverage cell) is marked on the
+// world overview too, and unmarked when it goes (see drawOverviewHover)
+{
+    const placeLabel = hoverLabel.setLngLat.bind(hoverLabel), removeLabel = hoverLabel.remove.bind(hoverLabel);
+    hoverLabel.setLngLat = (lngLat) => {
+        overviewHovered = maplibregl.LngLat.convert(lngLat);
+        drawOverviewHover();
+        return placeLabel(lngLat);
+    };
+    hoverLabel.remove = () => {
+        if (overviewHovered) {
+            overviewHovered = null;
+            drawOverviewHover();
+        }
+        return removeLabel();
+    };
+}
 
 map.on('load', () => {
     var empty = { type: 'FeatureCollection', features: [] };
@@ -613,6 +636,8 @@ map.on('load', () => {
     // Wind arrows point the way the wind blows (reports give where it comes from)
     map.addImage('arrow', arrowSdf(), { sdf: true, pixelRatio: 2 });
     map.on('moveend', () => scheduleReplay());
+    // Finer coverage cells zoomed in (see syncSwathGrid)
+    map.on('moveend', () => syncSwathGrid());
     scheduleReplay(0);  // If switched on (it starts off), once the decoder has loaded
     // Points from other sources (airports) are squares
     map.addImage('square', squareSdf(), { sdf: true, pixelRatio: 2 });
@@ -1032,7 +1057,10 @@ class LegendControl {
                 applyMapFilter();
                 if (key === 'obs' || key === 'origin') rebuildQueue();
                 if (key === 'airports' && e.target.checked) queueAirports();
-                if (key === 'replay' && e.target.checked) scheduleReplay(0);
+                if (key === 'replay') {
+                    if (e.target.checked) scheduleReplay(0);
+                    writeFiltersToUrl();  // ?replay= follows it
+                }
             });
         });
         // Sublayers are greyed out while their parent is off
@@ -1245,7 +1273,7 @@ function updateMapKey() {
     if (!hidden.includes('gts-tracks') && drawn('gts-aircraft')) {
         rows.push(`<div class="key-row"><span class="legend-dot legend-line" style="--color: linear-gradient(90deg, #99e9f2, #22b8cf, #1971c2, #5f3dc4)"></span>Aircraft tracks by altitude</div>`);
     }
-    if (state.modelFieldOn && m && m.wms) rows.push(`<div class="key-note">Base layer: ECCC model ${esc(m.label.toLowerCase())}</div>`);
+    if (state.modelFieldOn && m && m.wms) rows.push(`<div class="key-note">Base layer: ECCC model ${esc(m.wmsLabel || m.label.toLowerCase())}</div>`);
     if (windArrows()) {
         rows.push('<div class="key-note"><span class="key-arrow">➜</span>Arrows point the way the wind blows; longer is stronger. Zoom in for more.</div>');
         rows.push(`<div class="key-note">${symbol('ring', m.stops[0][1])}Calm</div>`);
@@ -1360,7 +1388,7 @@ function showInfo(content) {
 // Marks the coverage cell holding a selected report, or a selected cell (null clears it)
 function liftSwathCell(record) {
     var file = record && swathFiles.get(record.fileKey);
-    liftCell(file && swathCells.get(swathCellId(file.sat, ...record.coords)));
+    liftCell(file && shownGrid().cells.get(swathCellId(file.sat, ...record.coords)));
 }
 
 function liftCell(cell) {
@@ -1371,17 +1399,18 @@ function liftCell(cell) {
 // Outlines the coverage cell under the pointer, and thinly all of its satellite's
 // coverage (null takes both away)
 let hoveredCell = null;
-const SAT_OUTLINE_MAX_CELLS = 2500;  // Of about 5,900 at this resolution; more is too slow to outline
+const SAT_OUTLINE_MAX_CELLS = 2500;  // Of about 5,900 at resolution 3; more is too slow to outline
 let satOutline = { sat: null, cells: 0, features: [] };  // The satellite's outline, kept while its coverage is unchanged
 function outlineSwathCell(lngLat, sat) {
     var source = map.getSource('swath-hover');
-    var cell = lngLat && h3Cell(lngLat.lng, lngLat.lat);
+    var grid = shownGrid();
+    var cell = lngLat && h3Cell(lngLat.lng, lngLat.lat, grid.res);
     var id = cell ? `${sat}|${cell}` : null;
     if (!source || id === hoveredCell) return;
     hoveredCell = id;
     if (cell) {
-        var cells = [...swathCells.values()].filter((c) => c.sat === sat).map((c) => c.h3);
-        if (satOutline.sat !== sat || satOutline.cells !== cells.length) {
+        var cells = [...grid.cells.values()].filter((c) => c.sat === sat).map((c) => c.h3);
+        if (satOutline.sat !== sat || satOutline.cells !== cells.length || satOutline.grid !== grid) {
             // H3 can't merge some areas (one wrapping round the globe throws) and takes minutes
             // over nearly global ones; then only the cell itself is outlined, rather than the
             // hover failing or freezing the page
@@ -1391,7 +1420,7 @@ function outlineSwathCell(lngLat, sat) {
             } catch (err) {
                 console.debug(`No coverage outline for ${sat}: ${err.message}`);
             }
-            satOutline = { sat, cells: cells.length, features: rings.map((ring) => ({ type: 'Feature',
+            satOutline = { sat, grid, cells: cells.length, features: rings.map((ring) => ({ type: 'Feature',
                 properties: { role: 'sat' }, geometry: { type: 'LineString', coordinates: ring } })) };
         }
     }
@@ -3651,7 +3680,10 @@ function applyMapFilter() {
     var twinShown = ['all', ...TWIN_LAYERS.filter((l) => !effectiveHidden().includes(l)).map((l) => ['!=', ['get', `twin_${l}`], true])];
     map.setFilter('points-ext', [...shown, square, twinShown]);
     map.setFilter('pulses', tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr);
-    map.setFilter('swaths-fill', !coverage ? ['boolean', false] : expr.length > 1 ? expr : null);
+    // Coloured by a satellite measure, coverage its files measure but the cell has no
+    // value for (too far from any report to fill) is left out rather than drawn plain
+    var swathExpr = METRICS[state.colourBy] ? [...expr, ['!=', ['get', `no_${state.colourBy}`], true]] : expr;
+    map.setFilter('swaths-fill', !coverage ? ['boolean', false] : swathExpr.length > 1 ? swathExpr : null);
     map.setFilter('tracks', [...expr, ['==', ['geometry-type'], 'LineString']]);
     updateMapKey();
     map.setFilter('track-ribbons', [...expr, ['==', ['geometry-type'], 'Polygon']]);
@@ -3756,6 +3788,28 @@ function readFiltersFromUrl() {
     if (style === SATELLITE_STYLE || (METRICS[style] && METRICS[style].targets === 'satellite')) hiddenLayers.delete('satellite');
     setState({ colouredOnly: params.get('require') === '1', modelFieldOn: params.get('base') === '1' });
     if (/^urn:wmo:md:/.test(params.get('dataset') || '')) startDataset = params.get('dataset');
+    var replayMinutes = params.has('replay') ? replayMinutesFrom(params.get('replay')) : null;
+    if (replayMinutes) {
+        hiddenLayers.delete('replay');
+        replayWindowMs = replayMinutes * 60 * 1000;
+    }
+}
+
+// ?replay= turns the Global Replay on, reaching back a duration (90m, 2h, or plain
+// minutes) or to a time (ISO 8601, URL-encoded: 2026-11-17T12%3A00Z), held within
+// what its slider allows (5 minutes to 12 hours). Null if it reads as neither
+function replayMinutesFrom(value) {
+    var duration = /^(\d+(?:\.\d+)?)\s*(m|min|h)?$/i.exec(value.trim());
+    var minutes = duration ? Number(duration[1]) * (/^h$/i.test(duration[2] || '') ? 60 : 1)
+        : (Date.now() - Date.parse(value)) / 60000;
+    if (!(minutes > 0)) return null;
+    var [far, near] = REPLAY_RANGE_MINUTES;
+    return Math.round(Math.min(far, Math.max(near, minutes)));
+}
+
+// The replay window as written in the URL: whole hours as 2h, anything else as 90m
+function replayParam(minutes) {
+    return minutes >= 60 && minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`;
 }
 
 function writeFiltersToUrl() {
@@ -3776,8 +3830,10 @@ function writeFiltersToUrl() {
     set('require', state.colouredOnly && (m || state.colourBy === SATELLITE_STYLE) ? '1' : '');
     set('base', state.modelFieldOn && m && m.wms ? '1' : '');
     if (!startDataset) set('dataset', shownDataset ? shownDataset.id : '');  // Kept while a link's dataset is still loading
+    // A duration, not a time, so the link still means something tomorrow
+    set('replay', hiddenLayers.has('replay') ? '' : replayParam(Math.round(replayWindowMs / 60000)));
     var share = document.querySelector('.queue-share');
-    if (share) share.hidden = !['topic', 'centre', 'format', 'discipline', 'style', 'require', 'base', 'dataset'].some((p) => params.has(p));
+    if (share) share.hidden = !['topic', 'centre', 'format', 'discipline', 'style', 'require', 'base', 'dataset', 'replay'].some((p) => params.has(p));
     var query = params.toString().replace(/%2C/gi, ',');  // Commas read better unescaped
     try {
         history.replaceState(history.state, '', `${location.pathname}${query ? `?${query}` : ''}${location.hash}`);
@@ -4762,7 +4818,10 @@ async function decodeNext() {
             // Satellite files big enough for coverage are kept as one swath, not as points
             var swath = subsets.length >= SWATH_MIN_REPORTS ? [] : null;
             subsets.forEach(([rows, profile, index], i) => plotDecodedReport(job, rows, profile, i, index, swath));
-            if (swath && swath.length >= SWATH_MIN_REPORTS) addSwathFile(job, swath);
+            // except cloud-motion winds, which stay points (arrows): each is the wind at one
+            // tracked cloud, so averaged into cells they'd show winds no cloud had
+            var winds = swath && swath.some((record) => 'm_satWind' in metricValues(record));
+            if (swath && swath.length >= SWATH_MIN_REPORTS && !winds) addSwathFile(job, swath);
             else if (swath) swath.forEach((record) => plotRecord(job, record));
         }
     } catch (err) {
@@ -5596,6 +5655,20 @@ function addSatelliteRow(key) {
     var colour = state.colourBy === SATELLITE_STYLE ? satelliteColour(key) : OBS_CLASSES.satellite.color;
     row.innerHTML = `<input type="checkbox" class="form-check-input"${hiddenLayers.has(key) ? '' : ' checked'}><span class="legend-dot" style="--color: ${colour}; --outline: ${darken(colour)}"></span><span></span>`;
     row.lastElementChild.textContent = satelliteLabel(key);
+    // Its page in OSCAR/Space, where there is one
+    var name = key.split(':').slice(2).join(':');
+    var url = satelliteOscarUrl(null, satelliteNamed(name) || name);
+    if (url) {
+        var link = document.createElement('a');
+        link.className = 'legend-oscar';
+        link.href = url;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.textContent = '↗';
+        link.title = `${satelliteLabel(key)} in OSCAR/Space`;
+        link.setAttribute('aria-label', link.title);
+        row.append(link);
+    }
     var input = row.querySelector('input');
     var parentOff = ancestors(key).some((a) => hiddenLayers.has(a));
     input.disabled = parentOff;
@@ -5754,6 +5827,7 @@ function replayWindowLabel(minutes) {
 // now outside it, and either way the view is fetched again
 function setReplayWindow(minutes) {
     replayWindowMs = minutes * 60 * 1000;
+    writeFiltersToUrl();
     var cutoff = Date.now() - replayWindowMs;
     [...records.values()].filter((r) => r.replay && r.born < cutoff).forEach(removePoint);
     replayedView = '';
@@ -6297,14 +6371,105 @@ const SWATH_MIN_REPORTS = 5;
 const SWATH_FILES_MAX = 3000;  // Files whose coverage is kept, oldest dropped first...
 const SWATH_KEEP_MS = 12 * 3600e3;  // ...and none older than this
 const SWATH_FLUSH_MS = 1000;
-const swathDirty = new Set();  // cell ids to redraw
-let swathRemoved = [];  // feature ids of cells no file covers any more
 let swathFeatureIds = 0;
 let swathsBuilt = 0;
 let swathPointsShown = false;  // Coverage switched off: swath reports are drawn as points
 
-function swathCellId(sat, lon, lat) {
-    return `${sat}|${h3Cell(lon, lat)}`;
+// The grids kept (globalGrid, and viewGrid while zoomed in), and the one the map draws.
+// Each grid's cells hold what every file adds to them (file.cells[grid.key]); the grid
+// on the map also notes which cells changed (dirty) and went (removed) since it was drawn
+let pendingGrid = null;  // A view grid still being built, a few files at a time
+let gridBuilds = 0;
+function grids() {
+    return [globalGrid, viewGrid, pendingGrid].filter(Boolean);
+}
+function shownGrid() {
+    return viewGrid || globalGrid;
+}
+
+function swathCellId(sat, lon, lat, grid = shownGrid()) {
+    return `${sat}|${h3Cell(lon, lat, grid.res)}`;
+}
+
+// ---------- Finer cells zoomed in: about the same size on screen at any zoom
+// (resolution 2 below zoom 3, then one finer per zoom level, to H3_RESOLUTION_MAX).
+// Finer cells cover only the area in view, with as much again round it, so panning
+// a little doesn't rebuild them
+function gridResolution(zoom) {
+    return Math.min(H3_RESOLUTION_MAX, Math.max(H3_RESOLUTION, Math.floor(zoom)));
+}
+
+// [west, south, east, north] of the view, west to east possibly past ±180
+function viewBounds(pad) {
+    var b = map.getBounds(), w = b.getWest(), e = b.getEast(), s = b.getSouth(), n = b.getNorth();
+    if (e < w) e += 360;
+    var dx = (e - w) * pad, dy = (n - s) * pad;
+    return [w - dx, Math.max(-90, s - dy), e + dx, Math.min(90, n + dy)];
+}
+
+function inBounds(lon, lat, bounds) {
+    if (!bounds) return true;
+    var [w, s, e, n] = bounds;
+    return lat >= s && lat <= n && (e - w >= 360 || ((((lon - w) % 360) + 360) % 360) <= e - w);
+}
+
+function boundsWithin(inner, outer) {
+    return inner[1] >= outer[1] && inner[3] <= outer[3] && (outer[2] - outer[0] >= 360
+        || (inBounds(inner[0], inner[1], outer) && inBounds(inner[2], inner[1], outer) && inner[2] - inner[0] <= outer[2] - outer[0]));
+}
+
+// After the map moves: the finer grid for the new zoom or area, or back to the global one.
+// A new grid is built a slice at a time, so thousands of files don't stall the page;
+// the cells on the map stay until it's done. Files arriving or going meanwhile go
+// straight into it (it's among grids())
+const GRID_SLICE_MS = 25;
+function syncSwathGrid() {
+    if (!map.getSource('swaths')) return;
+    var res = gridResolution(map.getZoom());
+    var wanted = res === H3_RESOLUTION ? null : viewBounds(0);
+    var fits = (grid) => grid && grid.res === res && boundsWithin(wanted, grid.bounds);
+    if (pendingGrid && (!wanted || !fits(pendingGrid))) dropGrid(pendingGrid);
+    if (!wanted) {
+        if (viewGrid) setViewGrid(null);
+        return;
+    }
+    if (fits(viewGrid) || fits(pendingGrid)) return;
+    var grid = pendingGrid = { key: `view${++gridBuilds}`, res, bounds: viewBounds(0.5), cells: new Map(), dirty: new Set(), removed: [] };
+    var files = [...swathFiles.values()];
+    var step = () => {
+        if (pendingGrid !== grid) return;
+        var until = performance.now() + GRID_SLICE_MS;
+        while (files.length && performance.now() < until) {
+            var file = files.shift();
+            // Gone, replaced by an update, or added since (already in)
+            if (swathFiles.get(file.key) !== file || file.cells[grid.key]) continue;
+            buildSwathCells(file, grid);
+            applySwathFile(file, 1, grid);
+        }
+        if (files.length) return setTimeout(step, 0);
+        refreshAllHoles(grid);
+        pendingGrid = null;
+        setViewGrid(grid);
+    };
+    step();
+}
+
+// Forgets a grid's share in every file
+function dropGrid(grid) {
+    if (pendingGrid === grid) pendingGrid = null;
+    swathFiles.forEach((file) => { delete file.cells[grid.key]; });
+}
+
+function setViewGrid(grid) {
+    if (viewGrid) dropGrid(viewGrid);
+    viewGrid = grid;
+    // The map's cells all at once; changes after this go in as they come (flushSwaths)
+    var shown = shownGrid();
+    map.getSource('swaths').setData({ type: 'FeatureCollection', features: [...shown.cells.values()].map(swathFeature) });
+    shown.dirty.clear();
+    shown.removed = [];
+    hoveredCell = null;
+    swathsBuilt = Date.now();
 }
 
 // Packs a decoded satellite file's reports into one swath file and adds it to the cells
@@ -6322,7 +6487,6 @@ function addSwathFile(job, reports) {
     // Reports in a line have no area to cover
     if (!ring) { reports.forEach((r) => plotRecord(job, r)); return; }
     var old = swathFiles.get(first.fileKey);
-    var replacedSat = old && old.sat;
     if (old) removeSwathFile(old);  // An update replaces it
     var values = reports.map(metricValues);
     var metrics = {};
@@ -6349,20 +6513,34 @@ function addSwathFile(job, reports) {
             space: isSpaceRecord(first), topic: first.topic.toLowerCase(),
         },
         means: {},
-        cells: new Map(),  // cell id -> what this file adds to it
+        fillMeans: {},  // The means that may fill its empty cells (see below)
+        ring,  // Its footprint
+        cells: {},  // grid key -> cell id -> what this file adds to it
         points: null,
     };
-    // The file's own means fill cells it covers that hold none of its reports
+    // The file's own means fill cells it covers that hold none of its reports, but only
+    // where the file's values agree: a mean of widely spread values (a full-disk wind
+    // file, 3 to 40 m/s) would paint large areas one made-up colour, so those stay unfilled
     for (var m of Object.keys(METRICS)) {
         var known = metrics[m] ? metrics[m].filter((v) => !isNaN(v)) : [];
-        if (known.length) file.means[m] = known.reduce((a, b) => a + b, 0) / known.length;
+        if (!known.length) continue;
+        var mean = file.means[m] = known.reduce((a, b) => a + b, 0) / known.length;
+        var spread = Math.sqrt(known.reduce((a, v) => a + (v - mean) ** 2, 0) / known.length);
+        var stops = METRICS[m].stops;
+        var scale = stops ? Math.abs(stops[stops.length - 1][0] - stops[0][0]) : 0;
+        if (!scale || spread <= scale * FILL_SPREAD_MAX) file.fillMeans[m] = mean;
     }
-    buildSwathCells(file, ring);
     swathFiles.set(file.key, file);
-    applySwathFile(file, 1);
+    for (var grid of grids()) {
+        buildSwathCells(file, grid);
+        applySwathFile(file, 1, grid);
+    }
     trimSwathFiles();
-    if (replacedSat && replacedSat !== sat) refreshSatelliteHoles(replacedSat);
-    refreshSatelliteHoles(sat);
+    // Holes round where the file is, and where the one it replaced was
+    for (var g of grids()) {
+        if (old) refreshSatelliteHoles(old.sat, g, fileCellsIn(old, g));
+        refreshSatelliteHoles(sat, g, fileCellsIn(file, g));
+    }
     if (!seenLayers.has(first.subLayer)) showLegendRow(first.subLayer);
     if (file.props.sat) addSatelliteRow(file.props.sat);
     decodePlotted[job.kind] += n;
@@ -6374,23 +6552,38 @@ function addSwathFile(job, reports) {
     mapKeyDirty = true;
 }
 
-function buildSwathCells(file, ring) {
-    file.cells.clear();
+// A file's cells in a grid: those its footprint covers (fill), and those its reports
+// fall in. A grid with bounds gets only the cells within them
+function buildSwathCells(file, grid) {
+    var cells = file.cells[grid.key] = new Map();
     var cellFor = (lon, lat) => {
-        var cell = h3Cell(lon, lat), id = `${file.sat}|${cell}`;
-        if (!file.cells.has(id)) file.cells.set(id, { cell, fill: false, n: 0, t0: Infinity, t1: -Infinity, sums: {}, counts: {}, mins: {}, maxs: {} });
-        return file.cells.get(id);
+        var cell = h3Cell(lon, lat, grid.res), id = `${file.sat}|${cell}`;
+        if (!cells.has(id)) cells.set(id, { cell, fill: false, n: 0, t0: Infinity, t1: -Infinity, sums: {}, counts: {}, mins: {}, maxs: {} });
+        return cells.get(id);
     };
-    var spacing = H3_SAMPLE_DEG;
+    var ring = file.ring, spacing = h3SampleDeg(grid.res);
     var xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
     var xMin = Math.min(...xs) - spacing, xMax = Math.max(...xs) + spacing;
     var yMin = Math.max(-90, Math.min(...ys) - spacing), yMax = Math.min(90, Math.max(...ys) + spacing);
+    // The longitudes to sample: the footprint's, cut to the bounds (in the footprint's
+    // frame, which can run past ±180)
+    var spans = [[xMin, xMax]];
+    if (grid.bounds) {
+        var [w, s, e, n] = grid.bounds;
+        yMin = Math.max(yMin, s);
+        yMax = Math.min(yMax, n);
+        spans = e - w >= 360 ? spans : [-360, 0, 360]
+            .map((k) => [Math.max(xMin, w + k), Math.min(xMax, e + k)]).filter(([a, b]) => a <= b);
+    }
     for (var lat = yMin; lat <= yMax; lat += spacing) {
-        for (var lon = xMin; lon <= xMax; lon += spacing) {
-            if (inOrNearRing([lon, lat], ring, spacing)) cellFor(lon, lat).fill = true;
+        for (var [from, to] of spans) {
+            for (var lon = from; lon <= to; lon += spacing) {
+                if (inOrNearRing([lon, lat], ring, spacing)) cellFor(lon, lat).fill = true;
+            }
         }
     }
     for (var i = 0; i < file.n; i++) {
+        if (!inBounds(file.coords[2 * i], file.coords[2 * i + 1], grid.bounds)) continue;
         var cell = cellFor(file.coords[2 * i], file.coords[2 * i + 1]);
         cell.n++;
         cell.t0 = Math.min(cell.t0, file.observed[i]);
@@ -6405,106 +6598,132 @@ function buildSwathCells(file, ring) {
     }
 }
 
-// Adds a file's share to its cells (sign 1), or takes it off again (-1)
-function applySwathFile(file, sign) {
-    for (var [id, c] of file.cells) applySwathCell(file, id, c, sign);
+// Adds a file's share to a grid's cells (sign 1), or takes it off again (-1)
+function applySwathFile(file, sign, grid) {
+    for (var [id, c] of file.cells[grid.key] || []) applySwathCell(file, id, c, sign, grid);
 }
 
-function applySwathCell(file, id, c, sign) {
-    var cell = swathCells.get(id);
+function applySwathCell(file, id, c, sign, grid) {
+    var cell = grid.cells.get(id);
     if (!cell) {
         if (sign < 0) return;
-        cell = { fid: ++swathFeatureIds, h3: c.cell, sat: file.sat, hole: !!c.hole,
+        // real: how many files cover it themselves; none, and it's only a filled hole
+        cell = { fid: ++swathFeatureIds, h3: c.cell, sat: file.sat, real: 0,
             files: new Set(), sums: {}, counts: {}, fillSums: {}, fillCounts: {} };
-        swathCells.set(id, cell);
+        grid.cells.set(id, cell);
     }
     if (sign > 0) cell.files.add(file);
     else cell.files.delete(file);
+    if (!c.hole) cell.real += sign;
     for (var m in c.sums) {
         cell.sums[m] = (cell.sums[m] || 0) + sign * c.sums[m];
         cell.counts[m] = (cell.counts[m] || 0) + sign * c.counts[m];
     }
     if (c.fill) {
-        for (var mf in file.means) {
-            cell.fillSums[mf] = (cell.fillSums[mf] || 0) + sign * file.means[mf];
+        for (var mf in file.fillMeans) {
+            cell.fillSums[mf] = (cell.fillSums[mf] || 0) + sign * file.fillMeans[mf];
             cell.fillCounts[mf] = (cell.fillCounts[mf] || 0) + sign;
         }
     }
+    // Only the grid on the map notes its changes; another is drawn whole when shown
+    var shown = grid === shownGrid();
     if (cell.files.size) {
-        swathDirty.add(id);
+        if (shown) grid.dirty.add(id);
     } else {
-        swathCells.delete(id);
-        swathDirty.delete(id);
-        swathRemoved.push(cell.fid);
+        grid.cells.delete(id);
+        grid.dirty.delete(id);
+        if (shown) grid.removed.push(cell.fid);
     }
 }
 
-function refreshSatelliteHoles(sat) {
-    // Drop old derived cells, then recompute from real coverage so removed or
-    // replaced files cannot leave holes filled in areas no longer covered.
-    for (var cell of [...swathCells.values()]) {
-        if (cell.sat !== sat || !cell.hole) continue;
-        var id = `${sat}|${cell.h3}`;
-        for (var file of [...cell.files]) {
-            var c = file.cells.get(id);
-            if (!c?.hole) continue;
-            applySwathCell(file, id, c, -1);
-            file.cells.delete(id);
-        }
-    }
+// ---------- Holes: one-cell gaps in a satellite's coverage (between the strips of a
+// pass, say). A cell no file of the satellite covers itself, but all six of whose
+// neighbours one does, is filled: each file covering a neighbour gives it a hole
+// share (its footprint's fill, no reports). A file coming or going can only change
+// cells at or next to its own, so only those are looked at.
 
-    var occupied = new Map([...swathCells.values()]
-        .filter((cell) => cell.sat === sat && !cell.hole)
-        .map((cell) => [cell.h3, cell]));
-    var candidates = new Set();
-    for (var h3 of occupied.keys()) {
-        for (var neighbor of h3Neighbors(h3)) {
-            if (!occupied.has(neighbor)) candidates.add(neighbor);
+// The H3 cells a file has a share in, in a grid
+function fileCellsIn(file, grid) {
+    return [...(file.cells[grid.key] || new Map()).values()].map((c) => c.cell);
+}
+
+function refreshSatelliteHoles(sat, grid, h3s) {
+    var key = grid.key;
+    var cellAt = (h3) => grid.cells.get(`${sat}|${h3}`);
+    var area = new Set(h3s);
+    for (var h3 of h3s) h3Neighbors(h3).forEach((n) => area.add(n));
+    for (var h3 of area) {
+        var id = `${sat}|${h3}`, cell = cellAt(h3);
+        // The files it should have hole shares from: none if a file covers it itself
+        var wanted = new Set();
+        if (!cell || !cell.real) {
+            var neighbors = h3Neighbors(h3);
+            if (neighbors.length && neighbors.every((n) => cellAt(n)?.real > 0)) {
+                for (var n of neighbors) {
+                    var nid = `${sat}|${n}`;
+                    cellAt(n).files.forEach((f) => { if (!f.cells[key].get(nid).hole) wanted.add(f); });
+                }
+            }
         }
-    }
-    for (var hole of candidates) {
-        var neighbors = h3Neighbors(hole);
-        if (!neighbors.length || !neighbors.every((neighbor) => occupied.has(neighbor))) continue;
-        var files = new Set(neighbors.flatMap((neighbor) => [...occupied.get(neighbor).files]));
-        var id = `${sat}|${hole}`;
-        for (var file of files) {
-            var c = { cell: hole, fill: true, hole: true, n: 0, t0: Infinity, t1: -Infinity,
-                sums: {}, counts: {}, mins: {}, maxs: {} };
-            file.cells.set(id, c);
-            applySwathCell(file, id, c, 1);
+        // Hole shares no longer wanted go...
+        for (var file of cell ? [...cell.files] : []) {
+            var c = file.cells[key].get(id);
+            if (!c.hole || wanted.has(file)) continue;
+            applySwathCell(file, id, c, -1, grid);
+            file.cells[key].delete(id);
+        }
+        // ...and missing ones come (never over a file's own share)
+        for (var file of wanted) {
+            if (file.cells[key].has(id)) continue;
+            var c = { cell: h3, fill: true, hole: true, n: 0, t0: Infinity, t1: -Infinity, sums: {}, counts: {}, mins: {}, maxs: {} };
+            file.cells[key].set(id, c);
+            applySwathCell(file, id, c, 1, grid);
         }
     }
 }
 
+// Every hole in a grid, as when it's first built
+function refreshAllHoles(grid) {
+    var bySat = new Map();
+    for (var cell of grid.cells.values()) {
+        if (!bySat.has(cell.sat)) bySat.set(cell.sat, []);
+        bySat.get(cell.sat).push(cell.h3);
+    }
+    bySat.forEach((h3s, sat) => refreshSatelliteHoles(sat, grid, h3s));
+}
+
+// Takes a file off the map. Its shares stay listed in file.cells, for the holes
+// round where it was (see refreshSatelliteHoles)
 function removeSwathFile(file) {
     swathFiles.delete(file.key);
-    applySwathFile(file, -1);
+    for (var grid of grids()) applySwathFile(file, -1, grid);
     hideSwathPoints(file);
     mapKeyDirty = true;
-    return file.sat;
 }
 
 // Drops the oldest files beyond the caps
 function trimSwathFiles() {
     var oldest = Date.now() - SWATH_KEEP_MS;
-    var changed = new Set();
+    var removed = [];
     for (var file of swathFiles.values()) {
         if (swathFiles.size <= SWATH_FILES_MAX && file.born >= oldest) break;
-        changed.add(removeSwathFile(file));
+        removeSwathFile(file);
+        removed.push(file);
     }
-    for (var sat of changed) refreshSatelliteHoles(sat);
+    for (var gone of removed) grids().forEach((grid) => refreshSatelliteHoles(gone.sat, grid, fileCellsIn(gone, grid)));
 }
 
 // Redraws only the cells that changed since last time
 function flushSwaths(now) {
     trimSwathFiles();
-    if (!swathDirty.size && !swathRemoved.length) return;
+    var grid = shownGrid();
+    if (!grid.dirty.size && !grid.removed.length) return;
     swathsBuilt = now;
     var add = [];
-    for (var id of swathDirty) add.push(swathFeature(swathCells.get(id)));
-    swathDirty.clear();
-    map.getSource('swaths').updateData({ add, remove: swathRemoved });
-    swathRemoved = [];
+    for (var id of grid.dirty) add.push(swathFeature(grid.cells.get(id)));
+    grid.dirty.clear();
+    map.getSource('swaths').updateData({ add, remove: grid.removed });
+    grid.removed = [];
 }
 
 function swathFeature(cell) {
@@ -6512,6 +6731,8 @@ function swathFeature(cell) {
     for (var m of Object.keys(METRICS)) {
         if (cell.counts[m]) props[`m_${m}`] = cell.sums[m] / cell.counts[m];
         else if (cell.fillCounts[m]) props[`m_${m}`] = cell.fillSums[m] / cell.fillCounts[m];
+        // Its files measure this, though the cell has no value (see applyMapFilter)
+        else if ([...cell.files].some((f) => f.means[m] != null)) props[`no_${m}`] = true;
     }
     var file = cell.files.values().next().value;
     var born = 0;
@@ -6568,16 +6789,17 @@ function onMap(record) {
 // the range and how many reports, and lists the files they came from. Nothing is
 // downloaded; a single report is decoded only when asked for (Open a report)
 function openCellSummary(sat, lngLat) {
-    var id = swathCellId(sat, lngLat.lng, lngLat.lat), cell = swathCells.get(id);
+    var grid = shownGrid();
+    var id = swathCellId(sat, lngLat.lng, lngLat.lat, grid), cell = grid.cells.get(id);
     if (!cell) return;
-    showInfo(buildCellSummary(id, cell, lngLat));
+    showInfo(buildCellSummary(id, cell, lngLat, grid));
     selectedMarker.remove();
     liftCell(cell);
     keepPopupInView();
 }
 
-function buildCellSummary(id, cell, lngLat) {
-    var parts = [...cell.files].map((file) => ({ file, part: file.cells.get(id) })).filter((p) => p.part)
+function buildCellSummary(id, cell, lngLat, grid) {
+    var parts = [...cell.files].map((file) => ({ file, part: file.cells[grid.key]?.get(id) })).filter((p) => p.part)
         .sort((a, b) => b.file.born - a.file.born);
     var t = parts[0].file.template;
     var reports = parts.reduce((n, p) => n + p.part.n, 0);
@@ -6612,7 +6834,7 @@ function buildCellSummary(id, cell, lngLat) {
         </header>
         <dl class="pp-meta">
             ${reports ? `<dt>Observed</dt><dd>${t1 - t0 < 60e3 ? `${esc(new Date(t1).toLocaleString())}` : `${esc(new Date(t0).toLocaleDateString())} ${when(t0)}–${when(t1)} UTC`} (${timeAgo(new Date(t1).toISOString())})</dd>` : ''}
-            <dt>Cell</dt><dd class="pp-mono" title="H3 cell, resolution ${H3_RESOLUTION}">${esc(cell.h3)}</dd>
+            <dt>Cell</dt><dd class="pp-mono" title="H3 cell, resolution ${grid.res}">${esc(cell.h3)}</dd>
         </dl>
         <div class="pp-status">${reports
             ? 'The cell is coloured by the mean of the reports in it. Of each file only some reports are kept, spread across it; these are the ones here.'
@@ -6652,7 +6874,7 @@ function nearestReportInCell(file, h3, lngLat) {
     var best = null, bestKm = Infinity;
     for (var i = 0; i < file.n; i++) {
         var lon = file.coords[2 * i], lat = file.coords[2 * i + 1];
-        if (h3Cell(lon, lat) !== h3) continue;
+        if (h3Cell(lon, lat, getResolution(h3)) !== h3) continue;
         var km = distanceKm([lon, lat], [lngLat.lng, lngLat.lat]);
         if (km < bestKm) { best = i; bestKm = km; }
     }
@@ -7099,6 +7321,7 @@ setInterval(checkNetwork, SLOW_CHECK_MS);
 // and satellite coverage. A click goes to that place on the map. The D3 pieces it
 // uses, topojson-client and the coastlines are a separate bundle, loaded as it starts.
 const OVERVIEW_REFRESH_MS = 2000;
+let overviewHovered = null;  // Where the map's hover label is (a LngLat), marked on the overview
 let d3 = null;  // geoEqualEarth, geoPath, geoGraticule10 (d3-geo) and scaleLinear (d3-scale), once loaded
 
 // The world map's part of the map key (see MapKey): a title, a button that enlarges
@@ -7108,9 +7331,15 @@ function buildOverview() {
     section.className = 'key-overview';
     section.innerHTML = `
         <div class="pp-status overview-status">Loading…</div>
-        <canvas role="img" aria-label="World map in the Equal Earth projection; click to go there on the map"
-            title="World map, Equal Earth projection (true areas). Click to go there"></canvas>`;
-    overview = { section, canvas: section.querySelector('canvas'), land: null, projection: null, timer: null, ready: null };
+        <div class="overview-frame">
+            <canvas class="overview-map" role="img" aria-label="World map in the Equal Earth projection; click to go there on the map"
+                title="World map, Equal Earth projection (true areas). Click to go there"></canvas>
+            <canvas class="overview-hover" aria-hidden="true"></canvas>
+        </div>`;
+    // What's hovered on the map is drawn on a canvas of its own over the overview, so
+    // following the pointer doesn't redraw every point and cell
+    overview = { section, canvas: section.querySelector('.overview-map'), hover: section.querySelector('.overview-hover'),
+        land: null, projection: null, timer: null, ready: null };
     overview.canvas.addEventListener('click', (e) => {
         if (!overview.projection) return;
         var box = overview.canvas.getBoundingClientRect();
@@ -7125,6 +7354,13 @@ function buildOverview() {
     requestAnimationFrame(() => loadOverview().then(() => {
         drawOverview();
         overview.timer = setInterval(drawOverview, OVERVIEW_REFRESH_MS);
+        // A pan or zoom shows at once (the view's frame moves), rather than at the next
+        // refresh, which then starts over from here
+        map.on('moveend', () => {
+            clearInterval(overview.timer);
+            drawOverview();
+            overview.timer = setInterval(drawOverview, OVERVIEW_REFRESH_MS);
+        });
     }));
     return section;
 }
@@ -7254,4 +7490,42 @@ function drawOverview() {
         ctx.lineWidth = 1.5;
         ctx.stroke();
     }
+    drawOverviewHover();
+}
+
+// Marks on the overview what the map's pointer is over: the coverage cell's outline,
+// when that's hovered, and a ring round the spot so it shows however small the cell
+function drawOverviewHover() {
+    if (!overview || !overview.projection) return;
+    var canvas = overview.hover, main = overview.canvas, dpr = window.devicePixelRatio || 1;
+    if (canvas.width !== main.width || canvas.height !== main.height) {
+        canvas.width = main.width;
+        canvas.height = main.height;
+    }
+    var ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+    if (!overviewHovered) return;
+    var projection = overview.projection;
+    var at = projection([((overviewHovered.lng + 540) % 360) - 180, overviewHovered.lat]);
+    if (!at) return;
+    // Black on a white halo, like the hovered cell on the map
+    var stroke = (draw) => {
+        [['#ffffff', 3.5], ['#000000', 1.5]].forEach(([colour, width]) => {
+            ctx.beginPath();
+            draw();
+            ctx.strokeStyle = colour;
+            ctx.lineWidth = width;
+            ctx.stroke();
+        });
+    };
+    var h3 = hoveredCell && hoveredCell.split('|').pop();
+    if (h3) {
+        var ring = cellRing(h3).map(([lon, lat]) => projection([Math.max(-180, Math.min(180, lon)), lat]));
+        stroke(() => {
+            ring.forEach((xy, i) => (i ? ctx.lineTo(...xy) : ctx.moveTo(...xy)));
+            ctx.closePath();
+        });
+    }
+    stroke(() => ctx.arc(at[0], at[1], 6, 0, 2 * Math.PI));
 }
