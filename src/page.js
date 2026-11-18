@@ -33,6 +33,19 @@ export function metricOnPage(metric) {
     return !(GBON_PAGE && metric.group.startsWith('Sea'));
 }
 
+// The Global Broker topics the page subscribes to (MQTT filters: + one level, # the
+// rest). The satellite page takes only satellites': WIS2's space-based observations,
+// under any centre, data policy and discipline, and the GTS gateways' satellite
+// bulletins, headed IN and IE (as isSpaceBased). The others take everything, and
+// leave out what isn't theirs (see topicOnPage)
+export const PAGE_TOPICS = SATELLITE_PAGE
+    ? ['origin', 'cache'].flatMap((channel) => [
+        `${channel}/a/wis2/+/data/+/+/space-based-observations/#`,
+        `${channel}/a/wis2/+/data/core/I/N/#`,
+        `${channel}/a/wis2/+/data/core/I/E/#`,
+    ])
+    : ['origin/a/wis2/#', 'cache/a/wis2/#'];
+
 // The links to the other pages, as HTML
 export function otherPageLinks() {
     return OTHER_PAGES.map((p) => `<a class="legend-page-link" href="${p.href}">${p.label} →</a>`).join('');

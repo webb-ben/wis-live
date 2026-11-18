@@ -95,6 +95,10 @@ public/assets/data/wis2box-deployments.json  Centre -> wis2box URL, from the
                            wis2box deployments list (not fetchable from a browser)
 public/assets/images/      Favicons
 vite.config.js             base /wis-live/; each page is an entry in rollupOptions.input
+proxy/                     The CORS proxy, a Cloudflare Worker (cors-worker.js, deployed
+                           with wrangler from that folder, not by Vite): the global caches
+                           that send no CORS headers (DWD, KMA, CMA, NCM) are downloaded
+                           through it once CORS_PROXY is set in src/data/caches.js
 .github/workflows/pages.yml  Builds and deploys to Pages on every push to main
 ```
 

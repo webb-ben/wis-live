@@ -45,7 +45,7 @@ import { satelliteColours, satelliteLabel, satelliteMatch, syncSatelliteRows, sa
 import { metricValues } from './data/metrics.js';
 import { swathsBuilt, SWATH_FLUSH_MS, flushSwaths } from './data/satellite/coverage.js';
 import { addCoverageLayers } from './data/satellite/coverageLayers.js';
-import { SATELLITE_PAGE } from './page.js';
+import { SATELLITE_PAGE, PAGE_TOPICS } from './page.js';
 import { isColourable, isColourTarget, satelliteStyled, IS_AIRCRAFT, setColourBy, paintAge, showColourStatus, windArrows } from './map/colour.js';
 import { showDatasetFromUrl, gdcSearched, searchCatalogue, sortDatasetRows, datasetId, showDatasetInPopup, filterDatasetRows, initCatalogue, noteDataset, rankGdcs, startDataset, shownDataset, setShownDataset, setStartDataset } from './data/catalogue.js';
 import { scheduleReplay, replayPosition, replayWindowMs, REPLAY_TICKS, replayMinutesAt, replayWindowLabel, setReplayWindow, setReplayWindowMs, REPLAY_RANGE_MINUTES } from './messages/replay.js';
@@ -442,6 +442,8 @@ if (!PHONE.matches && !SATELLITE_PAGE) {
 }
 
 connectFastest({
+    // Only the topics the page shows (the satellite page only satellites', see page.js)
+    subscribe: PAGE_TOPICS,
     onMessage: (topic, message) => {
         // Each page (page.js) lists only its own messages
         var feature = parseMessage(topic, message);

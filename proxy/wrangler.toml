@@ -1,0 +1,7 @@
+# The CORS proxy for the global caches (cors-worker.js). Deploy from this folder:
+#   npx wrangler login     (once)
+#   npx wrangler deploy
+# and put the workers.dev address it prints in CORS_PROXY (src/data/caches.js)
+name = "wis-live-cors"
+main = "cors-worker.js"
+compatibility_date = "2024-11-01"
