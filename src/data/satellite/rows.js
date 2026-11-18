@@ -1,11 +1,12 @@
 // Satellites in the sidebar and the key: a row for each, its colour when styled by satellite
 import { layerOf } from '../../map/points.js';
 import { SATELLITE_NAMES, satelliteNamed, satelliteOscarUrl } from './names.js';
-import { darken } from '../../lib/util.js';
+import { darken, esc } from '../../lib/util.js';
 import { NO_VALUE_COLOR, SATELLITE_STYLE, OBS_CLASSES } from '../../config.js';
 import { state, notify } from '../../state.js';
 import { seenLayers, LAYER_PARENTS, hiddenLayers, ancestors } from '../../map/layers.js';
-import { page } from '../../page.js';
+import { restyle } from '../../map/colour.js';
+import { applyMapFilter } from '../../map/filter.js';
 
 // One layer row per satellite, added under Space-based (satellites) as
 // each satellite is first seen. The name comes from the satellite identifier
@@ -72,7 +73,7 @@ export function addSatelliteRow(key) {
     LAYER_PARENTS[key] = parent;
     satelliteColour(key);
     // A new satellite joins the colours on the map while styled by satellite
-    if (state.colourBy === SATELLITE_STYLE) requestAnimationFrame(() => page.restyle());
+    if (state.colourBy === SATELLITE_STYLE) requestAnimationFrame(() => restyle());
     var row = document.createElement('label');
     row.className = 'legend-toggle legend-sub legend-depth-2 legend-satellite';
     row.dataset.layer = key;
@@ -100,7 +101,7 @@ export function addSatelliteRow(key) {
     input.addEventListener('change', () => {
         input.checked ? hiddenLayers.delete(key) : hiddenLayers.add(key);
         notify('hiddenLayers');
-        page.applyMapFilter();
+        applyMapFilter();
     });
     // Alphabetical among this group's satellites, right after the group's row
     var after = parentRow;
@@ -109,4 +110,9 @@ export function addSatelliteRow(key) {
         after = sibling;
     }
     after.after(row);
+}
+
+export function satelliteLink(name, number = null) {
+    var url = satelliteOscarUrl(number, name);
+    return url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(name)}</a>` : esc(name);
 }

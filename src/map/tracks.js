@@ -6,8 +6,8 @@ import { map } from './map.js';
 import { shipTrackKey, reportId } from '../data/reports.js';
 import { records, isSpaceRecord, layerOf, setFeatureProperties } from './points.js';
 import { aircraftTrack } from '../data/aviation/aircraft.js';
-import { page } from '../page.js';
 import { segments, distanceKm, unwrap } from '../lib/geo.js';
+import { keyChanged } from '../lib/ui/legend.js';
 export const TRACK_REBUILD_MS = 2000;
 const SHIP_MAX_GAP_MS = 24 * 3600e3;     // Ships report every few hours
 const SHIP_MAX_KMH = 80;
@@ -72,7 +72,7 @@ function buildTracks() {
             topic: last.topic.toLowerCase(),
         }));
     }
-    if ([...shipLayers].join() !== [...shipTrackLayers].join()) page.keyChanged();
+    if ([...shipLayers].join() !== [...shipTrackLayers].join()) keyChanged();
     shipTrackLayers = shipLayers;
     return features;
 }

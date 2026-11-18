@@ -12,7 +12,7 @@ import { map } from './map.js';
 import { satelliteKey, addSatelliteRow } from '../data/satellite/rows.js';
 import { metricValues } from '../data/metrics.js';
 import { indexTwin, unindexTwin } from './twins.js';
-import { page } from '../page.js';
+import { showLegendRow } from '../lib/ui/legend.js';
 
 export const records = new Map();  // id -> record for every point on the map
 export const byDataId = new Map();  // data_id -> record, so each observation is drawn once
@@ -41,8 +41,8 @@ export function linkDecoded(key, record) {
     hooks.linked(key, record);
 }
 
-export function countPlotted(kind) {
-    hooks.plotted(kind);
+export function countPlotted(kind, n = 1) {
+    hooks.plotted(kind, n);
 }
 
 export function decoding(kind) {
@@ -149,7 +149,7 @@ export function addPoint(record) {
     if (record.track) markTracksDirty();
     // Swath reports drawn as points arrive a whole file at a time, too many to pulse
     if (!feature.properties.superseded && !record.external && !record.replay && !record.swath) addPulse(feature);
-    if (!seenLayers.has(feature.properties.layer)) page.showLegendRow(feature.properties.layer);
+    if (!seenLayers.has(feature.properties.layer)) showLegendRow(feature.properties.layer);
     if (feature.properties.sat) addSatelliteRow(feature.properties.sat);
     indexTwin(record);
     // Other sources are bounded by their own station lists, and stay put

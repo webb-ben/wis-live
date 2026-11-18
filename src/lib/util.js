@@ -24,3 +24,9 @@ export function svgEl(name, attrs, parent) {
 export function knots(ms) {
     return Math.round(ms * 1.943844);
 }
+
+// On phones the info panel is a sheet across the bottom and the sidebar covers the map
+export const PHONE = window.matchMedia('(max-width: 600px)');
+
+// How far from a point a click still picks it, in pixels: fingers are less exact
+export const TOUCH = window.matchMedia('(pointer: coarse)');
