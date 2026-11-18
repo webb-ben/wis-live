@@ -36,6 +36,9 @@ src/lib/util.js            esc, darken, svgEl, knots
 src/lib/geo.js             distances, hulls, lines across ±180, H3 cells (h3Cell, cellRing)
 src/satellite/names.js     satellite and instrument names from BUFR code tables
 src/satellite/spectrum.js  CrIS/IASI infrared spectra (showSpectrum)
+src/ocean/profile.js       Ocean profiles (Argo and BGC floats, XBT/CTD, gliders): T, S and
+                           BGC against depth, T–S diagram with σt, tiles, expanded view;
+                           levels come from _ocean in DECODE_PY (decode_bufr's 'ocean')
 src/style.css              All custom styles
 public/assets/py/pybufrkit-*.whl  Pure-Python wheel of pybufrkit loaded by Pyodide
 public/assets/data/centre-id.json Snapshot of the WMO centre-id register (fallback)
@@ -149,6 +152,8 @@ bottom; the core comes first, roughly in this order:
    for the `data_id`, fastest cache first. Downloads go through `fetchTracked`, so
    a host that refuses a browser (no CORS headers, e.g. `gc.wis.cma.cn`) is not
    asked again, and a host not yet tried gets one background request at a time.
+   A popup's Retry also tries the browser-readable caches that never announced the
+   file, at the address each would keep it (`guessedCopies`).
    Background files wait in `decodeQueues`: one for satellites and one for
    everything else, each with its own downloads and cap, taking turns on the
    decoder. A satellite swath keeps only the values the map can be styled by

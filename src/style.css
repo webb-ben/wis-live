@@ -640,6 +640,53 @@
   fill: #1c9bb5;
   fill-opacity: 0.75;
 }
+/* Ocean profiles (src/ocean/profile.js): variables against depth, and a T–S diagram */
+.ocean-chart {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin-inline: auto;
+  font-family: system-ui, sans-serif;
+}
+.ocean-profile,
+.ocean-ts {
+  margin-bottom: 6px;
+}
+.ocean-line {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+/* A second profile in the file, e.g. an Argo float's near-surface one */
+.ocean-line-other {
+  stroke-dasharray: 3 2;
+}
+.ocean-bad {
+  stroke: #adb5bd;
+  stroke-width: 1;
+}
+.ocean-mld {
+  stroke: #495057;
+  stroke-width: 1;
+  stroke-dasharray: 6 3;
+}
+.ocean-panel-label {
+  font-size: 11px;
+  font-weight: 600;
+}
+.ocean-sigma {
+  fill: none;
+  stroke: #ced4da;
+  stroke-width: 0.8;
+}
+.ocean-sigma-label {
+  fill: #868e96;
+  font-size: 9px;
+}
+.ocean-ts-dot {
+  stroke: rgba(0, 0, 0, 0.25);
+  stroke-width: 0.5;
+}
 .irspec {
   display: block;
   max-width: 100%;
@@ -1506,8 +1553,8 @@
   font-size: 11px;
   color: #6c757d;
 }
-.queue-about summary {
-  cursor: pointer;
+.queue-about-title {
+  font-weight: 600;
 }
 .queue-about .maplibregl-ctrl-attrib {
   margin-top: 4px;

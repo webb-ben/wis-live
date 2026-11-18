@@ -118,6 +118,75 @@ def _profile(rows):
             level[_LEVEL[d]] = round(v - 273.15, 2) if d in (12101, 12103) else v
     return header, levels
 
+# Ocean profiles (Argo floats, XBT and CTD casts, gliders, moorings) repeat a block
+# per level: water pressure (007065, Pa) or depth (007062, m), then temperature
+# (022045, or 022043/022042/022049, K) and salinity (022064 or 022062), each value
+# followed by its GTSPP quality flag (033050: 3 is probably bad, 4 bad). As with
+# soundings, the header rows come back with one compact entry per level:
+# [pressure dbar or depth m, temperature C, salinity, part, temperature flag,
+#  salinity flag, {descriptor: [value, flag]} of biogeochemical values]
+# Biogeochemical (BGC) floats add dissolved oxygen (022188) and class 041 values
+# (nitrate, chlorophyll-a, backscatter, ...), each usually a profile of its own;
+# their names and units come back in 'extras'.
+# A file can hold more than one profile (an Argo float's near-surface one after its
+# main one, or a BGC variable's), told apart by part. Returns (rows, None) when there
+# are no levels
+_OCEAN_Z = (7065, 7062)
+_OCEAN_T = (22045, 22043, 22042, 22049)
+_OCEAN_S = (22064, 22062)
+
+def _ocean_extra(d):
+    return d == 22188 or d // 1000 == 41
+
+def _ocean(rows):
+    if sum(1 for r in rows if r[0] in _OCEAN_Z) < 3:
+        return rows, None
+    header, levels, level, last, part, pending, step, extras = [], [], None, None, 0, [], 0, {}
+    unit = 'dbar' if any(r[0] == 7065 for r in rows) else 'm'
+    for d, name, v, u in rows:
+        if d in _OCEAN_Z and isinstance(v, (int, float)):
+            z = round(v / 10000, 2) if d == 7065 else v
+            # A new profile: a block of other rows before it (the next profile's header,
+            # kept), or the depth turning back on itself. A single other value per level
+            # (e.g. oxygen) is neither, and isn't listed
+            if level is not None:
+                turned = step and (z - level[0]) * step < 0 and abs(z - level[0]) > 1
+                if len(pending) >= 2 or turned:
+                    part, step = part + 1, 0
+                    header.extend(pending)
+                elif not step and z != level[0]:
+                    step = 1 if z > level[0] else -1
+            pending = []
+            level = [z, None, None, part, None, None, {}]
+            levels.append(level)
+            last = 'z'
+        elif level is None:
+            header.append((d, name, v, u))
+        elif d in _OCEAN_T and level[1] is None and isinstance(v, (int, float)):
+            level[1], last = round(v - 273.15, 3), 't'
+        elif d in _OCEAN_S and level[2] is None and isinstance(v, (int, float)):
+            level[2], last = v, 's'
+        elif _ocean_extra(d) and d not in level[6] and isinstance(v, (int, float)):
+            level[6][d] = [v, None]
+            extras[d] = [name, u]
+            last = d
+        elif d == 33050:
+            if last == 't':
+                level[4] = v
+            elif last == 's':
+                level[5] = v
+            elif last in level[6]:
+                level[6][last][1] = v
+        elif d != 8080:
+            pending.append((d, name, v, u))  # A value of the level, or the next profile's header
+    # A BGC variable's levels each carry a flag; one value without (a reference value
+    # its block starts with, e.g. -1000 for chlorophyll) isn't a measurement
+    flagged = {d for l in levels for d, (v, f) in l[6].items() if f is not None}
+    for l in levels:
+        for d in [d for d, (v, f) in l[6].items() if f is None and d in flagged]:
+            del l[6][d]
+    return header + pending, {'unit': unit, 'levels': levels, 'extras': extras}
+
 def ready():
     return 'ok'
 
@@ -252,11 +321,15 @@ def decode_bufr(data, wsi, key, index=-1):
     if not 0 <= index < len(subsets):
         index = next((i for i, rows in enumerate(subsets) if _wsi(rows) == wsi), 0)
     rows, profile = _profile(subsets[index])
+    ocean = None
+    if profile is None:
+        rows, ocean = _ocean(rows)
     return json.dumps({
         'subsets': len(subsets),
         'index': index,
         'rows': rows,
         'profile': profile,
+        'ocean': ocean,
     })
 `;
 

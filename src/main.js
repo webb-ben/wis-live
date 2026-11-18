@@ -16,6 +16,7 @@ import { connectFastest, brokerState } from './mqtt.js';
 import { callDecoder, preloadDecoder, decoderReady, decoderGaveUp, onDecoderSettled } from './decoder.js';
 import { SATELLITE_NAMES, satelliteOscarUrl, INSTRUMENT_NAMES, AMV_METHODS, PIXEL_TYPES, satelliteNamed } from './satellite/names.js';
 import { showSpectrum } from './satellite/spectrum.js';
+import { oceanTiles, renderOceanProfile, renderTSDiagram, openOceanProfile } from './ocean/profile.js';
 
 // Map
 const MAX_POINTS = 100000;        // Oldest points are dropped beyond this...
@@ -99,7 +100,9 @@ let metricQueue = [];
 // newest first and capped: a past hour shouldn't hold up what's arriving now
 const REPLAY_DECODE_MAX = 500;
 let replayMetricQueue = [];
-let metricBusy = false;
+// Live and replayed stations each decode in a lane of their own, one at a time, so a
+// replayed one waiting on its download never holds up a live one behind it
+const metricBusy = { live: false, replay: false };
 
 // GTS sublayers that start off. Their bulletins aren't downloaded until they're
 // switched on, so their rows appear when the first such notification arrives
@@ -1523,7 +1526,7 @@ function buildPopup(record) {
         out.innerHTML = '<div class="pp-status">No data to decode for this message.</div>';
     }
     // A satellite report keeps only its first values; the rest come from decoding it again
-    var fullSource = record.decoded && record.decoded.trimmed && record.notification && bufrSource(record.notification, record.notification.properties || {});
+    var fullSource = record.decoded && record.decoded.trimmed && record.notification && bufrSource(record.notification, record.notification.properties || {}, record.topic);
     if (fullSource && !record.decoded.loadFull) {
         record.decoded.loadFull = () => decodeSource(fullSource, '', document.createElement('div'), record.fileIndex);
     }
@@ -1544,18 +1547,23 @@ async function decodeRecord(record, out, title) {
         var forecast = out.parentNode && out.parentNode.querySelector('.pp-forecast');
         if (forecast && forecast.rerender) forecast.rerender();
     } catch (err) {
-        showDecodeError(out, err, () => decodeRecord(record, out, title));
+        showDecodeError(out, err, () => decodeRecord(record, out, title), record.source);
     }
     keepPopupInView();
 }
 
-function showDecodeError(out, err, retry) {
+// source: what failed to download, which Retry then also looks for on caches that
+// haven't announced it (see guessedCopies)
+function showDecodeError(out, err, retry, source) {
     out.innerHTML = `<div class="pp-status pp-error">Could not decode: ${esc(err.message)}</div>`;
     var button = document.createElement('button');
     button.type = 'button';
     button.className = 'btn btn-sm btn-outline-primary pp-retry';
     button.textContent = 'Retry';
-    button.addEventListener('click', retry);
+    button.addEventListener('click', () => {
+        if (source) source.guess = true;
+        retry();
+    });
     out.appendChild(button);
 }
 
@@ -2208,19 +2216,24 @@ function renderDecoded(out, title, result) {
     // Station or site name (001015), falling back to the long name (001019), then a
     // ship's or mobile land station's identifier (001011, e.g. its call sign)
     var name = [1015, 1019, 1011].map((id) => stationName(values.get(id))).find(Boolean);
+    // Ocean profilers have a platform number (001087), not a name
+    if (!name && values.has(1087) && result.ocean) name = `Float ${values.get(1087)[0]}`;
     if (name && title) title.textContent = name;
 
     var profile = result.profile && result.profile.filter((l) => l[0] > 0);
     // Satellite profiles (e.g. radio occultations) aren't radiosonde soundings, so no Skew-T for them
     var sounding = profile && profile.length >= 2 && !values.has(1007);
     var satellite = values.has(1007);
+    // Argo floats, XBT and CTD casts, gliders: temperature and salinity with depth (see src/ocean/profile.js)
+    var ocean = !sounding && !satellite && result.ocean && result.ocean.levels.length >= 3 ? result.ocean : null;
     // Wind profilers and radar VAD winds: heights without pressure
-    var winds = !sounding && !satellite ? windProfileLevels(result.rows) : null;
+    var winds = !sounding && !satellite && !ocean ? windProfileLevels(result.rows) : null;
     // Hyperspectral sounders: channel radiances, maybe only the first of them for now (see showSpectrum)
     var spectrum = satellite && (result.fullSpectrum || values.has(14044) || values.has(14046));
-    var marine = sounding || winds ? null : marineDetails(result.rows, satellite);
-    var tiles = sounding ? soundingTiles(profile) : satellite ? satelliteTiles(result.rows, values) : winds ? windProfileTiles(winds, values) : [];
-    for (var key of sounding || satellite || winds ? [] : KEY_VALUES) {
+    var marine = sounding || winds || ocean ? null : marineDetails(result.rows, satellite);
+    var tiles = sounding ? soundingTiles(profile) : satellite ? satelliteTiles(result.rows, values) : winds ? windProfileTiles(winds, values)
+        : ocean ? oceanTiles(ocean, values) : [];
+    for (var key of sounding || satellite || winds || ocean ? [] : KEY_VALUES) {
         var id = key.ids.find((i) => values.has(i));
         if (!id || (key.unless && key.unless.some((i) => values.has(i)))) continue;
         if (key.wind) {
@@ -2249,6 +2262,12 @@ function renderDecoded(out, title, result) {
         <button type="button" class="btn btn-sm btn-outline-secondary sounding-expand">Expand sounding</button>` : ''}
         ${winds ? '<div class="wind-profile"></div>' : ''}
         ${tiles.length ? `<div class="pp-tiles">${tiles.join('')}</div>` : ''}
+        ${ocean ? `
+        <div class="pp-section">Profile</div>
+        <div class="ocean-profile"></div>
+        <div class="pp-section">Temperature and salinity</div>
+        <div class="ocean-ts"></div>
+        <button type="button" class="btn btn-sm btn-outline-secondary sounding-expand">Expand profile</button>` : ''}
         ${spectrum ? '<div class="pp-section">Infrared spectrum</div><div class="pp-spectrum"></div>' : ''}
         ${marine ? `
         <div class="pp-section">${satellite ? 'Sea state from space' : marine.ship ? 'Sea state and ship' : 'Sea state'}</div>
@@ -2278,6 +2297,17 @@ function renderDecoded(out, title, result) {
         renderWaveSpectrum(out.querySelector('.wave-spectrum'), marine.spectrum, { width: 300, height: 190 });
     }
     if (winds) showWindProfiles(out.querySelector('.wind-profile'), result);
+    if (ocean) {
+        renderOceanProfile(out.querySelector('.ocean-profile'), ocean, { width: 300, height: 340 });
+        // No T–S diagram without both measured (an XBT has temperature only)
+        if (!renderTSDiagram(out.querySelector('.ocean-ts'), ocean, { width: 300, height: 240 })) {
+            out.querySelector('.ocean-ts').previousElementSibling.remove();
+            out.querySelector('.ocean-ts').remove();
+        }
+        var when = soundingTime(values);
+        var subtitle = [when ? when.toUTCString().replace(':00 GMT', ' UTC') : null, `${ocean.levels.length.toLocaleString()} levels`].filter(Boolean).join(' · ');
+        out.querySelector('.sounding-expand').addEventListener('click', () => openOceanProfile(ocean, name || (title && title.textContent) || 'Ocean profile', subtitle));
+    }
     if (spectrum) showSpectrum(out.querySelector('.pp-spectrum'), result);
     if (sounding) {
         var label = name || (title && title.textContent) || 'Sounding';
@@ -4303,7 +4333,7 @@ function renderQueueDetail(entry) {
         message = null;
     }
     var props = (message && message.properties) || {};
-    var source = message && bufrSource(message, props);
+    var source = message && bufrSource(message, props, entry.topic);
 
     var detail = document.createElement('div');
     detail.className = 'queue-detail';
@@ -4322,7 +4352,7 @@ function renderQueueDetail(entry) {
         try {
             showDecoded(out, null, await decodeSource(source, stationId(props), out));
         } catch (err) {
-            showDecodeError(out, err, decode);
+            showDecodeError(out, err, decode, source);
         }
     };
     if (source) decode();
@@ -4481,11 +4511,12 @@ map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-
 map.addControl(new MapKey(), 'bottom-right');
 
 // Credits and what this page is, at the foot of the sidebar instead of an ⓘ on the
-// map. MapLibre's attribution keeps itself up to date there as sources come and go
+// map, always shown. MapLibre's attribution keeps itself up to date there as sources come and go
 (function addAbout() {
-    var about = document.createElement('details');
+    var about = document.createElement('section');
     about.className = 'queue-about';
-    about.innerHTML = '<summary>ⓘ About and credits</summary>';
+    about.setAttribute('aria-label', 'About and credits');
+    about.innerHTML = '<div class="queue-about-title">ⓘ About and credits</div>';
     about.appendChild(attribution.onAdd(map));
     document.querySelector('.queue').appendChild(about);
 })();
@@ -4589,7 +4620,7 @@ function onMessage(topic, feature, replay) {
         wsi: stationId(props),
         format: formatOf(feature),
         color: COLORS.origin,
-        source: webcam ? null : bufrSource(feature, props),
+        source: webcam ? null : bufrSource(feature, props, topic),
         update: isUpdate(feature),
         notification: feature,
         decoded: null,
@@ -5556,11 +5587,18 @@ function queueStationDecode(record) {
     pumpStationDecodes();
 }
 
-async function pumpStationDecodes() {
-    if (metricBusy || (!metricQueue.length && !replayMetricQueue.length) || !METRICS[state.colourBy]) return;
-    metricBusy = true;
-    // Live stations newest first; replayed ones only once none are waiting
-    var record = metricQueue.length ? metricQueue.pop() : replayMetricQueue.shift();
+function pumpStationDecodes() {
+    decodeStationIn('live');
+    decodeStationIn('replay');
+}
+
+async function decodeStationIn(lane) {
+    var queue = lane === 'live' ? metricQueue : replayMetricQueue;
+    if (metricBusy[lane] || !queue.length || !METRICS[state.colourBy]) return;
+    // Live stations newest first; replayed ones start only while none is waiting
+    if (lane === 'replay' && metricQueue.length) return;
+    metricBusy[lane] = true;
+    var record = lane === 'live' ? metricQueue.pop() : replayMetricQueue.shift();
     record.metricTried = true;
     try {
         if (records.has(record.id) && !record.decoded) {
@@ -5577,7 +5615,7 @@ async function pumpStationDecodes() {
     } catch (err) {
         console.debug(`Could not decode station ${record.wsi}: ${err.message}`);
     }
-    metricBusy = false;
+    metricBusy[lane] = false;
     pumpStationDecodes();
 }
 
@@ -6805,7 +6843,7 @@ function swathRecord(file, i) {
         decoded: null,
         // Only the values the map can be styled by are kept (metrics); the popup decodes
         // the rest of the report from the file again
-        source: bufrSource(t.notification, t.notification.properties || {}),
+        source: bufrSource(t.notification, t.notification.properties || {}, t.topic),
         subsetIndex: file.index[i],
         fileIndex: file.index[i],
         metrics,
@@ -7238,14 +7276,48 @@ function rememberLinks(dataId, links) {
     }
 }
 
-function bufrSource(feature, props) {
+// topic: the notification's, for working out where caches that haven't announced
+// the file would keep it (see guessedCopies)
+function bufrSource(feature, props, topic) {
     var content = props.content && props.content.encoding === 'base64' ? props.content.value : null;
     // Any canonical link may hold BUFR or text; fetchData checks the content
     var urls = (feature.links || [])
         .filter((l) => isDataLink(l) && !(l.length > 5e6))
         .map((l) => l.href);
     if (!content && !urls.length) return null;
-    return { content: content, dataId: props.data_id, urls: urls, cap: props.cap_info || null };
+    return { content: content, dataId: props.data_id, urls: urls, cap: props.cap_info || null,
+        topic: topic || props.topic || null, pubtime: props.pubtime || null };
+}
+
+// ---------- Copies no cache announced. Each global cache keeps a file at an address
+// of its own, but some follow from the notification: the Met Office / NOAA cache files
+// it under its topic, and JMA's under its data_id and publication time (in seconds;
+// every cache keeps the origin's pubtime). Only these two, as the other caches (DWD,
+// KMA, CMA, NCM) don't let browsers download. The file's name is the origin's, the
+// last part of its link and of most caches' (NCM's add a number and DWD's are
+// sometimes named after the data_id, so theirs count only when there's nothing
+// else), URL-encoded. Retry tries them once every copy announced has failed
+// (source.guess, set by showDecodeError)
+const GUESSABLE_CACHES = [
+    (s, file) => s.topic && `https://wis2globalcache.s3.amazonaws.com/data/${s.topic.replace(/^(cache|origin)\/a\/wis2\//, '')}/${file}`,
+    (s, file) => s.dataId && s.pubtime && `https://global-cache-of-japan.s3.ap-northeast-1.amazonaws.com/wis2/data/${encodeURI(s.dataId)}/${Math.floor(Date.parse(s.pubtime) / 1000)}/${file}`,
+];
+
+function guessedCopies(source, known) {
+    var host = (url) => { try { return new URL(url).hostname; } catch (err) { return ''; } };
+    var nameOf = (url) => {
+        var last = url.split(/[?#]/)[0].split('/').pop();
+        try { return decodeURIComponent(last); } catch (err) { return last; }
+    };
+    var usable = known.filter((url) => host(url) !== 'wis2.ncm.gov.sa');
+    var names = usable.filter((url) => host(url) !== 'wis2.dwd.de').map(nameOf).filter(Boolean);
+    if (!names.length) names = usable.map(nameOf).filter(Boolean);
+    // The name most copies agree on
+    var name = names.sort((a, b) => names.filter((n) => n === b).length - names.filter((n) => n === a).length)[0];
+    if (!name) return [];
+    var file = encodeURIComponent(name);
+    var seen = new Set(known.map(host));
+    return GUESSABLE_CACHES.map((build) => build(source, file)).filter((url) => url && !seen.has(host(url)));
 }
 
 // Returns { bytes, bufr, url }: the first BUFR copy found, otherwise the first
@@ -7259,7 +7331,11 @@ async function fetchData(source) {
     }
     // Every cache's copy, fastest cache first; hosts that blocked a browser download are
     // skipped (see caches.js, which learns from how each attempt goes)
-    var urls = downloadOrder([...source.urls, ...(dataLinks.get(source.dataId) || [])]);
+    var known = [...source.urls, ...(dataLinks.get(source.dataId) || [])];
+    var urls = downloadOrder(known);
+    // On Retry, then the caches that haven't announced it (see guessedCopies)
+    var guessed = source.guess ? downloadOrder(guessedCopies(source, known)) : [];
+    urls = [...urls, ...guessed.filter((url) => !urls.includes(url))];
     var answered = 0;
     for (var url of urls) {
         try {
@@ -7277,9 +7353,11 @@ async function fetchData(source) {
     if (text) return text;
     // Retry looks again: other caches' copies arrive in their own notifications
     if (answered) throw new Error(`the ${answered === 1 ? 'copy' : `${answered} copies`} downloaded ${answered === 1 ? 'is' : 'are'} neither BUFR nor text`);
+    var next = source.guess ? 'Retry tries any other caches\' copies seen since'
+        : 'Retry also asks the caches that haven\'t announced it';
     throw new Error(urls.length
-        ? `none of the ${urls.length} ${urls.length === 1 ? 'copy' : 'copies'} known could be downloaded; Retry tries any other caches' copies seen since`
-        : 'every copy known is on a server that blocks browser downloads; Retry tries any other caches\' copies seen since');
+        ? `none of the ${urls.length} ${urls.length === 1 ? 'copy' : 'copies'} ${guessed.length ? 'known or likely' : 'known'} could be downloaded; ${next}`
+        : `every copy known is on a server that blocks browser downloads; ${next}`);
 }
 
 // Text in any language: control characters other than tabs and line breaks are rare,
