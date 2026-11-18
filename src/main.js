@@ -3614,9 +3614,14 @@ function paintFilterMode(button) {
 function matchesFilters(item) {
     // The Cache and Origin layer switches apply to the message list as well
     var hidden = effectiveHidden();
+    return !(item.channel === 'cache' ? hidden.includes('obs') : hidden.includes('origin')) && passesFilterChips(item);
+}
+
+// The filters alone (centre, format, discipline, topic text), for a message as
+// queueMessage describes it; also what the Global Replay keeps (see loadReplay)
+function passesFilterChips(item) {
     var test = (key, active, matches) => !active || (filterModes[key] === 'hide' ? !matches : matches);
-    return !(item.channel === 'cache' ? hidden.includes('obs') : hidden.includes('origin'))
-        && test('centres', filters.centres.size, filters.centres.has(item.centre))
+    return test('centres', filters.centres.size, filters.centres.has(item.centre))
         && test('format', filters.format, item.format === filters.format)
         && test('disciplines', filters.disciplines.size, matchesDiscipline(item))
         && test('text', filters.text, item.topic.toLowerCase().includes(filters.text));
@@ -3756,6 +3761,7 @@ function applyFilters() {
     }
     document.querySelector('.queue-reset').hidden = !active;
     writeFiltersToUrl();  // Shows Copy link too, while the URL has filters or styling to share
+    scheduleReplay();  // The replay asks for what the filters now keep
     filterDatasetRows();
     renderFilterBanner();
 }
@@ -5856,30 +5862,59 @@ function viewBbox() {
     return bbox;
 }
 
+// The replay follows the filters. What the service can narrow down itself (its topic=
+// matches whole leading segments of a topic) it is asked for: the topic text up to its
+// last /, or one request per centre while only a few are shown. Every notification
+// is then checked against all the filters (replayMatches), so ones they'd hide don't
+// use up REPLAY_MAX
+const REPLAY_TOPIC_PREFIX = 'cache/a/wis2/';
+const REPLAY_CENTRES_MAX = 5;  // Shown centres beyond this are fetched together and sorted out here
+function replayTopics() {
+    var text = filterModes.text !== 'hide' && filters.text.startsWith(REPLAY_TOPIC_PREFIX)
+        ? filters.text.slice(0, filters.text.lastIndexOf('/')) : '';
+    if (text.length > REPLAY_TOPIC_PREFIX.length) return [text];
+    if (filters.centres.size && filterModes.centres !== 'hide' && filters.centres.size <= REPLAY_CENTRES_MAX) {
+        return [...filters.centres].map((centre) => `${REPLAY_TOPIC_PREFIX}${centre}`);
+    }
+    return [null];
+}
+
+function replayMatches(topic, feature) {
+    var [channel, t] = topic.split('/a/wis2/');
+    return passesFilterChips({ topic, channel, centre: t.split('/', 1)[0], discipline: disciplineOf(t), format: formatOf(feature) });
+}
+
 async function loadReplay() {
     var bbox = viewBbox();
     var since = new Date(Date.now() - replayWindowMs).toISOString().replace(/\.\d+Z$/, 'Z');
-    var view = `${bbox.join(',')}|${since.slice(0, 15)}`;  // The same view within ten minutes isn't fetched again
+    var topics = replayTopics();
+    var filtersKey = JSON.stringify([filters.text, [...filters.centres].sort(), filters.format, [...filters.disciplines].sort(), filterModes]);
+    // The same view and filters within ten minutes aren't fetched again
+    var view = `${bbox.join(',')}|${since.slice(0, 15)}|${filtersKey}`;
     if (view === replayedView) return;
     replayedView = view;
     if (replayAbort) replayAbort.abort();
     replayBacklog = [];  // What was waiting belongs to the last view
     var abort = replayAbort = new AbortController();
-    var url = `${REPLAY_API}?f=json&sortby=-pubtime&limit=${REPLAY_PAGE}&bbox=${bbox.join(',')}&datetime=${since}/..&global-cache=${REPLAY_CACHE}`;
+    var base = `${REPLAY_API}?f=json&sortby=-pubtime&limit=${REPLAY_PAGE}&bbox=${bbox.join(',')}&datetime=${since}/..&global-cache=${REPLAY_CACHE}`;
     try {
-        for (var fetched = 0; url && fetched < REPLAY_MAX && !abort.signal.aborted;) {
-            var response = await fetch(url, { signal: abort.signal });
-            if (!response.ok) throw new Error(`Global Replay answered ${response.status}`);
-            var page = await response.json();
-            if (abort.signal.aborted) break;
-            for (var feature of page.features || []) {
-                var topic = feature.properties && feature.properties.topic;
-                if (topic && topic.includes('/a/wis2/')) replayBacklog.push([topic, feature]);
+        // Each request gets a share of REPLAY_MAX, newest first
+        for (var prefix of topics) {
+            var url = prefix ? `${base}&topic=${encodeURIComponent(prefix)}` : base;
+            for (var fetched = 0; url && fetched < REPLAY_MAX / topics.length && !abort.signal.aborted;) {
+                var response = await fetch(url, { signal: abort.signal });
+                if (!response.ok) throw new Error(`Global Replay answered ${response.status}`);
+                var page = await response.json();
+                if (abort.signal.aborted) break;
+                for (var feature of page.features || []) {
+                    var topic = feature.properties && feature.properties.topic;
+                    if (topic && topic.includes('/a/wis2/') && replayMatches(topic, feature)) replayBacklog.push([topic, feature]);
+                }
+                if (!replayFeeding) feedReplay();
+                fetched += (page.features || []).length;
+                var next = (page.links || []).find((l) => l.rel === 'next');
+                url = next && (page.features || []).length ? next.href : null;
             }
-            if (!replayFeeding) feedReplay();
-            fetched += (page.features || []).length;
-            var next = (page.links || []).find((l) => l.rel === 'next');
-            url = next && (page.features || []).length ? next.href : null;
         }
     } catch (err) {
         if (err.name !== 'AbortError') {
