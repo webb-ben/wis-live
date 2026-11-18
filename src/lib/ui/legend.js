@@ -15,7 +15,7 @@ import { map } from '../../map/map.js';
 import { drawOverviewContent } from '../../map/overviewContent.js';
 import { makeMinimizable, bindKeyToggles, startKeyToggles, keyToggle, hiddenKeyRows } from './panels.js';
 import { TRACK_REBUILD_MS, shipTrackLayers } from '../../map/tracks.js';
-import { SATELLITE_STYLE, METRICS, SATELLITE_LAYERS, NO_VALUE_COLOR, WAVE_STYLE, OBS_CLASSES, COLORS } from '../../config.js';
+import { SATELLITE_STYLE, METRICS, SATELLITE_LAYERS, NO_VALUE_COLOR, WAVE_STYLE, OBS_CLASSES, COLORS, SATELLITE_METRIC_ORDER } from '../../config.js';
 import { updateModelField } from '../../map/modelFields.js';
 import { passesFilters } from '../filters.js';
 import { records } from '../../map/points.js';
@@ -23,6 +23,7 @@ import { satelliteColours, satelliteLabel } from '../../data/satellite/rows.js';
 import { radars, RADAR_COLORS } from '../../data/radar/radar.js';
 import { brokerState } from '../../messages/mqtt.js';
 import { SHED_LAYERS } from '../../messages/network.js';
+import { SATELLITE_PAGE, metricOnPage, otherPageLinks } from '../../page.js';
 // The panels on the map: the layers in the sidebar (LegendControl), the key of what
 // is drawn with Style by (StyleControl, top right), and the world map with the
 // connection lines and About (MapKey, bottom right)
@@ -38,7 +39,9 @@ export class LegendControl {
     onAdd(map) {
         var container = document.createElement('div');
         container.className = 'legend layer-panel';
+        // Links to the other pages: all observations, GBON and satellites (see page.js)
         container.innerHTML = `
+            <nav class="legend-pages" aria-label="Other views">${otherPageLinks()}</nav>
             ${LAYER_GROUPS.map((g) => `
             <section class="legend-section legend-section-${g.key}">
             <div class="legend-group">${g.label}<small>${g.subtitle}</small></div>
@@ -79,32 +82,10 @@ export class LegendControl {
         range.addEventListener('input', showWindow);
         range.addEventListener('change', () => setReplayWindow(minutesShown()));
 
-        // How see-through satellite coverage is
+        // How see-through satellite coverage is, under its row. On the satellite page, whose
+        // sidebar is hidden, it's in Style by instead (see buildStylePanel)
         var coverageToggle = container.querySelector('.legend-toggle[data-layer="sat-coverage"]');
-        coverageToggle.insertAdjacentHTML('afterend', `
-            <label class="legend-option legend-range legend-range-satellite" data-layer="sat-opacity">
-                <span class="legend-range-value">Coverage opacity <output></output></span>
-                <input type="range" min="0" max="100" step="5" aria-label="Opacity of satellite coverage">
-                <span class="legend-range-ticks" aria-hidden="true">${[0, 25, 50, 75, 100].map((p) =>
-                    `<span style="--at: ${p / 100}">${p}%</span>`).join('')}</span>
-            </label>`);
-        var opacitySlider = container.querySelector('.legend-range-satellite');
-        setOpacitySlider(opacitySlider);
-        var opacityRange = opacitySlider.querySelector('input');
-        syncOpacitySlider();
-        opacityRange.addEventListener('input', () => {
-            swathOpacity[swathOpacityKey()] = opacityRange.value / 100;
-            syncOpacitySlider();
-            paintAge();
-        });
-        opacityRange.addEventListener('change', () => {
-            var key = swathOpacityKey();
-            try {
-                localStorage.setItem(`wis-coverage-opacity-${key}`, String(swathOpacity[key]));
-            } catch (err) {
-                // Storage unavailable; the setting lasts until the page is closed
-            }
-        });
+        if (coverageToggle && !SATELLITE_PAGE) coverageToggle.after(buildOpacitySlider());
 
         container.querySelectorAll('.legend-toggle[data-layer]').forEach((row) => {
             var key = row.dataset.layer;
@@ -171,7 +152,13 @@ export class MapKey {
         mapKeyStatus = document.createElement('div');
         mapKeyStatus.className = 'key-status';
         overview = createOverview({ map, drawContent: drawOverviewContent, hoveredCell: () => hoveredCell });
-        this.container.append(notices, overview.section, mapKeyStatus);
+        // On the satellite page the world map heads the legend's panel, bottom left (added
+        // first, see main.js); this panel keeps the notices, connection lines and About
+        var legendPanel = SATELLITE_PAGE && document.querySelector('.map-style');
+        if (legendPanel) {
+            legendPanel.prepend(overview.section);
+            this.container.append(notices, mapKeyStatus);
+        } else this.container.append(notices, overview.section, mapKeyStatus);
         // Opens minimized, like the key: the notices and the world map. + shows the
         // connection lines and About and credits
         makeMinimizable(this.container, 'world-map', 'connection status and credits', { alwaysStartMinimized: true });
@@ -202,8 +189,9 @@ export class StyleControl {
             // On phones the panel opens to its options on a tap anywhere but a control or key row
             if (PHONE.matches && !e.target.closest('select, input, label, [data-key-toggle]')) container.classList.toggle('map-key-open');
         });
-        // Opens minimized, just the key, smaller, without Style by; + brings Style by back
-        makeMinimizable(container, 'key', 'Style by options', { alwaysStartMinimized: true });
+        // Opens minimized, just the key, smaller, without Style by; + brings Style by back.
+        // On the satellite page (bottom left, see main.js), Style by is always there
+        if (!SATELLITE_PAGE) makeMinimizable(container, 'key', 'Style by options', { alwaysStartMinimized: true });
         return container;
     }
 
@@ -237,6 +225,69 @@ export function refreshKey(now) {
     if (mapKeyDirty && now - mapKeyBuilt > TRACK_REBUILD_MS) updateMapKey();
 }
 
+// The coverage opacity slider: the opacity for the style in use (see swathOpacityKey),
+// remembered in this browser. One per page (setOpacitySlider)
+export function buildOpacitySlider() {
+    var holder = document.createElement('div');
+    holder.innerHTML = `
+        <label class="legend-option legend-range legend-range-satellite" data-layer="sat-opacity">
+            <span class="legend-range-value">Coverage opacity <output></output></span>
+            <input type="range" min="0" max="100" step="5" aria-label="Opacity of satellite coverage">
+            <span class="legend-range-ticks" aria-hidden="true">${[0, 25, 50, 75, 100].map((p) =>
+                `<span style="--at: ${p / 100}">${p}%</span>`).join('')}</span>
+        </label>`;
+    var slider = holder.firstElementChild;
+    setOpacitySlider(slider);
+    var range = slider.querySelector('input');
+    syncOpacitySlider();
+    range.addEventListener('input', () => {
+        swathOpacity[swathOpacityKey()] = range.value / 100;
+        syncOpacitySlider();
+        paintAge();
+    });
+    range.addEventListener('change', () => {
+        var key = swathOpacityKey();
+        try {
+            localStorage.setItem(`wis-coverage-opacity-${key}`, String(swathOpacity[key]));
+        } catch (err) {
+            // Storage unavailable; the setting lasts until the page is closed
+        }
+    });
+    return slider;
+}
+
+// Satellite measures most often seen first (SATELLITE_METRIC_ORDER); the rest keep METRICS' order
+function byFrequency([a], [b]) {
+    var rank = (key) => (SATELLITE_METRIC_ORDER.includes(key) ? SATELLITE_METRIC_ORDER.indexOf(key) : -1);
+    return rank(a) - rank(b);
+}
+
+// Style by's options, as HTML: the page's measures (metricOnPage), grouped, most often
+// seen first. seen, if given, keeps only the measures in it, and the one in use
+function styleOptions(seen) {
+    var offered = Object.entries(METRICS).filter(([key, m]) => metricOnPage(m) && (!seen || seen.has(key) || key === state.colourBy))
+        .sort(byFrequency);
+    return (SATELLITE_PAGE ? `<option value="${SATELLITE_STYLE}">Satellite</option>` : '<option value="kind">Observation type</option>')
+        + [...new Set(offered.map(([, m]) => m.group))].map((group) => `<optgroup label="${group}">${offered
+            .filter(([, m]) => m.group === group).map(([key, m]) => `<option value="${key}">${m.label}</option>`).join('')}</optgroup>`).join('');
+}
+
+// On the satellite page, Style by offers only the measures some satellite on the map has
+// values for (every satellite file is decoded, so what's there is known; elsewhere a
+// station's values are only decoded once a measure is chosen, so every one is offered)
+let offeredKey = '';
+function syncStyleOptions() {
+    if (!SATELLITE_PAGE || !stylePanel) return;
+    var seen = new Set();
+    satelliteHoldings().forEach((held) => held.metrics.forEach((m) => seen.add(m)));
+    var key = [...seen].sort().join(',') + `|${state.colourBy}`;
+    if (key === offeredKey) return;
+    offeredKey = key;
+    var select = stylePanel.querySelector('select');
+    select.innerHTML = styleOptions(seen);
+    select.value = state.colourBy;
+}
+
 // Color by and the options that go with it, at the top of the map key
 export function buildStylePanel() {
     stylePanel = document.createElement('div');
@@ -244,14 +295,7 @@ export function buildStylePanel() {
     stylePanel.innerHTML = `
         <div class="legend-colour">
             <label class="key-colour-by">Style by
-                <select class="form-select form-select-sm" aria-label="Color points by">
-                    <option value="kind">Observation type</option>
-                    <option value="${SATELLITE_STYLE}">Satellite</option>
-                    ${[...new Set(Object.values(METRICS).map((m) => m.group))].map((group) => `
-                    <optgroup label="${group}">
-                        ${Object.entries(METRICS).filter(([, m]) => m.group === group).map(([key, m]) => `<option value="${key}">${m.label}</option>`).join('')}
-                    </optgroup>`).join('')}
-                </select>
+                <select class="form-select form-select-sm" aria-label="Color points by">${styleOptions(null)}</select>
             </label>
             <div class="key-colour-name"></div>
             <div class="legend-scale" hidden><span></span><i></i><span></span></div>
@@ -265,6 +309,9 @@ export function buildStylePanel() {
             </label>
             <div class="legend-model-info" hidden><img alt="Model field legend"></div>
         </div>`;
+    // The satellite page sets how see-through its coverage is here, under the scale (it
+    // starts opaque, see paintAge)
+    if (SATELLITE_PAGE) stylePanel.querySelector('.key-options').before(buildOpacitySlider());
     stylePanel.querySelector('select').addEventListener('change', (e) => setColourBy(e.target.value, stylePanel));
     stylePanel.querySelector('.legend-coloured-only input').addEventListener('change', (e) => {
         setState({ colouredOnly: e.target.checked });
@@ -278,6 +325,42 @@ export function buildStylePanel() {
     });
     setInterval(() => showColourStatus(stylePanel), 1000);
     return stylePanel;
+}
+
+// What each satellite on the map has: satellite key -> { sources: Set of 'WIS2', 'GTS'
+// (where its data came from), metrics: Set of the METRICS keys it has values for }
+export function satelliteHoldings() {
+    var holdings = new Map();
+    var note = (p, metrics) => {
+        if (!p.sat) return;
+        if (!holdings.has(p.sat)) holdings.set(p.sat, { sources: new Set(), metrics: new Set() });
+        var held = holdings.get(p.sat);
+        held.sources.add(p.gateway ? 'GTS' : 'WIS2');
+        metrics.forEach((m) => held.metrics.add(m));
+    };
+    for (var file of swathFiles.values()) note(file.props, Object.keys(file.means));
+    for (var record of records.values()) {
+        if (!record.feature) continue;
+        var p = record.feature.properties;
+        note(p, Object.keys(p).filter((k) => k.startsWith('m_')).map((k) => k.slice(2)));
+    }
+    return holdings;
+}
+
+// The key's satellite rows: each satellite switched on, in its colour, by name, a click
+// switching it off. With a measure (metric), only those with values for it. On the
+// satellite page each also says where its data came from (WIS2, the GTS), as its
+// coverage is one grid whatever the source, not circles and diamonds
+function satelliteRows(metric) {
+    var hidden = effectiveHidden(), holdings = satelliteHoldings();
+    return [...satelliteColours].filter(([sat]) => !hidden.includes(sat) && (!metric || holdings.get(sat)?.metrics.has(metric)))
+        .sort(([a], [b]) => satelliteLabel(a).localeCompare(satelliteLabel(b)))
+        .map(([sat, colour]) => {
+            var via = SATELLITE_PAGE && holdings.get(sat)?.sources;
+            var tag = via ? `<small class="key-source">${[...via].sort().reverse().join(' · ')}</small>` : '';
+            return keyToggle(sat, [sat], satelliteLabel(sat),
+                `<span class="legend-dot" style="--color: ${colour}; --outline: ${darken(colour)}"></span>${esc(satelliteLabel(sat))}${tag}`);
+        });
 }
 
 export function drawnLayers() {
@@ -307,6 +390,7 @@ export function drawnLayers() {
 
 export function updateMapKey() {
     if (!mapKeyBody) return;
+    syncStyleOptions();
     var hidden = effectiveHidden();
     var shown = drawnLayers();
     var drawn = (key) => shown.has(key);
@@ -323,15 +407,16 @@ export function updateMapKey() {
         // The measure and its scale are in the style panel above
         // With "Require value" on, points without one aren't drawn, so there's nothing to explain
         // The same grey "Other" row as styled by satellite: whatever the style doesn't colour
-        if (!state.colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}Other</div>`);
+        // (on the satellite page, where everything is a satellite's, nothing)
+        if (!state.colouredOnly && !SATELLITE_PAGE) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}Other</div>`);
         if (coverage) rows.push(toggle('sat-coverage', ['sat-coverage'], 'satellite coverage', `${swatch}Satellite coverage${state.colourBy === 'cloudAmount' ? ', darker = cloudier' : ''}`));
+        // On the satellite page, the satellites that measure it, each switched off with a click
+        if (SATELLITE_PAGE) rows.push(...satelliteRows(state.colourBy));
     } else if (state.colourBy === SATELLITE_STYLE) {
         // Each satellite switched on, in its colour, by name; everything else is grey
-        [...satelliteColours].filter(([sat]) => !hidden.includes(sat))
-            .sort(([a], [b]) => satelliteLabel(a).localeCompare(satelliteLabel(b)))
-            .forEach(([sat, colour]) => rows.push(toggle(sat, [sat], satelliteLabel(sat), `${symbol('circle', colour)}${esc(satelliteLabel(sat))}`)));
-        // Nothing else is drawn with Satellites only on
-        if (!state.colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}Other</div>`);
+        rows.push(...satelliteRows(null));
+        // Nothing else is drawn with Satellites only on, nor on the satellite page
+        if (!state.colouredOnly && !SATELLITE_PAGE) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}Other</div>`);
     } else if (state.colourBy === WAVE_STYLE) {
         rows.push('<div class="key-note"><span class="key-wavespec"></span>Wave spectrum: where waves come from (north up), longer waves inside, red = most energy</div>');
         if (!state.colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}Other</div>`);
@@ -371,7 +456,8 @@ export function updateMapKey() {
     // Global Replay and METAR switches)
     var shape = (id, layer, kind, color, label) => toggle(id, [layer], label, `${symbol(kind, color)}${label}`, 'key-shape', 'span');
     // Other sources are squares: the Global Replay (its rows are replay-station and so on) and airports
-    var shapes = [drawnAny('cache-') && shape('source:obs', 'obs', 'circle', '#adb5bd', 'WIS2'),
+    // The satellite page says each satellite's source on its row instead (see above)
+    var shapes = SATELLITE_PAGE ? [] : [drawnAny('cache-') && shape('source:obs', 'obs', 'circle', '#adb5bd', 'WIS2'),
         drawn('origin') && shape('source:origin', 'origin', 'ring', COLORS.origin, 'WIS2 origin'),
         drawnAny('gts-') && shape('source:gts', 'gts', 'diamond', '#adb5bd', 'GTS'),
         drawnAny('replay-') && shape('source:replay', 'replay', 'square', '#adb5bd', 'Replay'),
@@ -447,8 +533,20 @@ export function addAbout() {
     var about = document.createElement('section');
     about.className = 'key-about';
     about.setAttribute('aria-label', 'About and credits');
+    // The map's credits, with the panel's −/+ (connection status and credits) at the end
+    // of their line rather than in the panel's corner, which the world map fills
+    var credits = document.createElement('div');
+    credits.className = 'key-credits';
+    credits.appendChild(attribution.onAdd(map));
+    var panel = mapKeyStatus.parentElement;
+    var toggle = panel && panel.querySelector(':scope > .map-key-min-toggle');
+    if (toggle) credits.appendChild(toggle);
     about.innerHTML = '<div class="key-about-title">ⓘ About and credits</div><p class="key-about-text"></p>';
     about.querySelector('.key-about-text').textContent = ABOUT_TEXT;
-    about.appendChild(attribution.onAdd(map));
+    // The satellite page has no sidebar, where the other pages keep their links to the
+    // rest: its links are here, shown with the About text when the panel is opened
+    if (SATELLITE_PAGE) about.querySelector('.key-about-text').insertAdjacentHTML('afterend',
+        `<nav class="legend-pages" aria-label="Other views">${otherPageLinks()}</nav>`);
+    about.append(credits);
     mapKeyStatus.after(about);
 }

@@ -3,7 +3,7 @@
 // caches that didn't announce it are likely to have (guessedCopies); and what came
 // back: BUFR (bufrPart) or text (isText)
 import { isDataLink } from '../messages/messages.js';
-import { canDownload, noteTrying, noteLatency, noteFailed, downloadOrder } from './caches.js';
+import { canDownload, noteTrying, noteLatency, noteFailed, downloadOrder, viaProxy } from './caches.js';
 
 export const DATA_LINKS_MAX = 20000;
 const dataLinks = new Map();  // data_id -> hrefs seen from every cache
@@ -23,12 +23,13 @@ export function decodeHref(feature) {
 }
 
 // fetch, telling caches.js how it went: how long the host took to answer, or that it
-// blocked the browser (so it isn't asked again)
+// blocked the browser (so it isn't asked again). A cache that sends no CORS headers is
+// fetched through the proxy (viaProxy), but what's learnt is about the cache
 export async function fetchTracked(url, options) {
     noteTrying(url);
     var start = performance.now();
     try {
-        var response = await fetch(url, options);
+        var response = await fetch(viaProxy(url), options);
     } catch (err) {
         noteFailed(url, err);
         throw err;

@@ -17,7 +17,15 @@ https://benwebb.com/wis-live/). The page is not affiliated with WMO.
 
 ```
 index.html                 Page shell: meta tags, analytics, the app module, #map
-src/main.js                The main page: map, sidebar, popups (being split up; see below)
+gbon.html                  The GBON page: the same app, <html data-page="gbon">
+satellites.html            The satellite page: the same app, <html data-page="satellites">
+src/page.js                Which page this is (PAGE): index.html (home) takes every
+                           notification but space-based ones, satellites.html only those,
+                           gbon.html only surface stations and upper-air soundings
+                           (PAGE_CLASSES: by topic in topicOnPage, then by each report's
+                           kind in addPoint); each lists its own layer groups (layers.js)
+                           and Style by measures (metricOnPage), and links to the others
+src/main.js                Both pages' wiring: map, sidebar, popups (being split up; see below)
 src/state.js               The shared state: state.colourBy, colouredOnly, modelFieldOn,
                            filters, filterModes, hiddenLayers; setState / notify / subscribe
 src/config.js              COLORS, OBS_CLASSES (kinds of observation), METRICS (Style by
@@ -42,6 +50,11 @@ src/data/aviation/airports.js  Airport METARs from the Iowa Environmental Mesone
                            network at a time (initAirports, queueAirports)
 src/data/satellite/names.js  satellite and instrument names from BUFR code tables
 src/data/satellite/spectrum.js  CrIS/IASI infrared spectra (showSpectrum)
+src/data/satellite/coverage.js  Satellite files as coverage on H3 grids: the global grid
+                           (resolution 2, keeps each file's share) and the view's finer one
+                           (rebuilds a file's share when wanted, see fileShare); cell
+                           estimates (swathMeans), the cell summary, the satellite outline
+src/data/satellite/coverageLayers.js  The coverage's map layers and their hover and click
 src/data/ocean/profile.js  Ocean profiles (Argo and BGC floats, XBT/CTD, gliders): T, S and
                            BGC against depth, T–S diagram with σt, tiles, expanded view;
                            levels come from _ocean in DECODE_PY (decode_bufr's 'ocean')
@@ -82,6 +95,10 @@ public/assets/data/wis2box-deployments.json  Centre -> wis2box URL, from the
                            wis2box deployments list (not fetchable from a browser)
 public/assets/images/      Favicons
 vite.config.js             base /wis-live/; each page is an entry in rollupOptions.input
+proxy/                     The CORS proxy, a Cloudflare Worker (cors-worker.js, deployed
+                           with wrangler from that folder, not by Vite): the global caches
+                           that send no CORS headers (DWD, KMA, CMA, NCM) are downloaded
+                           through it when CORS_PROXY is set in src/data/caches.js (off for now)
 .github/workflows/pages.yml  Builds and deploys to Pages on every push to main
 ```
 

@@ -17,14 +17,11 @@ export function modelFieldUrl(key) {
 export function updateModelField(legend) {
     var m = METRICS[state.colourBy], available = !!m && !!m.wms, on = state.modelFieldOn && available;
     var row = legend.querySelector('.legend-model');
-    row.hidden = !m;
-    row.querySelector('input').disabled = !available;
-    // Shown off where there's nothing to draw; the choice comes back with a measure that has one
+    // Only for a measure the model has a field for; the choice comes back with one that has
+    row.hidden = !available;
     row.querySelector('input').checked = on;
-    row.classList.toggle('legend-disabled', !available);
-    row.querySelector('.legend-model-note').textContent = !m ? ''
-        : !available ? `No model field for ${m.label.toLowerCase()}`
-        : `ECCC ${m.wms.split('_')[0]} ${m.wmsLabel || m.label.toLowerCase()},${new Date().toISOString().slice(11, 13)}:00 UTC, under the points`;
+    row.querySelector('.legend-model-note').textContent = available
+        ? `ECCC ${m.wms.split('_')[0]} ${m.wmsLabel || m.label.toLowerCase()},${new Date().toISOString().slice(11, 13)}:00 UTC, under the points` : '';
     var info = legend.querySelector('.legend-model-info');
     info.hidden = !on;
     if (map.getLayer('model-field')) {

@@ -1,6 +1,6 @@
 // Geometry on the globe: distances, hulls and rings, lines across ±180, and the
 // H3 hexagon cells satellite coverage is drawn in.
-import { latLngToCell, cellToBoundary, cellsToMultiPolygon, gridDisk, getHexagonEdgeLengthAvg, getResolution, UNITS } from 'h3-js';
+import { latLngToCell, cellToBoundary, cellsToMultiPolygon, gridDisk, gridDiskDistances, cellToLatLng, originToDirectedEdges, getDirectedEdgeDestination, directedEdgeToBoundary, getHexagonEdgeLengthAvg, getResolution, UNITS } from 'h3-js';
 export { getResolution };
 
 export function distanceKm([lon1, lat1], [lon2, lat2]) {
@@ -74,9 +74,10 @@ export function inOrNearRing([x, y], ring, margin) {
 // Coverage cells are H3 hexagons (h3-js), the same everywhere on the globe with
 // no seam at ±180. The whole globe's (the overview and the map zoomed out) are
 // resolution 2, about 180 km a side; each resolution up is about 2.6 times smaller,
-// down to H3_RESOLUTION_MAX zoomed in
+// down to H3_RESOLUTION_MAX zoomed in. A file is never drawn finer than its reports'
+// spacing allows, nor coarser than H3_RESOLUTION_MIN (see resolutionForSpacing)
 export const H3_RESOLUTION = 2;
-export const H3_RESOLUTION_MAX = 5;
+export const H3_RESOLUTION_MAX = 4;  // About 45 km between cells: finer is more cells than the reports kept fill
 
 export function h3Cell(lon, lat, resolution = H3_RESOLUTION) {
     return latLngToCell(lat, ((lon + 540) % 360) - 180, resolution);
@@ -92,10 +93,126 @@ export function h3Neighbors(cell) {
     return gridDisk(cell, 1).filter((neighbor) => neighbor !== cell);
 }
 
+// Centre-to-centre distance between neighbouring cells of a resolution, in km
+// (about 840 at resolution 1, 320 at 2, 120 at 3, 45 at 4, 17 at 5)
+export function h3SpacingKm(resolution) {
+    return getHexagonEdgeLengthAvg(resolution, UNITS.km) * Math.sqrt(3);
+}
+
+// The typical distance in km between a file's reports and their nearest other report:
+// the median over up to SPACING_SAMPLES of them. coords is [lon, lat, lon, lat, ...].
+// Reports within SPACING_SAME_KM of one another (another level or channel at the same
+// spot) count as one place. Sorted by latitude, each search stops once the latitude
+// alone is further than the nearest found, so a large file takes milliseconds
+export const SPACING_SAMPLES = 256;
+export const SPACING_SAME_KM = 0.5;
+export function reportSpacingKm(coords) {
+    var n = coords.length / 2;
+    if (n < 2) return Infinity;
+    var order = Array.from({ length: n }, (_, i) => i).sort((a, b) => coords[2 * a + 1] - coords[2 * b + 1]);
+    var step = Math.max(1, Math.floor(n / SPACING_SAMPLES)), nearest = [];
+    for (var p = 0; p < n; p += step) {
+        var i = order[p], here = [coords[2 * i], coords[2 * i + 1]], best = Infinity;
+        for (var dir of [-1, 1]) {
+            for (var q = p + dir; q >= 0 && q < n; q += dir) {
+                var j = order[q];
+                if ((Math.abs(coords[2 * j + 1] - here[1])) * 111.2 >= best) break;
+                var d = distanceKm(here, [coords[2 * j], coords[2 * j + 1]]);
+                if (d > SPACING_SAME_KM && d < best) best = d;
+            }
+        }
+        if (best < Infinity) nearest.push(best);
+    }
+    if (!nearest.length) return Infinity;
+    nearest.sort((a, b) => a - b);
+    return nearest[Math.floor(nearest.length / 2)];
+}
+
+// The finest resolution whose cells are at least as far apart as the reports, so most
+// cells hold a report of their own rather than an estimate: between H3_RESOLUTION_MIN
+// (sparse files, such as cloud-motion winds) and H3_RESOLUTION_MAX (imagers, sounders)
+export const H3_RESOLUTION_MIN = 1;
+export function resolutionForSpacing(spacingKm) {
+    for (var r = H3_RESOLUTION_MAX; r > H3_RESOLUTION_MIN; r--) {
+        if (h3SpacingKm(r) >= spacingKm) return r;
+    }
+    return H3_RESOLUTION_MIN;
+}
+
+// A cell's neighbours by distance: [ring 1, ring 2, ... ring k]
+export function h3NeighborRings(cell, k) {
+    return gridDiskDistances(cell, k).slice(1);
+}
+
 // A cell's outline as [lon, lat], longitudes carried past ±180 where it crosses
 // so it isn't drawn the whole way round the globe
 export function cellRing(cell) {
-    return unwrap(cellToBoundary(cell, true));
+    var ring = unwrap(cellToBoundary(cell, true));
+    // A cell round a pole goes the whole way round it, so unwrapped its ring ends 360°
+    // from where it began; closed straight back it would cut a wedge out. Closed along
+    // the pole instead, it's drawn whole
+    var first = ring[0], last = ring[ring.length - 1];
+    if (Math.abs(last[0] - first[0]) > 180) {
+        var pole = ring.reduce((sum, [, lat]) => sum + lat, 0) > 0 ? 90 : -90;
+        ring.push([last[0], pole], [first[0], pole], first);
+    }
+    return ring;
+}
+
+// The border of a set of cells (a Set of H3 indexes), as short [lon, lat] segments: each
+// cell edge whose neighbour across it isn't in the set. Linear in the cells and never
+// fails, unlike merging them into polygons (cellsOutline), which is slow over large
+// areas and throws on ones that wrap the globe. A segment crossing ±180 is carried past it.
+// covered(lon, lat, cell), if given, says whether the point just past an edge, in the
+// cell beyond it, counts as covered (by cells of another resolution, or as a gap
+// enclosed by the set, see enclosedGaps): an edge whose far side is covered isn't a border
+export function cellsBorder(cells, covered) {
+    var segments = [];
+    for (var cell of cells) {
+        for (var edge of originToDirectedEdges(cell)) {
+            var outside = getDirectedEdgeDestination(edge);
+            if (cells.has(outside)) continue;
+            var segment = unwrap(directedEdgeToBoundary(edge, true));
+            if (covered && covered(...justBeyond(segment, outside), outside)) continue;
+            segments.push(segment);
+        }
+    }
+    return segments;
+}
+
+// The empty cells a set of cells encloses: gaps inside it, as against the outside. From
+// each empty cell next to the set, the empty cells it joins are searched; a search that
+// runs past HOLE_CELLS_MAX cells, or into one already found to be outside, is outside,
+// and all it passed through with it. So each gap is searched once, and the outside only
+// as far as the limit
+export const HOLE_CELLS_MAX = 400;
+export function enclosedGaps(cells, limit = HOLE_CELLS_MAX) {
+    var enclosed = new Set(), outside = new Set();
+    for (var cell of cells) {
+        for (var start of h3Neighbors(cell)) {
+            if (cells.has(start) || enclosed.has(start) || outside.has(start)) continue;
+            var seen = new Set([start]), queue = [start], open = false;
+            while (queue.length && !open) {
+                for (var next of h3Neighbors(queue.pop())) {
+                    if (cells.has(next) || seen.has(next)) continue;
+                    if (outside.has(next) || seen.size >= limit) { open = true; break; }
+                    seen.add(next);
+                    queue.push(next);
+                }
+            }
+            seen.forEach((c) => (open ? outside : enclosed).add(c));
+        }
+    }
+    return enclosed;
+}
+
+// A point just past the middle of a cell edge, a tenth of the way on towards the centre
+// of the cell beyond it, as [lon, lat]
+function justBeyond([[lon1, lat1], [lon2, lat2]], beyond) {
+    var lon = (lon1 + lon2) / 2, lat = (lat1 + lat2) / 2;
+    var [cLat, cLon] = cellToLatLng(beyond);
+    cLon = lon + ((((cLon - lon) % 360) + 540) % 360) - 180;
+    return [lon + (cLon - lon) * 0.1, lat + (cLat - lat) * 0.1];
 }
 
 // The outline of a set of cells merged together: one ring per edge of the area

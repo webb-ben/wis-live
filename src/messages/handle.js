@@ -2,7 +2,8 @@ import { rememberLinks, bufrSource } from '../data/download.js';
 import { noteCacheLinks } from '../data/caches.js';
 import { noteDataset } from '../data/catalogue.js';
 import { revealGatewayRows, DECODE_LAYERS, decodeEnabled, queueDecode } from '../data/decodeQueue.js';
-import { pointFor, stationId, disciplineOf, formatOf, isUpdate, topicClass } from './messages.js';
+import { pointFor, stationId, disciplineOf, formatOf, isUpdate, topicClass, isSpaceBased } from './messages.js';
+import { SATELLITE_PAGE, GBON_PAGE } from '../page.js';
 import { latestByStation, records, observedAt, removePoint, newId, addPoint } from '../map/points.js';
 import { COLORS, OBS_CLASSES } from '../config.js';
 import { shipTrackKey } from '../data/reports.js';
@@ -13,8 +14,24 @@ export const ignoredTopics = [
     '/a/wis2/ca-eccc-msc/data/core/weather/prediction',
 ];
 
+// Kinds of observation the GBON page never shows, by what a notification's topic says
+// it holds: their files aren't downloaded there. Files that don't say are decoded,
+// and only their stations and soundings drawn (see addPoint)
+export const GBON_SKIPPED = ['ship', 'buoy', 'aircraft', 'warning', 'webcam', 'gnss', 'radarwind'];
+
+// Whether this page takes a notification (see page.js): satellites only on theirs,
+// and on the GBON page nothing whose topic says it's another kind
+export function topicOnPage(topic, feature) {
+    if (isSpaceBased(topic) !== SATELLITE_PAGE) return false;
+    if (!GBON_PAGE) return true;
+    var props = (feature && feature.properties) || {};
+    return !GBON_SKIPPED.includes(topicClass({ topic, webcam: topic.includes('webcam'), props }));
+}
+
 // Turns a notification into a map point, returning its record (or nothing)
 export function onMessage(topic, feature, replay) {
+    // Each page takes only its own, live, replayed or shown from the catalogue
+    if (!topicOnPage(topic, feature)) return;
     // Kept for every message so the sidebar can find a downloadable copy
     rememberLinks((feature.properties || {}).data_id, feature.links || []);
     // And which global cache each host belongs to, timed when first seen
@@ -23,7 +40,11 @@ export function onMessage(topic, feature, replay) {
     revealGatewayRows(topic, feature);
     // Replayed messages are only drawn: decoding a past hour of files would swamp the decoder
     var kind = !replay && Object.keys(DECODE_LAYERS).find((key) => DECODE_LAYERS[key](topic, feature));
-    if (kind && decodeEnabled.has(kind)) queueDecode(kind, topic, feature);
+    if (kind && decodeEnabled.has(kind)) {
+        queueDecode(kind, topic, feature);
+        // The satellite page draws a decoded file as coverage, not its notification as a point
+        if (SATELLITE_PAGE) return null;
+    }
 
     if (ignoredTopics.some((t) => topic.includes(t))) {
         return; // Ignore this topic

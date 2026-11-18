@@ -17,6 +17,7 @@ import { aircraftAltitude } from './aviation/aircraft.js';
 import { applyMapFilter } from '../map/filter.js';
 import { attachSpectrum } from './stationDecode.js';
 import { showLegendRow } from '../lib/ui/legend.js';
+import { SATELLITE_PAGE } from '../page.js';
 
 
 export const SATELLITE_ROWS_MAX = 200;  // Decoded values kept per satellite report (IASI has thousands of channels)
@@ -60,9 +61,11 @@ export const DECODE_LAYERS = {
     radar: (topic, feature) => topic.startsWith('cache/') && /radar/i.test(topic) && formatOf(feature) === 'hdf'
         && !radarNoReflectivity.has(radarHeading(feature))
         && !(feature.links || []).some((l) => isDataLink(l) && (l.length > RADAR_FILE_MAX_BYTES || /vrad/i.test(l.href))),
-    // Any space-based file not drawn from its notification: no geometry, or a swath too large to plot
+    // Any space-based file not drawn from its notification: no geometry, or a swath too
+    // large to plot. On the satellite page, where everything is coverage, every one
+    // (its notification isn't drawn as a point then, see onMessage)
     'cache-satellite': (topic, feature) => topic.startsWith('cache/') && !GATEWAY_TOPIC.test(topic) && isSpaceBased(topic)
-        && !(feature.geometry && feature.geometry.type && pointFor(feature.geometry)) && !NOT_BUFR.includes(formatOf(feature))
+        && (SATELLITE_PAGE || !(feature.geometry && feature.geometry.type && pointFor(feature.geometry))) && !NOT_BUFR.includes(formatOf(feature))
         && !(feature.links || []).some((l) => isDataLink(l) && l.length > SATELLITE_FILE_MAX_BYTES),
 };
 
@@ -199,10 +202,7 @@ export async function decodeNext() {
             // Satellite files big enough for coverage are kept as one swath, not as points
             var swath = subsets.length >= SWATH_MIN_REPORTS ? [] : null;
             subsets.forEach(([rows, profile, index], i) => plotDecodedReport(job, rows, profile, i, index, swath));
-            // except cloud-motion winds, which stay points (arrows): each is the wind at one
-            // tracked cloud, so averaged into cells they'd show winds no cloud had
-            var winds = swath && swath.some((record) => 'm_satWind' in metricValues(record));
-            if (swath && swath.length >= SWATH_MIN_REPORTS && !winds) addSwathFile(job, swath);
+            if (swath && swath.length >= SWATH_MIN_REPORTS) addSwathFile(job, swath);
             else if (swath) swath.forEach((record) => plotRecord(job, record));
         }
     } catch (err) {
@@ -295,9 +295,11 @@ export function plotRecord(job, record) {
 }
 
 // The first SATELLITE_ROWS_MAX values, plus the first of any value a measure colours by
+// (and wind direction, 011001, for the coverage's wind arrows)
+const WANTED_IDS = [...Object.values(METRICS).flatMap((m) => m.ids || []), 11001];
 export function trimRows(rows) {
     if (rows.length <= SATELLITE_ROWS_MAX) return rows;
-    var wanted = new Set(Object.values(METRICS).flatMap((m) => m.ids || []));
+    var wanted = new Set(WANTED_IDS);
     var kept = rows.slice(0, SATELLITE_ROWS_MAX);
     kept.forEach((r) => wanted.delete(r[0]));
     for (var i = SATELLITE_ROWS_MAX; i < rows.length && wanted.size; i++) {

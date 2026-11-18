@@ -9,7 +9,9 @@ const hosts = [
     'wss://globalbroker.inmet.gov.br:443/mqtt',
     'wss://wis2broker.globaldata.nws.noaa.gov:443/mqtt',
 ];
-const topics = ['origin/a/wis2/#', 'cache/a/wis2/#'];
+// What's subscribed to: everything, unless the page asks for less (see connectFastest)
+export const ALL_TOPICS = ['origin/a/wis2/#', 'cache/a/wis2/#'];
+let topics = ALL_TOPICS;
 
 // The everyone/everyone credentials are public; the password is kept as UTF-16 hex
 function hexDecode(hex) {
@@ -53,9 +55,11 @@ function pingBroker() {
 setInterval(pingBroker, PING_MS);
 
 // Race all brokers and keep the first one that connects and subscribes.
-// onMessage(topic, message) gets every message; onState(brokerState) every change
-export function connectFastest({ onMessage, onState } = handlers) {
+// onMessage(topic, message) gets every message; onState(brokerState) every change;
+// subscribe, if given, the topic filters to subscribe to (kept for retries)
+export function connectFastest({ onMessage, onState, subscribe } = handlers) {
     handlers = { onMessage: onMessage || handlers.onMessage, onState: onState || handlers.onState };
+    if (subscribe) topics = subscribe;
     console.log('Connecting mqtt client');
     setBrokerState('connecting', null, null);
     let failures = 0;

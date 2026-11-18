@@ -15,6 +15,28 @@ const cacheHosts = new Map();  // host -> { host, id, name, ms, ok, blocked, hre
 // NCM send no CORS headers. Measured caches go by what they've done instead
 const CORS_HOSTS = ['www.wis-jma.go.jp'];
 
+// The CORS proxy (proxy/cors-worker.js, a Cloudflare Worker): it fetches a file from a
+// global cache and returns it with the header browsers need. Deployed at
+// https://wis-live-cors.webb-ben.workers.dev but not used for now: '' downloads only
+// directly, skipping the caches that block browsers as before. Set it to that address
+// to route them through the proxy
+export const CORS_PROXY = '';
+// The caches it will fetch from (the same list as the Worker's ALLOWED_HOSTS). Those
+// that send no CORS headers (checked 2026-11-18) always go through it; the others only
+// once they've refused the browser
+export const PROXY_HOSTS = ['wis2.dwd.de', 'gisc.dwd.de', 'wis2data.kma.go.kr', 'gc.wis.cma.cn', 'wis2.ncm.gov.sa',
+    'wis2node.globaldata.nws.noaa.gov'];
+const NO_CORS_HOSTS = ['wis2.dwd.de', 'wis2data.kma.go.kr', 'gc.wis.cma.cn', 'wis2.ncm.gov.sa'];
+
+function proxied(host) {
+    return !!CORS_PROXY && PROXY_HOSTS.includes(host) && (NO_CORS_HOSTS.includes(host) || blockedHosts.has(host));
+}
+
+// The address to download url from: through the proxy for a cache that needs it
+export function viaProxy(url) {
+    return proxied(hostOf(url)) ? `${CORS_PROXY}?url=${encodeURIComponent(url)}` : url;
+}
+
 function hostOf(url) {
     try {
         return new URL(url).hostname;
@@ -25,7 +47,7 @@ function hostOf(url) {
 
 export function corsFriendly(url) {
     var host = hostOf(url);
-    return host.endsWith('.amazonaws.com') || CORS_HOSTS.includes(host);
+    return host.endsWith('.amazonaws.com') || CORS_HOSTS.includes(host) || proxied(host);
 }
 
 // "data-metoffice-noaa-global-cache" -> "Met Office / NOAA"
@@ -74,8 +96,9 @@ const blockedHosts = new Set();
 const okHosts = new Set();
 const tryingHosts = new Set();
 
+// Blocked, and no way round it: a cache the proxy fetches from never is
 function isBlocked(host) {
-    return blockedHosts.has(host);
+    return blockedHosts.has(host) && !proxied(host);
 }
 
 // Call as a download starts; a host with nothing known about it is then left alone

@@ -1,6 +1,6 @@
 import maplibregl from 'maplibre-gl';
 import { effectiveHidden } from '../../map/layers.js';
-import { swathPointsShown, liftSwathCell } from '../../data/satellite/coverage.js';
+import { swathPointsShown, liftSwathCell, clearSelectedCell } from '../../data/satellite/coverage.js';
 import { map } from '../../map/map.js';
 import { PHONE, darken, esc, knots } from '../util.js';
 import { isDataLink, isSpaceBased } from '../../messages/messages.js';
@@ -59,6 +59,7 @@ export const hoverLabel = new maplibregl.Popup({
 // Info panel
 export function openPopup(record) {
     if (!record) return;
+    clearSelectedCell();
     showInfo(buildPopup(record));
     var inAir = record.track && record.track.startsWith('aircraft:') && !effectiveHidden().includes('gts-tracks');
     // A report drawn as part of satellite coverage is shown by outlining its cell
@@ -110,6 +111,7 @@ export function showInfo(content) {
 
 export function closeInfo() {
     document.body.classList.remove('info-open');
+    clearSelectedCell();
     selectedMarker.remove();
     liftSwathCell(null);
     selectOnOverview(null);
