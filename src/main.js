@@ -6,7 +6,8 @@ import './bootstrap.scss';  // Only the parts of Bootstrap the page uses
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './style.css';
 import { state, setState, notify, subscribe } from './state.js';
-import { canDownload, noteCacheLinks, noteTrying, noteLatency, noteFailed, downloadOrder } from './caches.js';
+import { noteCacheLinks } from './data/caches.js';
+import { DATA_LINKS_MAX, linksSeen, decodeHref, fetchTracked, rememberLinks, bufrSource, fetchData, bufrPart, isUtf8 } from './data/download.js';
 import { COLORS, OBS_CLASSES, METRICS, COLOURABLE, SATELLITE_LAYERS, ORIGIN_COLOURABLE, NO_VALUE_COLOR, SOURCE_COLORS } from './config.js';
 import { parseMessage, DISCIPLINES, FORMATS, isDataLink, isUpdate, formatOf, GATEWAY_TOPIC, GATEWAY_SATELLITE, GATEWAY_AIRCRAFT,
     GATEWAY_UPPER_AIR, isSpaceBased, disciplineOf, topicClass, stationId, pointFor, wis2boxVersion } from './messages.js';
@@ -19,6 +20,8 @@ import { showSpectrum } from './satellite/spectrum.js';
 import { oceanTiles, renderOceanProfile, renderTSDiagram, openOceanProfile } from './ocean/profile.js';
 import { waveSpectrum, miniWaveSpectrum, renderWaveSpectrum, marineCompass } from './marine/wavespec.js';
 import { createOverview } from './ui/overview.js';
+import { aircraftTrack, aircraftAltitude, aircraftTiles, trackRoute } from './aviation/aircraft.js';
+import { initAirports, queueAirports } from './aviation/airports.js';
 import { makeMinimizable, initKeyToggles, startKeyToggles, keyToggle, hiddenKeyRows, bindKeyToggles } from './ui/panels.js';
 
 // Map
@@ -202,6 +205,12 @@ initKeyToggles({
         applyMapFilter();
     },
     refresh: () => updateMapKey(),
+});
+// Airports' METARs (src/airports.js), fetched while their layer is on
+initAirports({
+    shown: () => !effectiveHidden().includes('airports'),
+    centre: () => map.getCenter(),
+    addStation: (stations, station) => externalStation(stations, station),
 });
 // How far back the Global Replay reaches, set by a continuous slider on a log scale:
 // 12 hours ago at the left, 5 minutes at the right, so time runs left to right and
@@ -2115,15 +2124,6 @@ function showAlertArea(rings, color) {
     map.fitBounds(bounds, { padding: { top: 60, bottom: 60, left: sidebar + 60, right: 60 }, maxZoom: 9 });
 }
 
-function isUtf8(bytes) {
-    try {
-        new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-        return true;
-    } catch (err) {
-        return false;
-    }
-}
-
 // Another report from a file the decoder has (it keeps the last few); one it has let
 // go is downloaded and decoded again
 async function showReport(out, title, key, index, source) {
@@ -2375,11 +2375,10 @@ function renderDecoded(out, title, result) {
         var text = formatValue(...values.get(id)).join(' ');
         tiles.push(`<div class="pp-tile"${metricTileAttr(id, false)}><div>${esc(key.label)}</div><strong>${esc(text)}</strong></div>`);
     }
-    // Aircraft: where the flight is from and going, and what it's doing
-    var route = flightRoute(values.has(1111) && values.get(1111)[0], values.has(1112) && values.get(1112)[0]);
-    if (route) tiles.unshift(`<div class="pp-tile"><div>Route</div><strong>${esc(route)}</strong></div>`);
-    var phase = values.has(8009) ? flightPhase(values.get(8009)[0]) : null;
-    if (phase) tiles.push(`<div class="pp-tile"><div>Flight phase</div><strong>${esc(phase)}</strong></div>`);
+    // Aircraft: where the flight is from and going (first), and what it's doing (last)
+    var flight = aircraftTiles(values);
+    tiles.unshift(...flight.route);
+    tiles.push(...flight.phase);
 
     out.innerHTML = `
         ${result.subsets > 1 ? `
@@ -4674,14 +4673,11 @@ fetch(WIS2BOX_DEPLOYMENTS).then((r) => (r.ok ? r.json() : null))
 
 function wis2boxOf(record) {
     var version = wis2boxVersion(record.notification);
-    var hrefs = [...record.links.map((l) => l.href), ...(dataLinks.get(record.props.data_id) || [])];
+    var hrefs = [...record.links.map((l) => l.href), ...linksSeen(record.props.data_id)];
     var base = hrefs.map((h) => (String(h).match(WIS2BOX_DATA) || [])[1]).find(Boolean) || wis2boxByCentre.get(record.centre);
     if (!version && !base) return null;
     return { version, url: base || null };
 }
-
-const DATA_LINKS_MAX = 20000;
-const dataLinks = new Map();  // data_id -> hrefs seen from every cache
 
 // Optional layers decoded in the background: some notifications carry no
 // geometry, but the reports inside the BUFR file do, so download and decode the
@@ -4802,30 +4798,6 @@ function queueDecode(kind, topic, feature) {
     q.queue.push({ kind, key, topic, feature, href });
     if (q.queue.length > q.max) decodeSeen.delete(q.queue.shift().key);  // A later copy may try again
     pumpDecode();
-}
-
-// Each cache republishes the file; take the copy from the fastest cache a browser
-// can download from (see caches.js), among this message's links and any already
-// seen for it (e.g. the origin's). Hosts that blocked a download, and ones not known
-// to allow browsers, are left out, so a background download doesn't waste its one try
-function decodeHref(feature) {
-    var seen = [...(feature.links || []).filter(isDataLink).map((l) => l.href), ...(dataLinks.get((feature.properties || {}).data_id) || [])];
-    return downloadOrder(seen).find(canDownload);
-}
-
-// fetch, telling caches.js how it went: how long the host took to answer, or that it
-// blocked the browser (so it isn't asked again)
-async function fetchTracked(url, options) {
-    noteTrying(url);
-    var start = performance.now();
-    try {
-        var response = await fetch(url, options);
-    } catch (err) {
-        noteFailed(url, err);
-        throw err;
-    }
-    noteLatency(url, performance.now() - start, true);
-    return response;
 }
 
 // Downloads take far longer than decoding (tens of ms), so several files are
@@ -6403,107 +6375,6 @@ function datasetRow(d) {
     return row;
 }
 
-// ---------- Airports worldwide: the latest METAR from each airport, from the Iowa
-// Environmental Mesonet, which keeps one network per country (per state in the
-// US, per province in Canada). Every network is fetched, a few at a time and
-// nearest the view first, and again once AIRPORT_REFRESH_MS old. Readings become
-// BUFR-style rows, so the tiles, colouring and forecast comparison work as they
-// do for WIS2 stations.
-const IEM_API = 'https://mesonet.agron.iastate.edu/api/1';
-const AIRPORT_NETWORK = /_ASOS$/;
-const AIRPORT_REFRESH_MS = 20 * 60 * 1000;
-const AIRPORT_CONCURRENT = 6;
-const airportStations = new Map();  // station id -> record, bounded by IEM's station lists
-let airportNetworks = null;         // promise of [{ id, name, bounds: [w, s, e, n], fetched, pending }]
-let airportActive = 0;
-
-function loadAirportNetworks() {
-    if (!airportNetworks) {
-        airportNetworks = fetch(`${IEM_API}/networks.json`).then((r) => {
-            if (!r.ok) throw new Error(`IEM answered ${r.status}`);
-            return r.json();
-        }).then((json) => json.data.filter((n) => AIRPORT_NETWORK.test(n.id) && n.extent)
-            .map((n) => ({ id: n.id, name: n.name, bounds: wkbBounds(n.extent), fetched: 0, pending: false }))
-            .filter((n) => n.bounds))
-            .catch((err) => {
-                airportNetworks = null;  // Try again next time
-                console.debug(`Could not load the IEM networks: ${err.message}`);
-                return [];
-            });
-    }
-    return airportNetworks;
-}
-
-// The bounding box of a polygon in hex (E)WKB, as IEM gives network extents
-function wkbBounds(hex) {
-    var bytes = new Uint8Array(hex.match(/../g).map((h) => parseInt(h, 16)));
-    var view = new DataView(bytes.buffer), little = bytes[0] === 1;
-    var type = view.getUint32(1, little), at = 5 + (type & 0x20000000 ? 4 : 0);
-    if ((type & 0xff) !== 3) return null;
-    var points = view.getUint32(at + 4, little), w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
-    for (var i = 0, p = at + 8; i < points; i++, p += 16) {
-        var x = view.getFloat64(p, little), y = view.getFloat64(p + 8, little);
-        w = Math.min(w, x); e = Math.max(e, x); s = Math.min(s, y); n = Math.max(n, y);
-    }
-    return points ? [w, s, e, n] : null;
-}
-
-async function queueAirports() {
-    if (effectiveHidden().includes('airports')) return;
-    var networks = await loadAirportNetworks();
-    var centre = map.getCenter(), now = Date.now();
-    var away = (b) => Math.hypot((b[0] + b[2]) / 2 - centre.lng, (b[1] + b[3]) / 2 - centre.lat);
-    var due = networks.filter((n) => !n.pending && now - n.fetched > AIRPORT_REFRESH_MS)
-        .sort((a, b) => away(a.bounds) - away(b.bounds));
-    for (var n of due) {
-        if (airportActive >= AIRPORT_CONCURRENT) break;
-        loadAirportNetwork(n);
-    }
-}
-
-async function loadAirportNetwork(network) {
-    airportActive++;
-    network.pending = true;
-    try {
-        var response = await fetch(`${IEM_API}/currents.json?network=${encodeURIComponent(network.id)}`);
-        if (!response.ok) throw new Error(`IEM answered ${response.status}`);
-        var json = await response.json();
-        for (var ob of json.data) updateAirport(ob, network);
-    } catch (err) {
-        console.debug(`IEM ${network.id}: ${err.message}`);
-    } finally {
-        network.fetched = Date.now();  // A failed network waits as long as a fetched one
-        network.pending = false;
-        airportActive--;
-        queueAirports();
-    }
-}
-
-function updateAirport(ob, network) {
-    if (!ob.station || !isFinite(ob.lat) || !isFinite(ob.lon)) return;
-    var val = (v, scale = 1, offset = 0) => (v === null || v === undefined || !isFinite(v) ? null : v * scale + offset);
-    var rows = [];
-    var add = (descriptor, name, value, unit) => { if (value !== null && value !== undefined && value !== '') rows.push([descriptor, name, value, unit]); };
-    add(1015, 'STATION OR SITE NAME', ob.name, 'CCITT IA5');
-    add(12101, 'TEMPERATURE/AIR TEMPERATURE', val(ob.tmpf, 5 / 9, 273.15 - 32 * 5 / 9), 'K');
-    add(12103, 'DEWPOINT TEMPERATURE', val(ob.dwpf, 5 / 9, 273.15 - 32 * 5 / 9), 'K');
-    add(13003, 'RELATIVE HUMIDITY', val(ob.relh) === null ? null : Math.round(ob.relh), '%');
-    add(10051, 'PRESSURE REDUCED TO MEAN SEA LEVEL', val(ob.mslp, 100), 'Pa');
-    add(11001, 'WIND DIRECTION', val(ob.drct), 'deg');
-    add(11002, 'WIND SPEED', val(ob.sknt, 0.514444), 'm/s');
-    add(11041, 'MAXIMUM WIND GUST SPEED', val(ob.gust, 0.514444), 'm/s');
-    add(20001, 'HORIZONTAL VISIBILITY', val(ob.vsby, 1609.34), 'm');
-    add(0, 'PRESENT WEATHER', ob.wxcodes ? [].concat(ob.wxcodes).join(' ') : null, '');
-    add(0, 'METAR', ob.raw, '');
-    var id = ob.station;
-    externalStation(airportStations, { layer: 'airports', centre: network.name.replace(/ ASOS$/, ''), badge: 'METAR', format: 'metar',
-        id, lat: ob.lat, lon: ob.lon, name: ob.name, observed: Date.parse(ob.utc_valid || ''), rows, path: `metar/${id}`,
-        notification: { ...ob, source: `${IEM_API}/currents.json?network=${network.id}` },
-        link: { rel: 'canonical', href: `${IEM_API}/currents.json?station=${encodeURIComponent(id)}&network=${encodeURIComponent(network.id)}`, type: 'application/json' } });
-}
-
-setInterval(() => { if (airportStations.size) queueAirports(); }, 5 * 60 * 1000);
-
 // ---------- Satellite coverage. Each decoded satellite file covers the convex hull
 // of its reports; the hulls of one satellite are joined on a grid, so its passes
 // read as one area with no seams, and each cell's opacity is the cloud amount of
@@ -7068,8 +6939,6 @@ function syncSwathPoints() {
 // aircraft float at their altitude, ships are a line on the sea under their points.
 // (Satellites aren't: their coverage already shows where they've been.)
 const TRACK_REBUILD_MS = 2000;
-const TRACK_MAX_GAP_MS = 90 * 60e3;
-const AIRCRAFT_MAX_KMH = 1300;           // Faster than this means a mixed-up identifier
 const SHIP_MAX_GAP_MS = 24 * 3600e3;     // Ships report every few hours
 const SHIP_MAX_KMH = 80;
 const SHIP_MIN_KM = 2;                   // A track shorter than this is a platform that stays put
@@ -7110,16 +6979,8 @@ function buildTracks() {
             if (lines.length) shipLayers.add(lines[0].properties.layer);
             continue;
         }
-        var points = reports.map((r) => ({ t: r.observed, c: r.coords, alt: r.alt, id: r.id }));
-        var runs = segments(points, (a, b) => b.t - a.t <= TRACK_MAX_GAP_MS
-            && distanceKm(a.c, b.c) / Math.max((b.t - a.t) / 3600e3, 1 / 60) <= AIRCRAFT_MAX_KMH, 2);
-        if (!runs.length) continue;
         var last = reports[reports.length - 1];
-        var route = trackRoute(reports);
-        features.push(...aircraftShapes(runs, {
-            kind: 'aircraft',
-            label: `Aircraft ${key.slice(9)}${route ? ` · ${route}` : ''}`,
-            count: reports.length,
+        features.push(...aircraftTrack(key, reports, map.getZoom(), {
             lastId: last.id,
             color: last.color,
             born: last.born,
@@ -7175,114 +7036,6 @@ function shipTrack(key, reports) {
     }));
 }
 
-// Sizes of the floating aircraft shapes, in screen pixels at the current zoom
-const BAND_PX = 3;
-const CHEVRON_PX = 9;
-const CHEVRON_SPACING_PX = 60;
-const MARKER_PX = 16;
-
-// Kilometres per screen pixel at a latitude, for the current zoom
-function kmPerPixel(lat) {
-    return 40075.016 * Math.max(Math.cos(lat * Math.PI / 180), 0.05) / (512 * 2 ** map.getZoom());
-}
-
-// Local flat frame around a point: km east/north to lon/lat offsets
-function frame(lat) {
-    var kx = 111.32 * Math.max(Math.cos(lat * Math.PI / 180), 0.05);
-    return { toLonLat: ([x, y], [lon0, lat0]) => [lon0 + x / kx, lat0 + y / 111.32], kx };
-}
-
-// Bands for each step at its altitude, chevrons every so often pointing along
-// the path, and an arrowhead at the latest report, all floating in the air
-function aircraftShapes(runs, common) {
-    var out = [];
-    // bottom and top are metres; the band spans its step's climb or descent so steps join up
-    var shape = (ring, alt, role, recordId, bottom, top) => out.push({
-        type: 'Feature',
-        geometry: { type: 'Polygon', coordinates: [ring.concat([ring[0]])] },
-        properties: { ...common, role, alt, recordId, bottom, top },
-    });
-    // Polygon from km offsets (x along travel, y to the left) around a point heading at angle
-    var oriented = (centre, angle, pts) => {
-        var f = frame(centre[1]);
-        return pts.map(([along, left]) => f.toLonLat([along * Math.cos(angle) - left * Math.sin(angle), along * Math.sin(angle) + left * Math.cos(angle)], centre));
-    };
-    var lastStep = null;
-    for (var run of runs) {
-        var coords = unwrap(run.map((p) => p.c));
-        var sinceChevron = 0;
-        for (var i = 1; i < run.length; i++) {
-            var a = run[i - 1], b = run[i];
-            var alt = a.alt > 0 && b.alt > 0 ? (a.alt + b.alt) / 2 : a.alt > 0 ? a.alt : b.alt;
-            if (!(alt > 0)) continue;
-            var p1 = coords[i - 1], p2 = coords[i];
-            var f = frame((p1[1] + p2[1]) / 2), px = kmPerPixel((p1[1] + p2[1]) / 2);
-            var dx = (p2[0] - p1[0]) * f.kx, dy = (p2[1] - p1[1]) * 111.32, len = Math.hypot(dx, dy);
-            if (!len) continue;
-            var angle = Math.atan2(dy, dx), half = BAND_PX * px / 2;
-            // Fill-extrusions have flat tops, so a climb or descent is split into
-            // pieces small enough to read as a slope
-            var altA = a.alt > 0 ? a.alt : alt, altB = b.alt > 0 ? b.alt : alt;
-            var pieces = Math.min(24, Math.max(1, Math.ceil(Math.abs(altB - altA) / (Math.max(altA, altB) * 0.02))));
-            for (var k = 0; k < pieces; k++) {
-                var lo = altA + (altB - altA) * k / pieces, hi = altA + (altB - altA) * (k + 1) / pieces;
-                shape(oriented(p1, angle, [[len * k / pieces, half], [len * (k + 1) / pieces, half], [len * (k + 1) / pieces, -half], [len * k / pieces, -half]]),
-                    (lo + hi) / 2, 'band', b.id, Math.min(lo, hi) * 0.985, Math.max(lo, hi) * 1.015);
-            }
-            // A chevron whenever enough path has passed on screen
-            sinceChevron += len / px;
-            if (sinceChevron >= CHEVRON_SPACING_PX) {
-                sinceChevron = 0;
-                var mid = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2], c = CHEVRON_PX * px;
-                shape(oriented(mid, angle, [[c / 2, 0], [-c / 2, c / 2], [-c / 4, 0], [-c / 2, -c / 2]]), alt, 'arrow', b.id, alt * 0.97, alt * 1.03);
-            }
-            lastStep = { point: p2, angle, alt: b.alt > 0 ? b.alt : alt, id: b.id };
-        }
-    }
-    if (lastStep) {
-        var m = MARKER_PX * kmPerPixel(lastStep.point[1]);
-        shape(oriented(lastStep.point, lastStep.angle, [[m * 0.6, 0], [-m * 0.4, m * 0.45], [-m * 0.2, 0], [-m * 0.4, -m * 0.45]]),
-            lastStep.alt, 'marker', lastStep.id, lastStep.alt * 0.95, lastStep.alt * 1.05);
-    }
-    return out;
-}
-
-// Airport codes from 001111 (origination) and 001112 (destination); blanks and
-// "???" mean unknown. Returns e.g. "DUB → TFS", "DUB → ?" or null.
-function cleanAirport(code) {
-    var c = typeof code === 'string' ? code.trim().toUpperCase() : '';
-    return /^[A-Z0-9]{3,4}$/.test(c) ? c : null;
-}
-
-function flightRoute(from, to) {
-    from = cleanAirport(from);
-    to = cleanAirport(to);
-    return from || to ? `${from || '?'} → ${to || '?'}` : null;
-}
-
-// Detailed phase of flight, code table 0 08 009
-function flightPhase(code) {
-    if ([0, 1, 3, 4].includes(code)) return 'Level flight';
-    if (code === 2) return 'Unsteady';
-    if (code === 5 || (code >= 7 && code <= 10)) return 'Climbing';
-    if (code === 6 || (code >= 11 && code <= 14)) return 'Descending';
-    return null;
-}
-
-// The route most of a track's reports agree on, since many leave it blank
-function trackRoute(reports) {
-    var vote = (id) => {
-        var counts = new Map();
-        for (var r of reports) {
-            var row = r.decoded && r.decoded.rows.find((x) => x[0] === id);
-            var code = row && cleanAirport(row[2]);
-            if (code) counts.set(code, (counts.get(code) || 0) + 1);
-        }
-        return [...counts].sort((a, b) => b[1] - a[1]).map(([c]) => c)[0];
-    };
-    return flightRoute(vote(1111), vote(1112));
-}
-
 // Which GTS sublayer a report belongs to, from the identifiers it carries.
 // Order matters: satellite and aircraft reports can also carry station-like ids.
 function reportClass(values, profile, rows) {
@@ -7303,15 +7056,6 @@ function reportClass(values, profile, rows) {
     if (values.has(15031) || values.has(15011)) return 'gnss';
     if (values.has(1015) || values.has(1001) || values.has(1125)) return 'station';
     return 'other';
-}
-
-// Altitude in metres for aircraft reports (AMDAR and similar), else null:
-// flight level, height or altitude, or indicated aircraft altitude
-function aircraftAltitude(values, t) {
-    var aircraft = values.has(1008) || values.has(1006) || /\/data\/core\/I\/U\/A\//.test(t);
-    if (!aircraft) return null;
-    var alt = [7010, 10053, 7002, 10070, 7007].map((id) => values.get(id)).find((v) => typeof v === 'number');
-    return alt > 0 && alt < 25000 ? alt : null;
 }
 
 // WIGOS id, WMO block/station, ship, buoy or aircraft identifier
@@ -7338,139 +7082,6 @@ function setDecodeEnabled(kind, enabled) {
     if (!enabled) queueFor(kind).queue = queueFor(kind).queue.filter((job) => job.kind !== kind);
     applyMapFilter();
     pumpDecode();
-}
-
-function rememberLinks(dataId, links) {
-    if (!dataId) return;
-    var hrefs = dataLinks.get(dataId) || new Set();
-    for (var link of links) {
-        if (isDataLink(link)) hrefs.add(link.href);
-    }
-    dataLinks.delete(dataId);  // Re-insert to keep recently used ids
-    dataLinks.set(dataId, hrefs);
-    if (dataLinks.size > DATA_LINKS_MAX) {
-        dataLinks.delete(dataLinks.keys().next().value);
-    }
-}
-
-// topic: the notification's, for working out where caches that haven't announced
-// the file would keep it (see guessedCopies)
-function bufrSource(feature, props, topic) {
-    var content = props.content && props.content.encoding === 'base64' ? props.content.value : null;
-    // Any canonical link may hold BUFR or text; fetchData checks the content
-    var urls = (feature.links || [])
-        .filter((l) => isDataLink(l) && !(l.length > 5e6))
-        .map((l) => l.href);
-    if (!content && !urls.length) return null;
-    return { content: content, dataId: props.data_id, urls: urls, cap: props.cap_info || null,
-        topic: topic || props.topic || null, pubtime: props.pubtime || null };
-}
-
-// ---------- Copies no cache announced. Each global cache keeps a file at an address
-// of its own, but some follow from the notification: the Met Office / NOAA cache files
-// it under its topic, and JMA's under its data_id and publication time (in seconds;
-// every cache keeps the origin's pubtime). Only these two, as the other caches (DWD,
-// KMA, CMA, NCM) don't let browsers download. The file's name is the origin's, the
-// last part of its link and of most caches' (NCM's add a number and DWD's are
-// sometimes named after the data_id, so theirs count only when there's nothing
-// else), URL-encoded. Once every copy announced has failed, the main cache's (Met
-// Office / NOAA, the first here) is tried once for each file without asking; Retry
-// tries them all (source.guess, set by showDecodeError)
-const MAIN_CACHE_HOST = 'wis2globalcache.s3.amazonaws.com';
-const mainCacheTried = new Set();  // Guessed main-cache copies already asked for, so each file is tried there once
-const GUESSABLE_CACHES = [
-    (s, file) => s.topic && `https://wis2globalcache.s3.amazonaws.com/data/${s.topic.replace(/^(cache|origin)\/a\/wis2\//, '')}/${file}`,
-    (s, file) => s.dataId && s.pubtime && `https://global-cache-of-japan.s3.ap-northeast-1.amazonaws.com/wis2/data/${encodeURI(s.dataId)}/${Math.floor(Date.parse(s.pubtime) / 1000)}/${file}`,
-];
-
-function guessedCopies(source, known) {
-    var host = (url) => { try { return new URL(url).hostname; } catch (err) { return ''; } };
-    var nameOf = (url) => {
-        var last = url.split(/[?#]/)[0].split('/').pop();
-        try { return decodeURIComponent(last); } catch (err) { return last; }
-    };
-    var usable = known.filter((url) => host(url) !== 'wis2.ncm.gov.sa');
-    var names = usable.filter((url) => host(url) !== 'wis2.dwd.de').map(nameOf).filter(Boolean);
-    if (!names.length) names = usable.map(nameOf).filter(Boolean);
-    // The name most copies agree on
-    var name = names.sort((a, b) => names.filter((n) => n === b).length - names.filter((n) => n === a).length)[0];
-    if (!name) return [];
-    var file = encodeURIComponent(name);
-    var seen = new Set(known.map(host));
-    return GUESSABLE_CACHES.map((build) => build(source, file)).filter((url) => url && !seen.has(host(url)));
-}
-
-// Returns { bytes, bufr, url }: the first BUFR copy found, otherwise the first
-// copy that is plain text
-async function fetchData(source) {
-    var text = null;
-    if (source.content) {
-        var bytes = Uint8Array.from(atob(source.content), (c) => c.charCodeAt(0));
-        if (bufrPart(bytes)) return { bytes: bufrPart(bytes), bufr: true };
-        if (isText(bytes)) text = { bytes: bytes, bufr: false };
-    }
-    // Every cache's copy, fastest cache first; hosts that blocked a browser download are
-    // skipped (see caches.js, which learns from how each attempt goes)
-    var known = [...source.urls, ...(dataLinks.get(source.dataId) || [])];
-    var urls = downloadOrder(known);
-    // Then the caches that haven't announced it (see guessedCopies): the main cache once
-    // for each file, the rest on Retry
-    var guessed = guessedCopies(source, known)
-        .filter((url) => source.guess || (url.startsWith(`https://${MAIN_CACHE_HOST}/`) && !mainCacheTried.has(url)));
-    guessed = downloadOrder(guessed);
-    urls = [...urls, ...guessed.filter((url) => !urls.includes(url))];
-    var answered = 0;
-    for (var url of urls) {
-        if (guessed.includes(url) && url.startsWith(`https://${MAIN_CACHE_HOST}/`)) {
-            mainCacheTried.add(url);
-            if (mainCacheTried.size > DATA_LINKS_MAX) mainCacheTried.delete(mainCacheTried.values().next().value);
-        }
-        try {
-            var response = await fetchTracked(url);
-            if (!response.ok) continue;
-            answered++;
-            var bytes = new Uint8Array(await response.arrayBuffer());
-            if (bufrPart(bytes)) return { bytes: bufrPart(bytes), bufr: true, url: url };
-            if (!text && isText(bytes)) text = { bytes: bytes, bufr: false, url: url };
-        } catch (err) {
-            // Thrown before any answer could be read: blocked by CORS, or unreachable
-            console.debug(`Could not fetch ${url}`);
-        }
-    }
-    if (text) return text;
-    // Retry looks again: other caches' copies arrive in their own notifications
-    if (answered) throw new Error(`the ${answered === 1 ? 'copy' : `${answered} copies`} downloaded ${answered === 1 ? 'is' : 'are'} neither BUFR nor text`);
-    var next = source.guess ? 'Retry tries any other caches\' copies seen since'
-        : 'Retry also asks the caches that haven\'t announced it';
-    throw new Error(urls.length
-        ? `none of the ${urls.length} ${urls.length === 1 ? 'copy' : 'copies'} ${guessed.length ? 'known or likely' : 'known'} could be downloaded; ${next}`
-        : `every copy known is on a server that blocks browser downloads; ${next}`);
-}
-
-// Text in any language: control characters other than tabs and line breaks are rare,
-// and bytes above 127 count when they're valid UTF-8 (e.g. a CAP warning in Greek)
-function isText(bytes) {
-    var sample = bytes.subarray(0, 2000);
-    if (!sample.length) return false;
-    var utf8 = isUtf8(sample.length < bytes.length ? sample.subarray(0, utf8Boundary(sample)) : sample);
-    var printable = sample.filter((b) => b === 9 || b === 10 || b === 13 || (b >= 32 && b < 127) || (utf8 && b >= 128)).length;
-    return printable / sample.length > 0.95;
-}
-
-// Where a cut-off sample ends on a whole UTF-8 character (continuation bytes are 10xxxxxx)
-function utf8Boundary(bytes) {
-    var end = bytes.length;
-    for (var back = 0; back < 4 && end > 0 && (bytes[end - 1] & 0xc0) === 0x80; back++) end--;
-    if (end > 0 && bytes[end - 1] >= 0xc0) end--;  // A lead byte whose character was cut off
-    return end;
-}
-
-// GTS bulletins put an abbreviated heading (e.g. "IUAG04 VHHH 141200") before
-// the BUFR message, so look a little way in; returns the BUFR bytes or null
-function bufrPart(bytes) {
-    var head = String.fromCharCode(...bytes.subarray(0, 256));
-    var start = head.indexOf('BUFR');
-    return start < 0 ? null : bytes.subarray(start);
 }
 
 // ---------- Slow networks. Checked every minute: when the broker's round trip or the

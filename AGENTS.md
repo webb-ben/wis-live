@@ -25,11 +25,19 @@ src/config.js              COLORS, OBS_CLASSES (kinds of observation), METRICS (
 src/messages.js            parseMessage and what a notification says: topicClass,
                            disciplineOf, formatOf, GATEWAY_* headings, stationId, pointFor
 src/mqtt.js                connectFastest({ onMessage, onState }): races the Global Brokers
-src/caches.js              The global caches seen and how fast each answers: downloadOrder
+src/data/caches.js         The global caches seen and how fast each answers: downloadOrder
                            (fastest first; hosts that blocked a browser download are skipped
-                           for good), canDownload; main.js's fetchTracked reports each
+                           for good), canDownload; download.js's fetchTracked reports each
                            download. Caches are timed again every minute; the fastest is
                            state.cache (the GDC in use, re-ranked every minute: state.catalogue)
+src/data/download.js       Downloading a notification's file (fetchData): every cache's
+                           copy (rememberLinks), fastest first, then the copies caches
+                           that didn't announce it likely have (guessedCopies); bufrSource,
+                           fetchTracked, decodeHref; bufrPart / isText on what came back
+src/aviation/aircraft.js   Aircraft reports: altitude, route and flight-phase tiles, and
+                           each aircraft's track as shapes in the air (aircraftTrack)
+src/aviation/airports.js   Airport METARs from the Iowa Environmental Mesonet, a network
+                           at a time (initAirports, queueAirports)
 src/decoder.js             callDecoder(fn, ...args): Pyodide + pybufrkit in Web Workers
                            (DECODE_PY); onDecoderSettled(fn) once it has started or failed
 src/lib/util.js            esc, darken, svgEl, knots
@@ -67,7 +75,8 @@ map, UI) so further pages, such as one for satellites or an MQTT explorer, can
 reuse them; each page is an HTML file at the root plus its own entry module.
 
 **Move things out of `src/main.js`; always aim for a negative diff there.** New
-features go in their own module (as `src/ocean/` and `src/marine/` do), with
+features go in their own module, in a folder by subject (`src/ocean/`,
+`src/marine/`, `src/aviation/`, `src/data/`...) rather than at the top of `src/`, with
 only the wiring (map layers, state, the popup hooks) left in `main.js`. When
 you change code in `main.js` that could live elsewhere, move it out at the
 same time, so each change leaves the file smaller than it found it.
@@ -164,7 +173,7 @@ bottom; the core comes first, roughly in this order:
    Workers (`DECODER_WORKER`, a classic worker built from a string) that load
    Pyodide, install `bitstring==3.1.9` and `six`, unpack the bundled wheel, and
    run the embedded `DECODE_PY`.
-   `fetchData` tries inline base64 content, then every canonical link seen
+   `fetchData` (`src/data/download.js`) tries inline base64 content, then every canonical link seen
    for the `data_id`, fastest cache first. Downloads go through `fetchTracked`, so
    a host that refuses a browser (no CORS headers, e.g. `gc.wis.cma.cn`) is not
    asked again, and a host not yet tried gets one background request at a time.
@@ -189,7 +198,7 @@ soundings), URL state, weather radar, text SYNOPs, lightning, colouring by
 measured value (origin stations too, via `isColourable`), per-satellite layers, station
 merging, Global Replay, the Global Discovery Catalogue (Datasets tab: rows
 are kept sorted by when each dataset was last seen, via `sortDatasetRows`),
-airport METARs, what the Equal Earth world map shows (`drawOverviewContent`, which
+what the Equal Earth world map shows (`drawOverviewContent`, which
 filters with `passesFilters` like the key; the map itself is `src/ui/overview.js`),
 satellite coverage (each swath file is packed into `swathFiles`
 and adds to running totals per H3 cell, not points; a report becomes a record only
