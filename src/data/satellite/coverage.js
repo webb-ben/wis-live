@@ -58,13 +58,13 @@ export function swathCellId(sat, lon, lat, grid = shownGrid()) {
 }
 
 // ---------- Finer cells zoomed in: about the same size on screen at any zoom
-// (resolution 2 below zoom 2, then one finer per zoom level, to H3_RESOLUTION_MAX, 4,
-// from zoom 3). GRID_ZOOM_SHIFT brings each step that many zoom levels earlier than the
-// zoom itself would (resolution 3 at zoom 3 without it). Finer cells cover only the
-// area in view, with as much again round it, so panning a little doesn't rebuild them
+// (resolution 2 below zoom 3, then one finer per zoom level, to H3_RESOLUTION_MAX, 4,
+// from zoom 4). GRID_ZOOM_SHIFT brings each step that many zoom levels earlier (1 was
+// tried: cells too small on screen). Finer cells cover only the area in view, with as
+// much again round it, so panning a little doesn't rebuild them
 // Styled by satellite, where cells show whose coverage it is rather than a value, no
 // finer than SATELLITE_STYLE_RES_MAX (setColourBy builds the grid again on a change)
-export const GRID_ZOOM_SHIFT = 1;
+export const GRID_ZOOM_SHIFT = 0;
 export const SATELLITE_STYLE_RES_MAX = 3;
 export function gridResolution(zoom) {
     var max = state.colourBy === SATELLITE_STYLE ? SATELLITE_STYLE_RES_MAX : H3_RESOLUTION_MAX;
