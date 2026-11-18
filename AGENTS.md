@@ -98,7 +98,7 @@ vite.config.js             base /wis-live/; each page is an entry in rollupOptio
 proxy/                     The CORS proxy, a Cloudflare Worker (cors-worker.js, deployed
                            with wrangler from that folder, not by Vite): the global caches
                            that send no CORS headers (DWD, KMA, CMA, NCM) are downloaded
-                           through it once CORS_PROXY is set in src/data/caches.js
+                           through it when CORS_PROXY is set in src/data/caches.js (off for now)
 .github/workflows/pages.yml  Builds and deploys to Pages on every push to main
 ```
 

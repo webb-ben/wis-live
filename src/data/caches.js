@@ -16,8 +16,11 @@ const cacheHosts = new Map();  // host -> { host, id, name, ms, ok, blocked, hre
 const CORS_HOSTS = ['www.wis-jma.go.jp'];
 
 // The CORS proxy (proxy/cors-worker.js, a Cloudflare Worker): it fetches a file from a
-// global cache and returns it with the header browsers need ('' to download only directly)
-export const CORS_PROXY = 'https://wis-live-cors.webb-ben.workers.dev';
+// global cache and returns it with the header browsers need. Deployed at
+// https://wis-live-cors.webb-ben.workers.dev but not used for now: '' downloads only
+// directly, skipping the caches that block browsers as before. Set it to that address
+// to route them through the proxy
+export const CORS_PROXY = '';
 // The caches it will fetch from (the same list as the Worker's ALLOWED_HOSTS). Those
 // that send no CORS headers (checked 2026-11-18) always go through it; the others only
 // once they've refused the browser
