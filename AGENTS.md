@@ -51,8 +51,12 @@ src/data/ocean/wavespec.js Wave spectra (waveSpectrum): the polar plot in the in
                            and the sea-state compass (marineCompass). The map style that
                            uses it (WAVE_STYLE, ?style=waves) isn't in Style by yet
 src/data/radar/radar.js    Weather radar scans drawn as images (initRadar, plotRadar)
-src/data/gts/synop.js      Text SYNOPs (FM 12/13) read into BUFR-style rows (parseSynopBulletin)
+src/data/gts/synop.js      Text SYNOPs (FM 12/13) read into BUFR-style rows and plotted
+                           (plotSynopBulletin; land stations wait for their position)
+src/data/lightning/lightning.js  Met Office lightning flashes from CSV (plotLightningText),
+                           each flash once across the BUFR and CSV copies (seenFlash)
 src/data/alerts/cap.js     CAP warnings as a card, with their area on the map (renderCap)
+src/data/alerts/citypage.js  Environment Canada citypage forecasts on the map (plotCitypage)
 src/data/decoder.js        callDecoder(fn, ...args): Pyodide + pybufrkit in Web Workers
                            (DECODE_PY); onDecoderSettled(fn) once it has started or failed
 src/lib/util.js            esc, darken, svgEl, knots
@@ -61,6 +65,10 @@ src/lib/format.js          formatValue, formatLabel, timeAgo, stationName, highl
 src/plots/sounding.js      Skew-T, the sounding dialog, wind-profile barbs (drawBarb)
 src/plots/forecast.js      dynamical.org forecasts at a point, compared with the observation
 src/plots/citypage.js      Environment Canada citypage weather and its hourly chart
+src/map/points.js          The points as data modules see them: records, byDataId,
+                           latestByStation, newId, observedAt, and addPoint / removePoint /
+                           linkDecoded / countPlotted / decoding, which main.js supplies
+                           (initPoints). A module plots through here, not through main.js
 src/map/symbols.js         The point symbols as signed distance fields (diamond, square, arrow)
 src/lib/ui/overview.js     The Equal Earth world map in the bottom-right panel (D3 canvas;
                            createOverview: sea, land, the view's frame, hover and selection

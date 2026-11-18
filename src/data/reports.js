@@ -43,3 +43,10 @@ export function reportTime(values) {
     if (![y, mo, d, h].every((v) => typeof v === 'number')) return undefined;
     return new Date(Date.UTC(y, mo - 1, d, h, mi || 0)).toISOString();
 }
+
+// A ship's track key from its call sign or WIGOS id. "SHIP" is the call sign of every
+// ship that keeps its identity private, so those can't be joined
+export function shipTrackKey(id) {
+    id = typeof id === 'string' ? id.trim() : id == null ? '' : String(id);
+    return id && id.toUpperCase() !== 'SHIP' ? `ship:${id}` : null;
+}

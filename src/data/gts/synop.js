@@ -1,6 +1,15 @@
 // Text SYNOPs from the GTS: FM 12 (land stations, AAXX) and FM 13 (ships, BBXX)
 // in traditional alphanumeric code, read into BUFR-style rows so they're shown
-// and coloured like decoded BUFR. Putting them on the map is the page's (plotSynopBulletin)
+// and coloured like decoded BUFR, and put on the map. Ships carry their position;
+// a land station's comes from the same station already plotted from BUFR (WIS2 or
+// GTS), and until it has been, its latest report waits
+import { OBS_CLASSES } from '../../config.js';
+import { disciplineOf } from '../../messages/messages.js';
+import { records, latestByStation, newId, observedAt, addPoint, linkDecoded, countPlotted, decoding } from '../../map/points.js';
+import { shipTrackKey } from '../reports.js';
+
+// Where they come: under S/M (main hours), S/N (other hours) and S/I (intermediate hours)
+export const SYNOP_TOPIC = /\/a\/wis2\/[^/]+-gts-to-wis2\/data\/core\/S\/[MNI]\//;
 
 // Present weather, code table 4677 (manned stations)
 export function presentWeather(ww) {
@@ -132,4 +141,85 @@ export function parseSynopBulletin(text, pubtime) {
         }
     }
     return reports;
+}
+
+const SYNOP_WAITING_MAX = 5000;
+const STATION_COORDS_MAX = 50000;
+const stationCoords = new Map();  // WIGOS id -> [lon, lat], from every station plotted
+const synopWaiting = new Map();  // WIGOS id -> { job, report } for stations not yet seen
+
+// Plots each report in a bulletin, or keeps it until its station is seen
+export function plotSynopBulletin(job, text) {
+    var pubtime = (job.feature.properties || {}).pubtime;
+    for (var report of parseSynopBulletin(text, pubtime)) {
+        if (report.kind === 'ship') plotSynop(job, report, report.coords);
+        else if (stationCoords.has(report.wsi)) plotSynop(job, report, stationCoords.get(report.wsi));
+        else {
+            synopWaiting.delete(report.wsi);  // The latest report stands in for the station
+            synopWaiting.set(report.wsi, { job, report });
+            if (synopWaiting.size > SYNOP_WAITING_MAX) synopWaiting.delete(synopWaiting.keys().next().value);
+        }
+    }
+}
+
+function plotSynop(job, report, coords) {
+    var wsi = report.kind === 'land' ? report.wsi : null;
+    // Skip a station already on the map with a report as recent (usually its BUFR copy)
+    var latest = wsi && latestByStation.get(wsi);
+    if (latest && records.has(latest.id) && observedAt(latest) >= report.time) return;
+    var [channel, t] = job.topic.split('/a/wis2/');
+    var cls = report.kind === 'land' ? 'station' : 'ship';
+    var date = new Date(report.time);
+    var rows = [
+        ...(report.kind === 'land'
+            ? [[1001, 'WMO block number', Number(report.station.slice(0, 2)), 'Numeric'], [1002, 'WMO station number', Number(report.station.slice(2)), 'Numeric']]
+            : [[1011, 'Ship or mobile land station identifier', report.callSign, 'CCITT IA5']]),
+        [4001, 'Year', date.getUTCFullYear(), 'a'], [4002, 'Month', date.getUTCMonth() + 1, 'mon'], [4003, 'Day', date.getUTCDate(), 'd'],
+        [4004, 'Hour', date.getUTCHours(), 'h'], [4005, 'Minute', 0, 'min'],
+        [5001, 'Latitude', coords[1], 'deg'], [6001, 'Longitude', coords[0], 'deg'],
+        ...report.rows,
+    ];
+    var record = addPoint({
+        id: newId(),
+        coords: coords,
+        topic: job.topic,
+        channel: channel,
+        centre: t.split('/', 1)[0],
+        path: t.slice(t.indexOf('/') + 1),
+        discipline: disciplineOf(t),
+        webcam: false,
+        decodedLayer: job.kind,
+        subLayer: `gts-${cls}`,
+        synop: true,
+        track: report.kind === 'ship' ? shipTrackKey(report.callSign) : null,
+        observed: report.time,
+        props: { data_id: `synop:${wsi || report.callSign}:${report.time}`, pubtime: (job.feature.properties || {}).pubtime, datetime: date.toISOString() },
+        links: job.feature.links || [],
+        notification: job.feature,
+        wsi: wsi,
+        format: 'text',
+        color: OBS_CLASSES[cls].color,
+        source: null,
+        // The report as sent, shown under the decoded values
+        decoded: { subsets: 1, index: 0, rows: rows, profile: null, tac: report.text },
+        born: Date.now(),
+    });
+    countPlotted(job.kind);
+    if (!job.linked) {
+        job.linked = true;
+        linkDecoded(job.key, record);
+    }
+}
+
+// Every station plotted gives its position to text SYNOPs from it, including any waiting
+export function rememberStation(record) {
+    if (!record.wsi || record.synop || !record.coords) return;
+    stationCoords.delete(record.wsi);
+    stationCoords.set(record.wsi, record.coords);
+    if (stationCoords.size > STATION_COORDS_MAX) stationCoords.delete(stationCoords.keys().next().value);
+    var waiting = synopWaiting.get(record.wsi);
+    if (!waiting) return;
+    synopWaiting.delete(record.wsi);
+    // Not while the station's own point is still being added
+    setTimeout(() => decoding(waiting.job.kind) && plotSynop(waiting.job, waiting.report, record.coords));
 }

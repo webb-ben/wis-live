@@ -23,12 +23,15 @@ import { createOverview } from './lib/ui/overview.js';
 import { WIND_PROFILE_COLUMNS, openSounding, renderWindProfile, reportSite, showSoundingCharts, soundingTiles, soundingTime, windProfileColumns,
     windProfileLevels, windProfileTiles } from './plots/sounding.js';
 import { showForecast } from './plots/forecast.js';
-import { reportClass, reportId, reportTime } from './data/reports.js';
+import { reportClass, reportId, reportTime, shipTrackKey } from './data/reports.js';
 import { renderCitypage } from './plots/citypage.js';
 import { renderCap } from './data/alerts/cap.js';
-import { parseSynopBulletin } from './data/gts/synop.js';
+import { SYNOP_TOPIC, plotSynopBulletin, rememberStation } from './data/gts/synop.js';
+import { seenFlash, flashTime, plotLightningText } from './data/lightning/lightning.js';
+import { plotCitypage } from './data/alerts/citypage.js';
 import { initRadar, RADAR_COLORS, RADAR_FILE_MAX_BYTES, radars, plotRadar, radarHeading, radarNoReflectivity, radarThrottled } from './data/radar/radar.js';
 import { DIAMOND_HALF, arrowSdf, squareSdf, diamondSdf } from './map/symbols.js';
+import { records, byDataId, latestByStation, newId, observedAt, initPoints } from './map/points.js';
 import { formatValue, formatLabel, formatBytes, timeAgo, titleCase, stationName, scaleLabel, formatMetric, highlightJson } from './lib/format.js';
 import { aircraftTrack, aircraftAltitude, aircraftTiles, trackRoute } from './data/aviation/aircraft.js';
 import { initAirports, queueAirports } from './data/aviation/airports.js';
@@ -216,11 +219,19 @@ initKeyToggles({
     },
     refresh: () => updateMapKey(),
 });
-// Airports' METARs (src/airports.js), fetched while their layer is on
+// Airports' METARs (src/data/aviation/airports.js), fetched while their layer is on
 initAirports({
     shown: () => !effectiveHidden().includes('airports'),
     centre: () => map.getCenter(),
     addStation: (stations, station) => externalStation(stations, station),
+});
+// What data modules plot through (src/map/points.js)
+initPoints({
+    add: (record) => addPoint(record),
+    remove: (record) => removePoint(record),
+    linked: (key, record) => linkDecoded(key, record),
+    plotted: (kind) => decodePlotted[kind]++,
+    decoding: (kind) => decodeEnabled.has(kind),
 });
 // How far back the Global Replay reaches, set by a continuous slider on a log scale:
 // 12 hours ago at the left, 5 minutes at the right, so time runs left to right and
@@ -386,7 +397,6 @@ initRadar({
 const attribution = new maplibregl.AttributionControl({ compact: false });
 const ABOUT_TEXT = 'WIS 2.0 Live shows real-time weather observations as they are published through the WMO Information System. This page is not affiliated with WMO.';
 
-const records = new Map();  // id -> record for every point on the map
 // Satellite coverage (see the Satellite coverage section). Declared here as the key,
 // built while the page loads, lists what they hold
 const swathFiles = new Map();  // file data_id -> swath file, oldest first
@@ -404,8 +414,6 @@ function poolOf(record) {
     if (!record.decodedLayer) return 'wis2';
     return record.subLayer && record.subLayer.endsWith('-satellite') ? 'satellite' : 'decoded';
 }
-const byDataId = new Map(); // data_id -> record, so each observation is drawn once
-let nextId = 1;
 let toAdd = [];
 let toRemove = [];
 let toUpdate = [];
@@ -760,15 +768,8 @@ map.on('load', () => {
 
 // Adds a point, or returns the record already drawn for the same observation.
 // The origin and every global cache each republish an observation, so a cache
-// copy replaces an origin one but later copies are skipped.
-// The latest report on the map from each station, so a replayed report that is
-// older than one already here can be left out (bounded by the points on the map)
-const latestByStation = new Map();  // station id -> record
-
-function observedAt(record) {
-    return Date.parse(record.props.datetime || '') || record.born;
-}
-
+// copy replaces an origin one but later copies are skipped. (The records it keeps
+// are in src/map/points.js, which data modules plot through)
 function addPoint(record) {
     var existing = byDataId.get(record.props.data_id);
     if (existing && records.has(existing.id)) {
@@ -3267,7 +3268,7 @@ function onMessage(topic, feature, replay) {
     var [channel, t] = topic.split('/a/wis2/');
     var webcam = t.includes('webcam');
     var record = {
-        id: nextId++,
+        id: newId(),
         coords: coords,
         topic: topic,
         channel: channel,
@@ -3528,7 +3529,7 @@ function plotDecodedReport(job, rows, profile, index, fileIndex, swath) {
     if (subLayer && subLayer.endsWith('-satellite') && effectiveHidden().includes(subLayer)) return;
     var kept = subLayer && subLayer.endsWith('-satellite') ? trimRows(rows) : rows;
     var record = {
-        id: nextId++,
+        id: newId(),
         coords: [lon, lat],
         topic: job.topic,
         channel: channel,
@@ -3587,209 +3588,6 @@ function trimRows(rows) {
         if (wanted.delete(rows[i][0])) kept.push(rows[i]);
     }
     return kept;
-}
-
-
-// ---------- Text SYNOPs from the GTS: FM 12 (land stations, AAXX) and FM 13 (ships,
-// BBXX) in traditional alphanumeric code, under S/M (main hours), S/N (other hours)
-// and S/I (intermediate hours). Ships carry their position. A land station's comes
-// from the same station already plotted from BUFR (WIS2 or GTS); until it has been,
-// its latest report waits.
-const SYNOP_TOPIC = /\/a\/wis2\/[^/]+-gts-to-wis2\/data\/core\/S\/[MNI]\//;
-const SYNOP_WAITING_MAX = 5000;
-const STATION_COORDS_MAX = 50000;
-const stationCoords = new Map();  // WIGOS id -> [lon, lat], from every station plotted
-const synopWaiting = new Map();  // WIGOS id -> { job, report } for stations not yet seen
-
-function plotSynopBulletin(job, text) {
-    var pubtime = (job.feature.properties || {}).pubtime;
-    for (var report of parseSynopBulletin(text, pubtime)) {
-        if (report.kind === 'ship') plotSynop(job, report, report.coords);
-        else if (stationCoords.has(report.wsi)) plotSynop(job, report, stationCoords.get(report.wsi));
-        else {
-            synopWaiting.delete(report.wsi);  // The latest report stands in for the station
-            synopWaiting.set(report.wsi, { job, report });
-            if (synopWaiting.size > SYNOP_WAITING_MAX) synopWaiting.delete(synopWaiting.keys().next().value);
-        }
-    }
-}
-
-function plotSynop(job, report, coords) {
-    var wsi = report.kind === 'land' ? report.wsi : null;
-    // Skip a station already on the map with a report as recent (usually its BUFR copy)
-    var latest = wsi && latestByStation.get(wsi);
-    if (latest && records.has(latest.id) && observedAt(latest) >= report.time) return;
-    var [channel, t] = job.topic.split('/a/wis2/');
-    var cls = report.kind === 'land' ? 'station' : 'ship';
-    var date = new Date(report.time);
-    var rows = [
-        ...(report.kind === 'land'
-            ? [[1001, 'WMO block number', Number(report.station.slice(0, 2)), 'Numeric'], [1002, 'WMO station number', Number(report.station.slice(2)), 'Numeric']]
-            : [[1011, 'Ship or mobile land station identifier', report.callSign, 'CCITT IA5']]),
-        [4001, 'Year', date.getUTCFullYear(), 'a'], [4002, 'Month', date.getUTCMonth() + 1, 'mon'], [4003, 'Day', date.getUTCDate(), 'd'],
-        [4004, 'Hour', date.getUTCHours(), 'h'], [4005, 'Minute', 0, 'min'],
-        [5001, 'Latitude', coords[1], 'deg'], [6001, 'Longitude', coords[0], 'deg'],
-        ...report.rows,
-    ];
-    var record = addPoint({
-        id: nextId++,
-        coords: coords,
-        topic: job.topic,
-        channel: channel,
-        centre: t.split('/', 1)[0],
-        path: t.slice(t.indexOf('/') + 1),
-        discipline: disciplineOf(t),
-        webcam: false,
-        decodedLayer: job.kind,
-        subLayer: `gts-${cls}`,
-        synop: true,
-        track: report.kind === 'ship' ? shipTrackKey(report.callSign) : null,
-        observed: report.time,
-        props: { data_id: `synop:${wsi || report.callSign}:${report.time}`, pubtime: (job.feature.properties || {}).pubtime, datetime: date.toISOString() },
-        links: job.feature.links || [],
-        notification: job.feature,
-        wsi: wsi,
-        format: 'text',
-        color: OBS_CLASSES[cls].color,
-        source: null,
-        // The report as sent, shown under the decoded values
-        decoded: { subsets: 1, index: 0, rows: rows, profile: null, tac: report.text },
-        born: Date.now(),
-    });
-    decodePlotted[job.kind]++;
-    if (!job.linked) {
-        job.linked = true;
-        linkDecoded(job.key, record);
-    }
-}
-
-// Every station plotted gives its position to text SYNOPs from it, including any waiting
-function rememberStation(record) {
-    if (!record.wsi || record.synop || !record.coords) return;
-    stationCoords.delete(record.wsi);
-    stationCoords.set(record.wsi, record.coords);
-    if (stationCoords.size > STATION_COORDS_MAX) stationCoords.delete(stationCoords.keys().next().value);
-    var waiting = synopWaiting.get(record.wsi);
-    if (!waiting) return;
-    synopWaiting.delete(record.wsi);
-    // Not while the station's own point is still being added
-    setTimeout(() => decodeEnabled.has(waiting.job.kind) && plotSynop(waiting.job, waiting.report, record.coords));
-}
-
-// ---------- Lightning. The Met Office sends each batch of flashes as BUFR (one
-// subset per flash: its position, then the sensors that located it) and as a
-// CSV; both are plotted, so a flash seen in one is skipped in the other.
-const FLASHES_MAX = 5000;
-const flashesSeen = new Set();
-
-function seenFlash(time, lat, lon) {
-    var key = `${Math.round(time / 100)}:${lat.toFixed(2)},${lon.toFixed(2)}`;
-    if (flashesSeen.has(key)) return true;
-    flashesSeen.add(key);
-    if (flashesSeen.size > FLASHES_MAX) flashesSeen.delete(flashesSeen.values().next().value);
-    return false;
-}
-
-// Time of a BUFR flash to the millisecond (seconds are 004006)
-function flashTime(values) {
-    var [y, mo, d, h, mi, sec] = [4001, 4002, 4003, 4004, 4005, 4006].map((id) => values.get(id));
-    return Date.UTC(y, mo - 1, d, h, mi || 0) + Math.round((sec || 0) * 1000);
-}
-
-// date,time,microseconds,FLP ID,quality,latitude,longitude,error
-// 19/10/2026,04:20:48,286057,1,G,50.206,-1.228,10.62
-function plotLightningText(job, text) {
-    var props = job.feature.properties || {};
-    var [channel, t] = job.topic.split('/a/wis2/');
-    var line = /^(\d{2})\/(\d{2})\/(\d{4}),(\d{2}):(\d{2}):(\d{2}),(\d+),[^,]*,([^,]*),(-?[\d.]+),(-?[\d.]+)/;
-    var first = null;
-    text.split('\n').forEach((row, i) => {
-        var m = line.exec(row.trim());
-        if (!m) return;
-        var [, d, mo, y, h, mi, sec, micro, quality] = m;
-        var lat = Number(m[9]), lon = Number(m[10]);
-        if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return;
-        var time = Date.UTC(y, mo - 1, d, h, mi, sec) + Math.round(Number(micro) / 1000);
-        if (seenFlash(time, lat, lon)) return;
-        var rows = [
-            [4001, 'Year', Number(y), 'a'], [4002, 'Month', Number(mo), 'mon'], [4003, 'Day', Number(d), 'd'],
-            [4004, 'Hour', Number(h), 'h'], [4005, 'Minute', Number(mi), 'min'], [4006, 'Second', Number(sec) + Number(micro) / 1e6, 's'],
-            [5001, 'Latitude', lat, 'deg'], [6001, 'Longitude', lon, 'deg'],
-            [0, 'Quality', quality, ''],  // The CSV's error column has no stated unit, so it's left out
-        ];
-        var record = addPoint({
-            id: nextId++,
-            coords: [lon, lat],
-            topic: job.topic,
-            channel: channel,
-            centre: t.split('/', 1)[0],
-            path: t.slice(t.indexOf('/') + 1),
-            discipline: disciplineOf(t),
-            webcam: false,
-            decodedLayer: job.kind,
-            subLayer: 'cache-warning',
-            observed: time,
-            props: { data_id: `${props.data_id}#${i}`, pubtime: props.pubtime, datetime: new Date(time).toISOString() },
-            links: job.feature.links || [],
-            notification: job.feature,
-            wsi: null,
-            format: 'text',
-            color: OBS_CLASSES.warning.color,
-            source: null,
-            decoded: { subsets: 1, index: 0, rows: rows, profile: null },
-            born: Date.now(),
-        });
-        decodePlotted[job.kind]++;
-        if (!first) linkDecoded(job.key, first = record);
-    });
-}
-
-// Citypage forecasts come in English and French for each site and are reissued
-// through the day: keep one point per site, the latest, preferring English
-function plotCitypage(job, xml) {
-    var doc = new DOMParser().parseFromString(xml, 'application/xml');
-    var site = doc.querySelector('siteData > location > name');
-    if (!site) return;
-    var coord = (v) => {
-        var m = /^([\d.]+)([NSEW])$/.exec((v || '').trim());
-        return m ? Number(m[1]) * (/[SW]/.test(m[2]) ? -1 : 1) : NaN;
-    };
-    var lat = coord(site.getAttribute('lat')), lon = coord(site.getAttribute('lon'));
-    if (!isFinite(lat) || !isFinite(lon)) return;
-
-    var french = /_fr\.xml$/i.test(job.href);
-    var key = `citypage:${site.getAttribute('code') || site.textContent.trim()}`;
-    var existing = byDataId.get(key);
-    if (existing && records.has(existing.id)) {
-        if (french && !existing.french) return;
-        removePoint(existing);
-    }
-    var props = job.feature.properties || {};
-    var [channel, t] = job.topic.split('/a/wis2/');
-    var record = addPoint({
-        id: nextId++,
-        coords: [lon, lat],
-        topic: job.topic,
-        channel: channel,
-        centre: t.split('/', 1)[0],
-        path: t.slice(t.indexOf('/') + 1),
-        discipline: disciplineOf(t),
-        webcam: false,
-        decodedLayer: job.kind,
-        subLayer: 'cache-warning',  // Forecasts carry the warnings in effect for the site
-        props: { data_id: key, pubtime: props.pubtime, metadata_id: site.textContent.trim() },
-        links: job.feature.links || [],
-        notification: job.feature,
-        wsi: null,
-        french: french,
-        format: 'xml',
-        color: OBS_CLASSES.warning.color,
-        source: null,
-        decoded: { xml: xml },
-        born: Date.now(),
-    });
-    decodePlotted[job.kind]++;
-    linkDecoded(job.key, record);
 }
 
 // ---------- Colouring stations, ships and buoys by a measured value. Values come from
@@ -4195,7 +3993,7 @@ function externalStation(stations, s) {
         return record;
     }
     record = {
-        id: nextId++,
+        id: newId(),
         coords: [s.lon, s.lat],
         topic: `${s.layer}/${s.path}`,
         channel: s.layer,
@@ -5156,7 +4954,7 @@ function swathRecord(file, i) {
     }
     return {
         ...t,
-        id: nextId++,
+        id: newId(),
         coords: [file.coords[2 * i], file.coords[2 * i + 1]],
         observed: file.observed[i],
         props: { ...t.props, data_id: `${file.key}#${i}`, datetime: new Date(file.observed[i]).toISOString() },
@@ -5317,12 +5115,6 @@ const SHIP_MAX_GAP_MS = 24 * 3600e3;     // Ships report every few hours
 const SHIP_MAX_KMH = 80;
 const SHIP_MIN_KM = 2;                   // A track shorter than this is a platform that stays put
 
-// A ship's track key from its call sign or WIGOS id. "SHIP" is the call sign of every
-// ship that keeps its identity private, so those can't be joined
-function shipTrackKey(id) {
-    id = typeof id === 'string' ? id.trim() : id == null ? '' : String(id);
-    return id && id.toUpperCase() !== 'SHIP' ? `ship:${id}` : null;
-}
 let tracksDirty = false;
 let tracksBuilt = 0;
 
