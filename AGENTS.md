@@ -39,6 +39,16 @@ src/satellite/spectrum.js  CrIS/IASI infrared spectra (showSpectrum)
 src/ocean/profile.js       Ocean profiles (Argo and BGC floats, XBT/CTD, gliders): T, S and
                            BGC against depth, T–S diagram with σt, tiles, expanded view;
                            levels come from _ocean in DECODE_PY (decode_bufr's 'ocean')
+src/marine/wavespec.js     Wave spectra (waveSpectrum): the polar plot in the info panel
+                           with wind and wave arrows (renderWaveSpectrum), the small one
+                           drawn on the map when styled by wave spectrum (miniWaveSpectrum),
+                           and the sea-state compass (marineCompass). The map style that
+                           uses it (WAVE_STYLE, ?style=waves) isn't in Style by yet
+src/ui/overview.js         The Equal Earth world map in the bottom-right panel (D3 canvas;
+                           createOverview: sea, land, the view's frame, hover and selection
+                           marks; the page draws the points and coverage via drawContent)
+src/ui/panels.js           Minimizing part of a map panel (makeMinimizable), and key rows
+                           that hide their layers with a click (keyToggle, hiddenKeyRows)
 src/style.css              All custom styles
 public/assets/py/pybufrkit-*.whl  Pure-Python wheel of pybufrkit loaded by Pyodide
 public/assets/data/centre-id.json Snapshot of the WMO centre-id register (fallback)
@@ -55,6 +65,12 @@ wheel, the JSON) and the icons live there, at the same paths as before.
 The plan is to split `src/main.js` into modules (MQTT, decoder, satellites,
 map, UI) so further pages, such as one for satellites or an MQTT explorer, can
 reuse them; each page is an HTML file at the root plus its own entry module.
+
+**Move things out of `src/main.js`; always aim for a negative diff there.** New
+features go in their own module (as `src/ocean/` and `src/marine/` do), with
+only the wiring (map layers, state, the popup hooks) left in `main.js`. When
+you change code in `main.js` that could live elsewhere, move it out at the
+same time, so each change leaves the file smaller than it found it.
 
 There is no linter or test suite. Do not add one unless asked.
 
@@ -173,9 +189,8 @@ soundings), URL state, weather radar, text SYNOPs, lightning, colouring by
 measured value (origin stations too, via `isColourable`), per-satellite layers, station
 merging, Global Replay, the Global Discovery Catalogue (Datasets tab: rows
 are kept sorted by when each dataset was last seen, via `sortDatasetRows`),
-airport METARs, the Equal Earth world map (a D3 canvas above the legend in the
-map key, as MapLibre has no Equal Earth; it filters with `passesFilters` like the key,
-and marks what the map's pointer is over on a canvas of its own, `drawOverviewHover`),
+airport METARs, what the Equal Earth world map shows (`drawOverviewContent`, which
+filters with `passesFilters` like the key; the map itself is `src/ui/overview.js`),
 satellite coverage (each swath file is packed into `swathFiles`
 and adds to running totals per H3 cell, not points; a report becomes a record only
 when clicked, via `swathRecord`. Cells are kept in grids: `globalGrid` at

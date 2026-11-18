@@ -66,38 +66,22 @@
   background-color: #f1f3f5;
 }
 
-/* The filters in force, at the bottom of the map, centred on the part of it left
-   showing between the sidebar (--left) and the info panel (--right); each chip
-   removes its filter. */
+/* The filters in force, at the top of the bottom right panel (see .key-notices); each
+   chip removes its filter */
 .filter-banner {
-  --left: 0px;
-  --right: 0px;
-  position: fixed;
-  bottom: 14px;
-  left: calc(var(--left) + (100vw - var(--left) - var(--right)) / 2);
-  z-index: 1000;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 3px 4px;
-  max-width: calc(100vw - var(--left) - var(--right) - 80px);
+  margin-right: 18px;  /* Clear of the panel's − */
   padding: 2px 4px 2px 8px;
   border: 1px solid #dee2e6;
-  border-radius: 12px;
-  background-color: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  background-color: #ffffff;
   font-size: 11px;
-  transform: translateX(-50%);
-  transition: left 0.2s;
 }
 .filter-banner[hidden] {
   display: none;
-}
-.queue-open .filter-banner {
-  --left: min(340px, calc(100vw - 52px));
-}
-.info-open .filter-banner {
-  --right: min(380px, calc(100vw - 52px));
 }
 .filter-banner-label {
   color: #868e96;
@@ -137,17 +121,6 @@
 .filter-banner-clear:hover,
 .filter-banner-clear:focus-visible {
   color: #c92a2a;
-}
-@media (max-width: 600px) {
-  /* The sidebar covers the map on phones, and has its own Clear filters; the info
-     panel is a sheet over the bottom of the map, so the banner sits above it */
-  .queue-open .filter-banner {
-    display: none;
-  }
-  .info-open .filter-banner {
-    --right: 0px;
-    bottom: calc(55dvh + 10px);
-  }
 }
 .queue-header {
   padding: 8px;
@@ -630,15 +603,26 @@
   height: auto;
   font-family: system-ui, sans-serif;
 }
-.wavespec-bar {
-  fill: #9ccfdc;
+.wavespec-disc {
+  fill: #f8f9fa;
 }
-.wavespec-peak {
-  fill: #1c9bb5;
+.wavespec-grid {
+  fill: none;
+  stroke: #495057;
+  stroke-opacity: 0.22;
+  stroke-width: 0.8;
 }
-.wavespec-dir {
-  fill: #1c9bb5;
-  fill-opacity: 0.75;
+.wavespec-edge {
+  fill: none;
+  stroke: #868e96;
+  stroke-width: 1;
+}
+.wavespec-ring-label {
+  fill: #495057;
+  font-size: 9px;
+  paint-order: stroke;
+  stroke: #ffffff;
+  stroke-width: 2.5px;
 }
 /* Ocean profiles (src/ocean/profile.js): variables against depth, and a T–S diagram */
 .ocean-chart {
@@ -801,6 +785,24 @@
 .pp-compass-swell polygon { fill: #1c9bb5; }
 .pp-compass-ship line { stroke: #e8590c; }
 .pp-compass-ship polygon { fill: #e8590c; }
+.wavespec-arrow line {
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+/* A white outline so the arrows read over the colours */
+.wavespec-arrow .wavespec-halo {
+  fill: #ffffff;
+  stroke: #ffffff;
+  stroke-width: 4;
+  stroke-linejoin: round;
+}
+.pp-compass-wind line:not(.wavespec-halo) { stroke: #495057; }
+.pp-compass-wind polygon:not(.wavespec-halo) { fill: #495057; }
+.pp-compass-swell line:not(.wavespec-halo) { stroke: #1c9bb5; }
+.pp-compass-swell polygon:not(.wavespec-halo) { fill: #1c9bb5; }
+.pp-compass-ship line:not(.wavespec-halo) { stroke: #e8590c; }
+.pp-compass-ship polygon:not(.wavespec-halo) { fill: #e8590c; }
+.wavespec-key,
 .pp-compass figcaption {
   display: flex;
   justify-content: center;
@@ -809,6 +811,7 @@
   color: #6c757d;
   font-size: 10px;
 }
+.wavespec-key i,
 .pp-compass figcaption i {
   display: inline-block;
   width: 8px;
@@ -1573,24 +1576,52 @@
   --outline: #6c757d;
   box-shadow: none;
 }
-/* Credits and what the page is, at the foot of the sidebar */
-.queue-about {
-  flex: none;
-  padding: 4px 10px 6px;
-  border-top: 1px solid #dee2e6;
-  font-size: 11px;
-  color: #6c757d;
+/* Bottom right, above the world map: the filters in force and the slow network notice,
+   shown even while the panel is minimized; nothing there, no space taken */
+.key-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #dee2e6;
 }
-.queue-about-title {
+.key-notices:not(:has(> :not([hidden]))) {
+  display: none;
+}
+.key-slow[hidden] {
+  display: none;
+}
+/* Last in the panel: what the page is, then the map's credits */
+.key-about {
+  padding-top: 4px;
+  border-top: 1px solid #dee2e6;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: #868e96;
+}
+.key-about-title {
+  color: #6c757d;
   font-weight: 600;
 }
-.queue-about .maplibregl-ctrl-attrib {
-  margin-top: 4px;
+/* Clears the minimize button in the corner */
+.map-key-heading {
+  margin: 0 18px 3px 0;
+  color: #6c757d;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.key-about-text {
+  margin: 2px 0 0;
+}
+.key-about .maplibregl-ctrl-attrib {
+  margin: 2px 0 0;
   padding: 0;
   background: none;
 }
-.queue-about .maplibregl-ctrl-attrib-inner {
-  line-height: 1.5;
+.key-about .maplibregl-ctrl-attrib-inner {
+  line-height: 1.45;
 }
 
 /* Rows that only switch the groups under them: no symbol, so set as a heading */
@@ -1751,11 +1782,107 @@
   font-size: 12px;
   line-height: 1.6;
 }
+/* Minimize (−) in the panel's top right corner, and + to restore. Minimized, the key
+   is smaller and without Style by; the world map panel keeps the map and drops the
+   connection status under it */
+.map-key {
+  position: relative;
+}
+.map-key-min-toggle {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  z-index: 1;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: #6c757d;
+  font-size: 14px;
+  line-height: 1.3;
+}
+.map-key-min-toggle:hover,
+.map-key-min-toggle:focus-visible {
+  background-color: #e9ecef;
+  color: #212529;
+}
+.map-style.map-key-minimized {
+  width: auto;
+  max-width: min(220px, calc(100vw - 32px));
+  padding: 3px 24px 3px 6px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+/* The key minimized keeps what the colours mean (the measure's name, as text, and its
+   scale) but none of Style by's controls */
+.map-world.map-key-minimized .key-status,
+.map-world.map-key-minimized .key-about-title,
+.map-world.map-key-minimized .key-about-text,
+.map-style.map-key-minimized .key-colour-by,
+.map-style.map-key-minimized .key-options,
+.map-style.map-key-minimized .legend-colour-status,
+.map-style.map-key-minimized .legend-model,
+.map-style.map-key-minimized .legend-model-info {
+  display: none !important;
+}
+.map-world.map-key-minimized .key-overview {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.key-colour-name {
+  display: none;
+  font-weight: 600;
+}
+/* No divider under the rows (Style by isn't there to divide from); the measure's
+   name, when there is one, brings its own */
+.map-style.map-key-minimized .key-colour-name:not(:empty) {
+  display: block;
+  margin-top: 2px;
+  padding-top: 2px;
+  border-top: 1px solid #e9ecef;
+}
+.map-style.map-key-minimized .map-key-main {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.map-style.map-key-minimized .map-key-style {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+/* Smaller symbols by size, not transform, which would undo the GTS diamond's rotation;
+   lines (tracks) and coverage swatches keep their own shapes */
+.map-style.map-key-minimized .legend-dot:not(.legend-line):not(.key-swath) {
+  width: 9px;
+  height: 9px;
+}
 .key-row,
 .key-note,
 .key-shapes {
   display: flex;
   align-items: center;
+}
+/* Key rows and sources a click hides; hidden ones stay, on light grey with muted text
+   and symbols, to show again. The pointer over one is a fainter tint */
+.key-toggle {
+  border-radius: 4px;
+  cursor: pointer;
+}
+.key-toggle:hover,
+.key-toggle:focus-visible {
+  background-color: #f8f9fa;
+  outline: none;
+}
+.key-toggle.key-off {
+  background-color: #e9ecef;
+  color: #868e96;
+}
+.key-toggle.key-off .legend-dot {
+  opacity: 0.4;
+}
+.key-toggle.key-off:hover,
+.key-toggle.key-off:focus-visible {
+  background-color: #dee2e6;
 }
 .key-row .legend-dot + .legend-dot {
   margin-left: -2px;
@@ -2170,6 +2297,17 @@
   border-radius: 2px;
 }
 
+/* The wave-spectrum style's symbol: rings of energy, as the map draws them */
+.key-wavespec {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: 4px;
+  vertical-align: middle;
+  border: 1px solid #495057;
+  border-radius: 50%;
+  background: radial-gradient(circle, #f8f9fa 0 18%, #e2412b 30%, #f6b23a 45%, #5ccf9f 60%, #4c6edb 74%, #f8f9fa 82%);
+}
 /* The wind arrow in the map key */
 .key-arrow {
   display: inline-block;

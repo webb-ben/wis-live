@@ -17,6 +17,9 @@ import { callDecoder, preloadDecoder, decoderReady, decoderGaveUp, onDecoderSett
 import { SATELLITE_NAMES, satelliteOscarUrl, INSTRUMENT_NAMES, AMV_METHODS, PIXEL_TYPES, satelliteNamed } from './satellite/names.js';
 import { showSpectrum } from './satellite/spectrum.js';
 import { oceanTiles, renderOceanProfile, renderTSDiagram, openOceanProfile } from './ocean/profile.js';
+import { waveSpectrum, miniWaveSpectrum, renderWaveSpectrum, marineCompass } from './marine/wavespec.js';
+import { createOverview } from './ui/overview.js';
+import { makeMinimizable, initKeyToggles, startKeyToggles, keyToggle, hiddenKeyRows, bindKeyToggles } from './ui/panels.js';
 
 // Map
 const MAX_POINTS = 100000;        // Oldest points are dropped beyond this...
@@ -95,6 +98,36 @@ const IS_AIRCRAFT = ['in', ['get', 'layer'], ['literal', ['cache-aircraft', 'gts
 const METRIC_QUEUE_MAX = 5000;  // Station files waiting to be decoded, newest kept (most carry their data inline, a few ms each)
 // Style by (state.colourBy): each satellite in its own colour (see satelliteColour), not a measure
 const SATELLITE_STYLE = 'satellite';
+// Style by: each ship or buoy that reports a wave spectrum drawn as a small polar
+// spectrum (see miniWaveSpectrum); everything else grey. Needs their files decoded
+const WAVE_STYLE = 'waves';
+const WAVE_CLASSES = ['ship', 'buoy'];
+
+// Whether the style needs station files decoded: a measure that isn't a
+// satellite's, or wave spectra
+function stationDecodesWanted() {
+    var m = METRICS[state.colourBy];
+    return state.colourBy === WAVE_STYLE || !!(m && m.targets !== 'satellite');
+}
+
+// A record the style would decode: one a measure colours, and for wave
+// spectra only ships and buoys
+function wantsStationDecode(record) {
+    return isColourable(record) && (state.colourBy !== WAVE_STYLE || WAVE_CLASSES.includes(topicClass(record)));
+}
+
+// Gives a decoded report with a wave spectrum its map symbol (an image named
+// in its "spec" property, drawn by points-spectrum). Once per report
+function attachSpectrum(record) {
+    if (record.specImage !== undefined || !record.feature || !record.decoded || !record.decoded.rows) return;
+    var spectrum = waveSpectrum(record.decoded.rows);
+    record.specImage = null;
+    if (!spectrum || !spectrum.peak || !map) return;
+    var id = `spec:${record.id}`;
+    if (!map.hasImage(id)) map.addImage(id, miniWaveSpectrum(spectrum), { pixelRatio: 2 });
+    record.specImage = id;
+    setFeatureProperties(record, { spec: id });
+}
 let metricQueue = [];
 // Replayed stations wait in a queue of their own, taken only when no live station is waiting,
 // newest first and capped: a past hour shouldn't hold up what's arriving now
@@ -115,9 +148,6 @@ const OWN_SECTION = ['satellite'];
 // Legend rows, grouped by source; each can be switched on and off. Rows other
 // than opt-in ones stay hidden until a point of that kind has arrived. Opt-in
 // rows are decoded in the browser, since their notifications carry no location.
-// A ship layer's Tracks row: its reports joined by ship, a line under the points
-const shipTracksRow = (parent) => ({ key: `${parent}-tracks`, parent, label: 'Tracks', follow: true, track: true, color: OBS_CLASSES.ship.color,
-    title: 'Each ship\'s reports joined in time order by its call sign or WIGOS id, as a line under its points. Ships that stay put (moored platforms) draw none.' });
 
 const LAYER_GROUPS = [
     { key: 'wis2', label: 'WIS2', subtitle: 'Live from the WIS2 Global Brokers', layers: [
@@ -126,7 +156,6 @@ const LAYER_GROUPS = [
         // Sublayers sit under their parent and are off whenever it is off
         ...Object.entries(OBS_CLASSES).filter(([key]) => !OWN_SECTION.includes(key)).flatMap(([key, c]) => [
             { key: `cache-${key}`, parent: 'obs', label: c.label, color: c.color, title: c.title },
-            ...(key === 'ship' ? [shipTracksRow('cache-ship')] : []),
         ]),
         { key: 'radar', parent: 'obs', label: 'Weather radar', color: COLORS.radar,
             title: 'Reflectivity from the lowest scan of each radar volume (ODIM HDF5) in the cache (e.g. RMI, Belgium), drawn around the radar; downloaded only while this is on' },
@@ -142,7 +171,6 @@ const LAYER_GROUPS = [
             ...(key === 'aircraft' ? [{ key: 'gts-tracks', parent: 'gts-aircraft', label: 'Tracks', follow: true, track: true,
                 color: 'linear-gradient(90deg, #99e9f2, #22b8cf, #1971c2, #5f3dc4)',
                 title: 'Each aircraft drawn in the air at its altitude: a path coloured by height (light low, dark high), chevrons pointing the way it is flying, and a red arrowhead at its latest report. Tilt the map to see it in 3D. Off: every report is a point on the ground.' }] : []),
-            ...(key === 'ship' ? [shipTracksRow('gts-ship')] : []),
         ]),
         // Listed once a WIS2-to-GTS centre has published something (see revealGatewayRows)
         { key: 'wis2gts', label: 'WIS2-to-GTS (decode required)', color: COLORS.wis2gts,
@@ -166,6 +194,15 @@ const LAYER_GROUPS = [
 ];
 // Layer switches that are off, and which start off: kept in state.js
 const hiddenLayers = state.hiddenLayers;
+// Key rows switch layers through the sidebar, or straight in hiddenLayers for any without a row
+initKeyToggles({
+    hiddenLayers,
+    directChange: () => {
+        notify('hiddenLayers');
+        applyMapFilter();
+    },
+    refresh: () => updateMapKey(),
+});
 // How far back the Global Replay reaches, set by a continuous slider on a log scale:
 // 12 hours ago at the left, 5 minutes at the right, so time runs left to right and
 // recent windows get most of the track. Long windows over a busy view stop at
@@ -316,11 +353,11 @@ const map = new maplibregl.Map({
     // Added below as its own control, so it can be kept closed
     attributionControl: false,
 });
-// Tile credits plus what this page is, at the foot of the sidebar (see below)
-const attribution = new maplibregl.AttributionControl({
-    compact: false,
-    customAttribution: '<br>WIS 2.0 Live shows real-time weather observations as they are published through the WMO Information System. This page is not affiliated with WMO.',
-});
+// The map's credits, under About in the bottom right panel (see addAbout), which says
+// what the page is in a paragraph of its own (attribution text would be joined to the
+// tile credits with a |)
+const attribution = new maplibregl.AttributionControl({ compact: false });
+const ABOUT_TEXT = 'WIS 2.0 Live shows real-time weather observations as they are published through the WMO Information System. This page is not affiliated with WMO.';
 
 const records = new Map();  // id -> record for every point on the map
 // Satellite coverage (see the Satellite coverage section). Declared here as the key,
@@ -359,7 +396,7 @@ function isGateway(record) {
 }
 
 // Layers that draw observation points: WIS2 circles and GTS diamonds
-const POINT_LAYERS = ['points', 'points-gts', 'points-ext', 'points-arrow'];
+const POINT_LAYERS = ['points', 'points-gts', 'points-ext', 'points-arrow', 'points-spectrum'];
 // How far from a point a click still picks it, in pixels: fingers are less exact
 const TOUCH = window.matchMedia('(pointer: coarse)');
 
@@ -480,19 +517,15 @@ const hoverLabel = new maplibregl.Popup({
     offset: 10,
 });
 // Whatever the label is put on (a point, a track, a coverage cell) is marked on the
-// world overview too, and unmarked when it goes (see drawOverviewHover)
+// world overview too, and unmarked when it goes
 {
     const placeLabel = hoverLabel.setLngLat.bind(hoverLabel), removeLabel = hoverLabel.remove.bind(hoverLabel);
     hoverLabel.setLngLat = (lngLat) => {
-        overviewHovered = maplibregl.LngLat.convert(lngLat);
-        drawOverviewHover();
+        if (overview) overview.hover(maplibregl.LngLat.convert(lngLat));
         return placeLabel(lngLat);
     };
     hoverLabel.remove = () => {
-        if (overviewHovered) {
-            overviewHovered = null;
-            drawOverviewHover();
-        }
+        if (overview) overview.hover(null);
         return removeLabel();
     };
 }
@@ -687,6 +720,22 @@ map.on('load', () => {
             'icon-halo-width': 1,
         },
     });
+    // Styled by wave spectrum: each report with one as its small polar spectrum,
+    // under its point, which sits at the middle. North stays north as the map turns
+    map.addLayer({
+        id: 'points-spectrum',
+        type: 'symbol',
+        source: 'points',
+        filter: ['boolean', false],
+        layout: {
+            'icon-image': ['get', 'spec'],
+            'icon-size': ['interpolate', ['linear'], ['zoom'], 1, 0.6, 5, 0.85, 9, 1.2],
+            'icon-allow-overlap': true,
+            'icon-ignore-placement': true,
+            'icon-rotation-alignment': 'map',
+            'icon-pitch-alignment': 'map',
+        },
+    }, 'points');
     paintAge();
     setInterval(paintAge, 30 * 1000);
     applyMapFilter();
@@ -811,9 +860,10 @@ function addPoint(record) {
         },
     };
     // While tracks are on, an aircraft is drawn only at its latest report and
-    // the track line carries the rest
+    // the track line carries the rest. A ship always is: its track is always drawn
     if (!isLatestOnTrack(record)) feature.properties.superseded = true;
     if (record.track && record.track.startsWith('aircraft:')) feature.properties.tracked = true;
+    if (record.track && record.track.startsWith('ship:')) feature.properties.shipTrack = true;
     record.feature = feature;
     toAdd.push(feature);
     if (record.track) tracksDirty = true;
@@ -833,12 +883,12 @@ function addPoint(record) {
     return record;
 }
 
-// The latest report on each aircraft track: a report takes over from the
+// The latest report on each aircraft or ship track: a report takes over from the
 // track's previous latest, unless that one was observed later
-const latestOnTrack = new Map();  // aircraft track key -> record
+const latestOnTrack = new Map();  // track key -> record
 
 function isLatestOnTrack(record) {
-    if (!record.track || !record.track.startsWith('aircraft:')) return true;
+    if (!record.track) return true;
     var current = latestOnTrack.get(record.track);
     if (current && records.has(current.id)) {
         if (current.observed > record.observed) return false;
@@ -856,6 +906,21 @@ function supersede(record) {
     }
 }
 
+// When a track's latest report goes, the newest one left takes over its dot
+function promoteOnTrack(track) {
+    var next = null;
+    for (var other of records.values()) {
+        if (other.track === track && (!next || other.observed > next.observed)) next = other;
+    }
+    if (!next) return;
+    latestOnTrack.set(track, next);
+    if (!next.feature.properties.superseded) return;
+    next.feature.properties.superseded = false;
+    if (!toAdd.includes(next.feature)) {
+        toUpdate.push({ id: next.id, addOrUpdateProperties: [{ key: 'superseded', value: false }] });
+    }
+}
+
 function layerOf(record) {
     if (record.subLayer) return record.subLayer;
     if (record.decodedLayer) return record.decodedLayer;
@@ -869,8 +934,16 @@ function removePoint(record) {
     unindexTwin(record);
     pools[poolOf(record)].delete(record.id);
     if (byDataId.get(record.props.data_id) === record) byDataId.delete(record.props.data_id);
-    if (record.track && latestOnTrack.get(record.track) === record) latestOnTrack.delete(record.track);
+    if (record.track && latestOnTrack.get(record.track) === record) {
+        latestOnTrack.delete(record.track);
+        promoteOnTrack(record.track);
+    }
     if (record.wsi && latestByStation.get(record.wsi) === record) latestByStation.delete(record.wsi);
+    // Its spectrum symbol goes once the point has left the map
+    if (record.specImage) {
+        var image = record.specImage;
+        setTimeout(() => { if (map.hasImage(image)) map.removeImage(image); }, 5000);
+    }
     var queued = toAdd.length;
     toAdd = toAdd.filter((f) => f.id !== record.id);
     if (toAdd.length === queued) toRemove.push(record.id);
@@ -1107,14 +1180,31 @@ function selectQueueTab(tab) {
     }
 }
 
-// Bottom right: the Equal Earth world map (see buildOverview) and, under it, the Global
+// Bottom right: the Equal Earth world map (src/ui/overview.js) and, under it, the Global
 // Broker the live messages come from. The key itself is in StyleControl, top right
+
 class MapKey {
     onAdd() {
         this.container = document.createElement('div');
         this.container.className = 'maplibregl-ctrl map-key map-world';
+        // Top to bottom: notices (the filters in force, and layers a slow network switched
+        // off), the world map, the connection lines (broker, catalogue, cache), then About
+        // and credits (added below, see addAbout)
+        var notices = document.createElement('div');
+        notices.className = 'key-notices';
+        mapKeySlow = document.createElement('div');
+        mapKeySlow.className = 'key-slow';
+        mapKeySlow.hidden = true;
+        // The filter banner, built with the sidebar, moves in here
+        var banner = document.querySelector('.filter-banner');
+        notices.append(...[banner, mapKeySlow].filter(Boolean));
         mapKeyStatus = document.createElement('div');
-        this.container.append(buildOverview(), mapKeyStatus);
+        mapKeyStatus.className = 'key-status';
+        overview = createOverview({ map, drawContent: drawOverviewContent, hoveredCell: () => hoveredCell });
+        this.container.append(notices, overview.section, mapKeyStatus);
+        // Opens minimized, like the key: the notices and the world map. + shows the
+        // connection lines and About and credits
+        makeMinimizable(this.container, 'world-map', 'connection status and credits', { alwaysStartMinimized: true });
         updateMapKey();
         return this.container;
     }
@@ -1130,13 +1220,20 @@ class StyleControl {
     onAdd() {
         var container = document.createElement('div');
         container.className = 'maplibregl-ctrl map-key map-style';
+        var heading = container.appendChild(document.createElement('div'));
+        heading.className = 'map-key-heading';
+        heading.textContent = 'Legend';
         mapKeyBody = container.appendChild(document.createElement('div'));
         mapKeyBody.className = 'map-key-main';
         container.append(buildStylePanel());
+        // A key row or source hides (or shows again) what it stands for (src/ui/panels.js)
+        bindKeyToggles(container);
         container.addEventListener('click', (e) => {
-            // On phones the panel opens to its options on a tap anywhere but a control
-            if (PHONE.matches && !e.target.closest('select, input, label')) container.classList.toggle('map-key-open');
+            // On phones the panel opens to its options on a tap anywhere but a control or key row
+            if (PHONE.matches && !e.target.closest('select, input, label, [data-key-toggle]')) container.classList.toggle('map-key-open');
         });
+        // Opens minimized, just the key, smaller, without Style by; + brings Style by back
+        makeMinimizable(container, 'key', 'Style by options', { alwaysStartMinimized: true });
         return container;
     }
 
@@ -1146,8 +1243,9 @@ class StyleControl {
 }
 let mapKeyBody = null;  // The key's rows, in StyleControl (top right)
 let mapKeyStatus = null;  // The broker line, under the world map (bottom right)
-// The world map under the key (see buildOverview), declared here as the key is built while the page loads
-let overview = null;  // { section, canvas, land, projection, timer, ready }
+let mapKeySlow = null;  // The slow network notice, above the world map with the filters
+// The world map under the key (see createOverview), declared here as the key is built while the page loads
+let overview = null;  // { section, draw, hover, select }
 let mapKeyHtml = '';
 let mapKeyDirty = false;
 let mapKeyBuilt = 0;
@@ -1169,6 +1267,7 @@ function buildStylePanel() {
                     </optgroup>`).join('')}
                 </select>
             </label>
+            <div class="key-colour-name"></div>
             <div class="legend-scale" hidden><span></span><i></i><span></span></div>
             <div class="key-options">
                 <label class="legend-coloured-only" hidden title="Only points with a value for the measure are drawn"><input type="checkbox" class="form-check-input"> <span>Require value</span></label>
@@ -1241,6 +1340,9 @@ function updateMapKey() {
     var drawnAny = (prefix) => [...shown].some((k) => k.startsWith(prefix));
     var symbol = (shape, color) => `<span class="legend-dot${shape === 'diamond' ? ' key-diamond' : ''}${shape === 'square' ? ' key-square' : ''}${shape === 'ring' ? ' legend-ring' : ''}" style="--color: ${color}; --outline: ${darken(color)}"></span>`;
     var rows = [];
+    // Rows (and source shapes) a click hides, as the sidebar's switches would (src/ui/panels.js)
+    startKeyToggles();
+    var toggle = keyToggle;
     var m = METRICS[state.colourBy];
     var coverage = SATELLITE_LAYERS.some(drawn) && !hidden.includes('sat-coverage') && swathCells.size;
     var swatch = '<span class="legend-dot key-swath" title="Coverage"></span>';
@@ -1249,32 +1351,41 @@ function updateMapKey() {
         // With "Require value" on, points without one aren't drawn, so there's nothing to explain
         // The same grey "Other" row as styled by satellite: whatever the style doesn't colour
         if (!state.colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}Other</div>`);
-        if (coverage) rows.push(`<div class="key-row">${swatch}Satellite coverage${state.colourBy === 'cloudAmount' ? ', darker = cloudier' : ''}</div>`);
+        if (coverage) rows.push(toggle('sat-coverage', ['sat-coverage'], 'satellite coverage', `${swatch}Satellite coverage${state.colourBy === 'cloudAmount' ? ', darker = cloudier' : ''}`));
     } else if (state.colourBy === SATELLITE_STYLE) {
         // Each satellite switched on, in its colour, by name; everything else is grey
         [...satelliteColours].filter(([sat]) => !hidden.includes(sat))
             .sort(([a], [b]) => satelliteLabel(a).localeCompare(satelliteLabel(b)))
-            .forEach(([sat, colour]) => rows.push(`<div class="key-row">${symbol('circle', colour)}${esc(satelliteLabel(sat))}</div>`));
+            .forEach(([sat, colour]) => rows.push(toggle(sat, [sat], satelliteLabel(sat), `${symbol('circle', colour)}${esc(satelliteLabel(sat))}`)));
         // Nothing else is drawn with Satellites only on
+        if (!state.colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}Other</div>`);
+    } else if (state.colourBy === WAVE_STYLE) {
+        rows.push('<div class="key-note"><span class="key-wavespec"></span>Wave spectrum: where waves come from (north up), longer waves inside, red = most energy</div>');
         if (!state.colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}Other</div>`);
     } else {
         for (var [key, c] of Object.entries(OBS_CLASSES)) {
             var shapes = [drawn(`cache-${key}`) && 'circle', drawn(`gts-${key}`) && 'diamond', drawn(`replay-${key}`) && 'square'].filter(Boolean);
             // Satellites' points and their coverage on one line
             var extra = key === 'satellite' && coverage ? swatch : '';
-            if (shapes.length || extra) rows.push(`<div class="key-row">${shapes.map((shape) => symbol(shape, c.color)).join('')}${extra}${esc(c.label)}</div>`);
+            if (shapes.length || extra) {
+                rows.push(toggle(`class:${key}`, [`cache-${key}`, `gts-${key}`, `replay-${key}`, ...(key === 'satellite' ? SATELLITE_LAYERS : [])],
+                    c.label.toLowerCase(), `${shapes.map((shape) => symbol(shape, c.color)).join('')}${extra}${esc(c.label)}`));
+            }
         }
     }
-    if (drawn('wis2gts')) rows.push(`<div class="key-row">${symbol('diamond', COLORS.wis2gts)}WIS2-to-GTS</div>`);
+    if (drawn('wis2gts')) rows.push(toggle('wis2gts', ['wis2gts'], 'WIS2-to-GTS', `${symbol('diamond', COLORS.wis2gts)}WIS2-to-GTS`));
     if (!hidden.includes('radar') && radars.size) {
         rows.push(`<div class="key-title">Radar reflectivity (dBZ)</div>`);
         rows.push(`<div class="legend-scale"><span>5</span><i style="background: linear-gradient(90deg, ${RADAR_COLORS.map(([, c]) => c).join(', ')})"></i><span>65</span></div>`);
     }
-    if ([...shipTrackLayers].some((l) => !hidden.includes(l))) {
+    var shipTracks = [...shipTrackLayers].filter((l) => !hidden.includes(l));
+    if (shipTracks.length) {
+        // Shown whenever there are tracks to draw, not a switch
         rows.push(`<div class="key-row"><span class="legend-dot legend-line" style="--color: ${OBS_CLASSES.ship.color}"></span>Ship tracks</div>`);
     }
     if (!hidden.includes('gts-tracks') && drawn('gts-aircraft')) {
-        rows.push(`<div class="key-row"><span class="legend-dot legend-line" style="--color: linear-gradient(90deg, #99e9f2, #22b8cf, #1971c2, #5f3dc4)"></span>Aircraft tracks by altitude</div>`);
+        rows.push(toggle('gts-tracks', ['gts-tracks'], 'aircraft tracks',
+            '<span class="legend-dot legend-line" style="--color: linear-gradient(90deg, #99e9f2, #22b8cf, #1971c2, #5f3dc4)"></span>Aircraft tracks by altitude'));
     }
     if (state.modelFieldOn && m && m.wms) rows.push(`<div class="key-note">Base layer: ECCC model ${esc(m.wmsLabel || m.label.toLowerCase())}</div>`);
     if (windArrows()) {
@@ -1283,12 +1394,19 @@ function updateMapKey() {
     }
     // How each source is drawn: WIS2 cache circles, WIS2 origin rings, GTS diamonds
     // Each symbol stays on one line with its label
-    var shape = (kind, color, label) => `<span class="key-shape">${symbol(kind, color)}${label}</span>`;
+    // Each also hides its source with a click (the sidebar's Cache, Origin, GTS-to-WIS2,
+    // Global Replay and METAR switches)
+    var shape = (id, layer, kind, color, label) => toggle(id, [layer], label, `${symbol(kind, color)}${label}`, 'key-shape', 'span');
     // Other sources are squares: the Global Replay (its rows are replay-station and so on) and airports
-    var squares = [drawnAny('replay-') && 'Replay', drawn('airports') && 'METAR'].filter(Boolean);
-    var shapes = [drawnAny('cache-') && shape('circle', '#adb5bd', 'WIS2'), drawn('origin') && shape('ring', COLORS.origin, 'WIS2 origin'),
-        drawnAny('gts-') && shape('diamond', '#adb5bd', 'GTS'), squares.length && shape('square', '#adb5bd', squares.join(', '))].filter(Boolean);
-    if (shapes.length) rows.push(`<div class="key-shapes">${shapes.join('')}</div>`);
+    var shapes = [drawnAny('cache-') && shape('source:obs', 'obs', 'circle', '#adb5bd', 'WIS2'),
+        drawn('origin') && shape('source:origin', 'origin', 'ring', COLORS.origin, 'WIS2 origin'),
+        drawnAny('gts-') && shape('source:gts', 'gts', 'diamond', '#adb5bd', 'GTS'),
+        drawnAny('replay-') && shape('source:replay', 'replay', 'square', '#adb5bd', 'Replay'),
+        drawn('airports') && shape('source:airports', 'airports', 'square', '#adb5bd', 'METAR')].filter(Boolean);
+    // Rows and sources hidden from the key, greyed, to show again with a click
+    var { rows: offRows, shapes: offShapes } = hiddenKeyRows();
+    rows.push(...offRows);
+    if (shapes.length || offShapes.length) rows.push(`<div class="key-shapes">${[...shapes, ...offShapes].join('')}</div>`);
     // Under the world map, apart from the key: the Global Broker messages come from, the
     // fastest Global Discovery Catalogue (dataset records come from it) and the fastest
     // global cache (downloads try it first), each host with how long it took to answer
@@ -1314,13 +1432,19 @@ function updateMapKey() {
         ? line('broker-connected', `Cache: ${state.cache.host}${ms(state.cache.ms)}`,
             `Global cache downloads try first: the fastest to answer, checked every minute (${state.cache.name})`)
         : line('broker-connecting', 'Cache: finding the fastest…', 'Timing the global caches as their messages arrive');
-    if (state.slowNetwork) {
-        var shedNames = SHED_LAYERS.filter((l) => state.slowNetwork.shed.includes(l.key)).map((l) => l.label).join(' and ');
-        brokerHtml += line('broker-reconnecting', `Slow network: ${shedNames} off`,
-            `Switched off to save the connection (${state.slowNetwork.reason}). Switch them back on under Layers.`);
-    }
     if (mapKeyStatus && brokerHtml !== mapKeyStatus.dataset.html) {
         mapKeyStatus.innerHTML = mapKeyStatus.dataset.html = brokerHtml;
+    }
+    // Layers switched off for a slow network: a notice above the world map, with the filters
+    var slowHtml = '';
+    if (state.slowNetwork) {
+        var shedNames = SHED_LAYERS.filter((l) => state.slowNetwork.shed.includes(l.key)).map((l) => l.label).join(' and ');
+        slowHtml = line('broker-reconnecting', `Slow network: ${shedNames} off`,
+            `Switched off to save the connection (${state.slowNetwork.reason}). Switch them back on under Layers.`);
+    }
+    if (mapKeySlow && slowHtml !== mapKeySlow.dataset.html) {
+        mapKeySlow.innerHTML = mapKeySlow.dataset.html = slowHtml;
+        mapKeySlow.hidden = !slowHtml;
     }
     // Refreshed as points come and go; left alone when nothing changed, so a hover isn't interrupted
     var html = rows.join('');
@@ -1352,7 +1476,13 @@ function openPopup(record) {
     selectedMarker.setLngLat(record.coords);
     if (inAir || inCoverage) selectedMarker.remove(); else selectedMarker.addTo(map);
     liftSwathCell(inCoverage ? record : null);
+    selectOnOverview({ at: record.coords, colour: record.color });
     keepPopupInView();
+}
+
+// What the info panel shows, marked on the world overview until it closes
+function selectOnOverview(selected) {
+    if (overview) overview.select(selected);
 }
 
 // Puts content in the info panel (built on first use) and opens it
@@ -1441,6 +1571,7 @@ function closeInfo() {
     document.body.classList.remove('info-open');
     selectedMarker.remove();
     liftSwathCell(null);
+    selectOnOverview(null);
 }
 
 function buildPopup(record) {
@@ -1543,6 +1674,7 @@ async function decodeRecord(record, out, title) {
     try {
         record.decoded = await decodeSource(record.source, record.wsi, out, record.subsetIndex);
         setFeatureProperties(record, metricValues(record));
+        attachSpectrum(record);
         showDecoded(out, title, record.decoded);
         var forecast = out.parentNode && out.parentNode.querySelector('.pp-forecast');
         if (forecast && forecast.rerender) forecast.rerender();
@@ -2278,7 +2410,7 @@ function renderDecoded(out, title, result) {
         ${marine ? `
         <div class="pp-section">${satellite ? 'Sea state from space' : marine.ship ? 'Sea state and ship' : 'Sea state'}</div>
         <div class="pp-marine">
-            ${marine.compass}
+            ${marine.spectrum && marine.spectrum.peak ? '' : marine.compass}
             <div class="pp-tiles">${marine.tiles.join('')}</div>
         </div>
         ${marine.spectrum ? `<div class="pp-section">Wave spectrum</div>
@@ -2300,7 +2432,8 @@ function renderDecoded(out, title, result) {
     }));
     bindMetricTiles(out);
     if (marine && marine.spectrum && marine.spectrum.peak) {
-        renderWaveSpectrum(out.querySelector('.wave-spectrum'), marine.spectrum, { width: 300, height: 190 });
+        // The compass's wind, wave and heading arrows go on the spectrum instead
+        renderWaveSpectrum(out.querySelector('.wave-spectrum'), marine.spectrum, { width: 300, ...marine.dirs });
     }
     if (winds) showWindProfiles(out.querySelector('.wind-profile'), result);
     if (ocean) {
@@ -2381,139 +2514,8 @@ function marineDetails(rows, satellite) {
     if (!tiles.length) return null;
 
     var waveDirs = [dominant, ...swellDirs].filter((d) => d !== undefined);
-    return { tiles, spectrum, ship: course !== undefined || speed !== undefined, compass: marineCompass(first(11001), waveDirs, speed ? course : undefined) };
-}
-
-// Directional wave spectrum: one entry per frequency band with its energy
-// density (022069) and the direction the waves come from, from the first-order
-// directional Fourier coefficients (042011 a1, 042012 b1). Returns null when the
-// report has no spectrum.
-function waveSpectrum(rows) {
-    var bands = [], band = null;
-    for (var [id, , value] of rows) {
-        if (id === 22080) bands.push(band = { f: value, e: null, a1: null, b1: null });
-        else if (!band) continue;
-        else if (id === 22069) band.e = value;
-        else if (id === 42011) band.a1 = value;
-        else if (id === 42012) band.b1 = value;
-    }
-    bands = bands.filter((b) => b.f > 0 && b.e !== null);
-    if (bands.length < 3) return null;
-    for (var b of bands) {
-        b.dir = b.a1 !== null && b.b1 !== null && (b.a1 || b.b1)
-            ? (Math.atan2(b.b1, b.a1) * 180 / Math.PI + 360) % 360 : null;
-    }
-    var peak = bands.reduce((a, b) => (b.e > a.e ? b : a));
-    return { bands, peak: peak.e > 0 ? peak : null };
-}
-
-// Energy against frequency (labelled as period), with a strip above showing
-// where each band's waves come from
-function renderWaveSpectrum(container, spectrum, opts) {
-    var W = opts.width, H = opts.height;
-    var m = { top: 8, right: 10, bottom: 30, left: 36 };
-    var stripH = 46, gap = 10;
-    var w = W - m.left - m.right;
-    var dirTop = m.top, dirBottom = m.top + stripH;
-    var eTop = dirBottom + gap, eBottom = H - m.bottom;
-    var bands = spectrum.bands;
-    // Log frequency, so long-period swell isn't squeezed against the axis
-    var fMin = Math.min(0.03, bands[0].f * 0.9), fMax = Math.max(0.5, bands[bands.length - 1].f * 1.05);
-    var eMax = Math.max(...bands.map((b) => b.e)) * 1.1 || 1;
-    var x = (f) => m.left + w * Math.log(f / fMin) / Math.log(fMax / fMin);
-    var yE = (e) => eBottom - (eBottom - eTop) * e / eMax;
-    var yD = (d) => dirTop + stripH * d / 360;
-
-    var svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: 'wavespec', role: 'img',
-        'aria-label': 'Wave energy spectrum by period, with wave direction for each band' });
-    svgEl('rect', { x: 0, y: 0, width: W, height: H, class: 'skewt-bg' }, svg);
-
-    // Bars span halfway to each neighbouring band
-    bands.forEach((b, i) => {
-        var lo = i ? (bands[i - 1].f + b.f) / 2 : b.f - (bands[1].f - b.f) / 2;
-        var hi = i < bands.length - 1 ? (b.f + bands[i + 1].f) / 2 : b.f + (b.f - bands[i - 1].f) / 2;
-        b.lo = lo;
-        b.hi = hi;
-        if (b.e > 0) svgEl('rect', { x: x(lo) + 0.5, y: yE(b.e), width: Math.max(1, x(hi) - x(lo) - 1), height: eBottom - yE(b.e),
-            class: b === spectrum.peak ? 'wavespec-bar wavespec-peak' : 'wavespec-bar' }, svg);
-    });
-
-    // Direction strip: a dot per band with energy, sized by its share of the peak
-    for (var d of [0, 90, 180, 270, 360]) {
-        svgEl('line', { x1: m.left, x2: m.left + w, y1: yD(d), y2: yD(d), class: 'skewt-isobar' }, svg);
-        if (d < 360) svgEl('text', { x: m.left - 5, y: yD(d) + 3.5, class: 'skewt-label', 'text-anchor': 'end' }, svg).textContent = 'NESW'[d / 90];
-    }
-    var maxE = spectrum.peak ? spectrum.peak.e : 0;
-    for (var b of bands) {
-        if (b.dir === null || !(b.e > 0)) continue;
-        svgEl('circle', { cx: x(b.f), cy: yD(b.dir), r: 1.5 + 3 * Math.sqrt(b.e / maxE), class: 'wavespec-dir' }, svg);
-    }
-    svgEl('rect', { x: m.left, y: dirTop, width: w, height: stripH, class: 'skewt-frame' }, svg);
-
-    // Energy axis
-    var step = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100].find((s) => eMax / s <= 4) || 200;
-    for (var e = step; e < eMax; e += step) {
-        svgEl('line', { x1: m.left, x2: m.left + w, y1: yE(e), y2: yE(e), class: 'skewt-isobar' }, svg);
-        svgEl('text', { x: m.left - 5, y: yE(e) + 3.5, class: 'skewt-label', 'text-anchor': 'end' }, svg).textContent = Number(e.toFixed(1));
-    }
-    svgEl('text', { x: 0, y: 0, class: 'skewt-label', 'text-anchor': 'middle',
-        transform: `translate(9 ${(eTop + eBottom) / 2}) rotate(-90)` }, svg).textContent = 'm²/Hz';
-    // Period labels along the frequency axis
-    for (var period of [25, 15, 10, 7, 5, 4, 3, 2]) {
-        var f = 1 / period;
-        if (f > fMax) continue;
-        svgEl('line', { x1: x(f), x2: x(f), y1: eBottom, y2: eBottom + 4, class: 'skewt-tick' }, svg);
-        svgEl('text', { x: x(f), y: eBottom + 14, class: 'skewt-label', 'text-anchor': 'middle' }, svg).textContent = period;
-    }
-    svgEl('text', { x: m.left + w / 2, y: H - 3, class: 'skewt-axis', 'text-anchor': 'middle' }, svg).textContent = 'Wave period (s)';
-    svgEl('rect', { x: m.left, y: eTop, width: w, height: eBottom - eTop, class: 'skewt-frame' }, svg);
-
-    // Hover readout for the band under the pointer
-    var readout = svgEl('text', { x: m.left + w - 4, y: eTop + 12, class: 'skewt-readout', 'text-anchor': 'end' }, svg);
-    svg.addEventListener('mousemove', (e) => {
-        var box = svg.getBoundingClientRect();
-        var px = (e.clientX - box.left) * W / box.width;
-        var band = bands.find((b) => px >= x(b.lo) && px < x(b.hi));
-        readout.textContent = band ? [`${(1 / band.f).toFixed(1)} s`, `${band.e} m²/Hz`,
-            band.dir !== null && band.e > 0 ? `from ${Math.round(band.dir)}°` : null].filter(Boolean).join(' · ') : '';
-    });
-    svg.addEventListener('mouseleave', () => { readout.textContent = ''; });
-
-    container.replaceChildren(svg);
-}
-
-// Compass showing where the wind and swell come from (arrows pointing in) and
-// where the ship is heading (arrow pointing out)
-function marineCompass(windFrom, swellFrom, heading) {
-    if (windFrom === undefined && !swellFrom.length && heading === undefined) return '';
-    var c = 50;
-    var at = (deg, r) => [c + r * Math.sin(deg * Math.PI / 180), c - r * Math.cos(deg * Math.PI / 180)];
-    var arrow = (deg, from, to, cls) => {
-        var [x1, y1] = at(deg, from), [x2, y2] = at(deg, to);
-        var a = Math.atan2(y2 - y1, x2 - x1);
-        var head = [a + 2.6, a - 2.6].map((b) => `${(x2 + 7 * Math.cos(b)).toFixed(1)},${(y2 + 7 * Math.sin(b)).toFixed(1)}`);
-        return `<g class="${cls}"><line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"/>`
-            + `<polygon points="${x2.toFixed(1)},${y2.toFixed(1)} ${head.join(' ')}"/></g>`;
-    };
-    var key = [
-        windFrom !== undefined ? '<span><i class="pp-key-wind"></i>Wind</span>' : '',
-        swellFrom.length ? '<span><i class="pp-key-swell"></i>Waves</span>' : '',
-        heading !== undefined ? '<span><i class="pp-key-ship"></i>Ship</span>' : '',
-    ].join('');
-    return `
-        <figure class="pp-compass">
-            <svg viewBox="0 0 100 100" width="100" height="100" role="img" aria-label="Wind, swell and ship heading">
-                <circle cx="${c}" cy="${c}" r="38" class="pp-compass-ring"/>
-                ${['N', 'E', 'S', 'W'].map((d, i) => {
-                    var [x, y] = at(i * 90, 46);
-                    return `<text x="${x}" y="${y + 3.5}" text-anchor="middle">${d}</text>`;
-                }).join('')}
-                ${swellFrom.map((d) => arrow(d, 38, 8, 'pp-compass-swell')).join('')}
-                ${windFrom !== undefined ? arrow(windFrom, 38, 8, 'pp-compass-wind') : ''}
-                ${heading !== undefined ? arrow(heading, 0, 30, 'pp-compass-ship') : ''}
-            </svg>
-            <figcaption>${key}</figcaption>
-        </figure>`;
+    var dirs = { wind: first(11001), waves: waveDirs, heading: speed ? course : undefined };
+    return { tiles, spectrum, dirs, ship: course !== undefined || speed !== undefined, compass: marineCompass(dirs.wind, dirs.waves, dirs.heading) };
 }
 
 // ---------- Model forecasts at a point, from the dynamical.org point API
@@ -3707,12 +3709,17 @@ function applyMapFilter() {
     if (state.colouredOnly && METRICS[state.colourBy]) expr.push(['all', isColourTarget(), ['has', `m_${state.colourBy}`]]);
     // Or, styled by satellite, only what came from a satellite
     if (state.colouredOnly && state.colourBy === SATELLITE_STYLE) expr.push(isColourTarget());
+    // Or, styled by wave spectrum, only reports with one
+    if (state.colouredOnly && state.colourBy === WAVE_STYLE) expr.push(['has', 'spec']);
     // Swath reports are only points while coverage is switched off (see syncSwathPoints)
     var coverage = !effectiveHidden().includes('sat-coverage');
     syncSwathPoints();
     var shown = tracksOn ? [...expr, ['!=', ['get', 'tracked'], true]] : expr;
+    // A ship is a dot only at its latest report; its track joins the rest
+    shown = [...shown, ['!', ['all', ['==', ['get', 'shipTrack'], true], ['==', ['get', 'superseded'], true]]]];
     var arrows = windArrows();
     map.setFilter('points-arrow', arrows ? [...shown, isArrow()] : ['boolean', false]);
+    map.setFilter('points-spectrum', state.colourBy === WAVE_STYLE ? [...shown, ['has', 'spec']] : ['boolean', false]);
     if (arrows) shown = [...shown, ['!', isArrow()]];
     // Circles for WIS2, diamonds for the GTS, squares for other sources: airports and the Global Replay
     var square = ['any', ['==', ['get', 'ext'], true], ['==', ['get', 'replay'], true]];
@@ -3825,7 +3832,7 @@ function readFiltersFromUrl() {
     list(FILTER_PARAMS.disciplines).filter((d) => DISCIPLINES.hasOwnProperty(d)).forEach((d) => filters.disciplines.add(d));
     list('hide').filter((key) => filterModes.hasOwnProperty(key)).forEach((key) => { filterModes[key] = 'hide'; });
     var style = params.get('style');
-    if (style === 'kind' || style === SATELLITE_STYLE || METRICS.hasOwnProperty(style)) startColour = style;
+    if (style === 'kind' || style === SATELLITE_STYLE || style === WAVE_STYLE || METRICS.hasOwnProperty(style)) startColour = style;
     // Satellites are off at first (their files are the heaviest downloads), unless the
     // link styles the map by satellite or by a satellite measure, which needs them on
     if (style === SATELLITE_STYLE || (METRICS[style] && METRICS[style].targets === 'satellite')) hiddenLayers.delete('satellite');
@@ -4522,15 +4529,18 @@ map.addControl(new StyleControl(), 'top-right');
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-left');
 map.addControl(new MapKey(), 'bottom-right');
 
-// Credits and what this page is, at the foot of the sidebar instead of an ⓘ on the
-// map, always shown. MapLibre's attribution keeps itself up to date there as sources come and go
+// What this page is and the map's credits, last in the bottom right panel. While it's
+// minimized (see MapKey) the heading and description go with the connection lines, but
+// the tile credits always show. MapLibre's attribution keeps itself up to date there
+// as sources come and go
 (function addAbout() {
     var about = document.createElement('section');
-    about.className = 'queue-about';
+    about.className = 'key-about';
     about.setAttribute('aria-label', 'About and credits');
-    about.innerHTML = '<div class="queue-about-title">ⓘ About and credits</div>';
+    about.innerHTML = '<div class="key-about-title">ⓘ About and credits</div><p class="key-about-text"></p>';
+    about.querySelector('.key-about-text').textContent = ABOUT_TEXT;
     about.appendChild(attribution.onAdd(map));
-    document.querySelector('.queue').appendChild(about);
+    mapKeyStatus.after(about);
 })();
 
 // Keep the globe (the map's centre) in the middle of the area the panels leave
@@ -4952,6 +4962,7 @@ function plotDecodedReport(job, rows, profile, index, fileIndex, swath) {
 
 function plotRecord(job, record) {
     addPoint(record);
+    attachSpectrum(record);
     if (record.track) tracksDirty = true;
     decodePlotted[job.kind]++;
     // The first report with a location stands for the file; report 0 may have none
@@ -5471,6 +5482,10 @@ function metricValues(record) {
 function setColourBy(key, legend) {
     setState({ colourBy: key });
     var m = METRICS[key];
+    // What the colours mean, as text, for the minimized key (which hides Style by)
+    var colourName = legend.querySelector('.key-colour-name');
+    if (colourName) colourName.textContent = m ? `${m.label}${m.unit ? ` (${m.unit})` : ''}`
+        : key === SATELLITE_STYLE ? 'Coloured by satellite' : key === WAVE_STYLE ? 'Wave spectra' : '';
     var color = ['get', 'color'];
     var swathColor = color;
     var originRing = ['get', 'color'];
@@ -5500,6 +5515,11 @@ function setColourBy(key, legend) {
         swathColor = satelliteMatch(false, ['get', 'color']);
         originRing = color;
         var outline = ['case', target, satelliteMatch(true), darken(NO_VALUE_COLOR)];
+    } else if (key === WAVE_STYLE) {
+        // Reports with a spectrum keep their colour, at its middle; everything else grey
+        color = ['case', ['has', 'spec'], ['get', 'color'], NO_VALUE_COLOR];
+        originRing = color;
+        var outline = ['case', ['has', 'spec'], ['get', 'outline'], darken(NO_VALUE_COLOR)];
     }
     // Calm reports under a wind measure are empty: an outline with no fill
     var pointColor = windArrows()
@@ -5535,10 +5555,11 @@ function setColourBy(key, legend) {
     // for a measure, or anything not from a satellite
     var colouredOnlyRow = legend.querySelector('.legend-coloured-only');
     if (colouredOnlyRow) {
-        var bySatellite = key === SATELLITE_STYLE;
-        colouredOnlyRow.hidden = !m && !bySatellite;
-        colouredOnlyRow.querySelector('span').textContent = bySatellite ? 'Satellites only' : 'Require value';
-        colouredOnlyRow.title = bySatellite ? 'Only satellite observations are drawn' : 'Only points with a value for the measure are drawn';
+        var bySatellite = key === SATELLITE_STYLE, byWaves = key === WAVE_STYLE;
+        colouredOnlyRow.hidden = !m && !bySatellite && !byWaves;
+        colouredOnlyRow.querySelector('span').textContent = bySatellite ? 'Satellites only' : byWaves ? 'Spectra only' : 'Require value';
+        colouredOnlyRow.title = bySatellite ? 'Only satellite observations are drawn'
+            : byWaves ? 'Only ships and buoys that report a wave spectrum are drawn' : 'Only points with a value for the measure are drawn';
     }
     updateModelField(legend);
     applyMapFilter();
@@ -5551,6 +5572,10 @@ function setColourBy(key, legend) {
         }
         if (m.targets === 'satellite') metricQueue = replayMetricQueue = [];
         else queueStationDecodes();
+    } else if (key === WAVE_STYLE) {
+        // Reports decoded already (the GTS's, or opened) get their symbols now
+        for (var record of records.values()) attachSpectrum(record);
+        queueStationDecodes();
     } else {
         metricQueue = replayMetricQueue = [];
     }
@@ -5560,6 +5585,13 @@ function setColourBy(key, legend) {
 
 function showColourStatus(legend) {
     var el = legend.querySelector('.legend-colour-status');
+    if (state.colourBy === WAVE_STYLE) {
+        var withSpectrum = [...records.values()].filter((r) => r.specImage).length;
+        var queued = metricQueue.length + replayMetricQueue.length;
+        el.hidden = false;
+        el.textContent = `${withSpectrum.toLocaleString()} with a wave spectrum` + (queued ? ` · decoding ${queued.toLocaleString()}` : '');
+        return;
+    }
     // Only measures have values to count (not observation type, nor satellite)
     if (!METRICS[state.colourBy]) { el.hidden = true; return; }
     var points = [...records.values()].filter((r) => isColourable(r, METRICS[state.colourBy]));
@@ -5581,14 +5613,14 @@ function showColourStatus(legend) {
 
 // Cache and origin stations, ships and buoys without decoded data, newest first
 function queueStationDecodes() {
-    var waiting = [...pools.wis2.values()].filter((r) => !r.decoded && r.source && !r.metricTried && isColourable(r));
+    var waiting = [...pools.wis2.values()].filter((r) => !r.decoded && r.source && !r.metricTried && wantsStationDecode(r));
     metricQueue = waiting.filter((r) => !r.replay).slice(-METRIC_QUEUE_MAX);
     replayMetricQueue = waiting.filter((r) => r.replay).sort((a, b) => b.born - a.born).slice(0, REPLAY_DECODE_MAX);
     pumpStationDecodes();
 }
 
 function queueStationDecode(record) {
-    if (!METRICS[state.colourBy] || record.decoded || !record.source || !isColourable(record)) return;
+    if (!stationDecodesWanted() || record.decoded || !record.source || !wantsStationDecode(record)) return;
     if (record.replay) {
         // Replays arrive newest first, so once the queue is full the rest are older still
         if (replayMetricQueue.length < REPLAY_DECODE_MAX) replayMetricQueue.push(record);
@@ -5606,7 +5638,7 @@ function pumpStationDecodes() {
 
 async function decodeStationIn(lane) {
     var queue = lane === 'live' ? metricQueue : replayMetricQueue;
-    if (metricBusy[lane] || !queue.length || !METRICS[state.colourBy]) return;
+    if (metricBusy[lane] || !queue.length || !stationDecodesWanted()) return;
     // Live stations newest first; replayed ones start only while none is waiting
     if (lane === 'replay' && metricQueue.length) return;
     metricBusy[lane] = true;
@@ -5622,6 +5654,7 @@ async function decodeStationIn(lane) {
                 result.source = record.source;  // For the pager, should the decoder let the file go
                 record.decoded = result;
                 setFeatureProperties(record, metricValues(record));
+                attachSpectrum(record);
             }
         }
     } catch (err) {
@@ -6911,6 +6944,7 @@ function openCellSummary(sat, lngLat) {
     showInfo(buildCellSummary(id, cell, lngLat, grid));
     selectedMarker.remove();
     liftCell(cell);
+    selectOnOverview({ at: [lngLat.lng, lngLat.lat], h3: cell.h3, colour: cell.files.values().next().value.template.color });
     keepPopupInView();
 }
 
@@ -7126,8 +7160,8 @@ function shipTrack(key, reports) {
             lastId: last.id,
             color: last.color,
             born: last.born,
-            // Its layer's Tracks row where there is one, so it can be switched off on its own
-            layer: LAYER_PARENTS[`${layer}-tracks`] ? `${layer}-tracks` : layer,
+            // On with its ship's layer; there's no switch for the tracks alone
+            layer,
             via: last.decodedLayer || '',
             sat: null,
             channel: last.channel,
@@ -7480,105 +7514,10 @@ function checkNetwork() {
 }
 setInterval(checkNetwork, SLOW_CHECK_MS);
 
-// ---------- World overview in the Equal Earth projection, which keeps areas true to
-// size (MapLibre has no Equal Earth). A small map always shown at the top of the map
-// key, above the legend. D3 draws what the map shows now on a
-// canvas: points that pass the layer switches and filters, coloured as on the map,
-// and satellite coverage. A click goes to that place on the map. The D3 pieces it
-// uses, topojson-client and the coastlines are a separate bundle, loaded as it starts.
-const OVERVIEW_REFRESH_MS = 2000;
-let overviewHovered = null;  // Where the map's hover label is (a LngLat), marked on the overview
-let d3 = null;  // geoEqualEarth, geoPath, geoGraticule10 (d3-geo) and scaleLinear (d3-scale), once loaded
-
-// The world map's part of the map key (see MapKey): a title, a button that enlarges
-// it, and the canvas. Always shown
-function buildOverview() {
-    var section = document.createElement('div');
-    section.className = 'key-overview';
-    section.innerHTML = `
-        <div class="pp-status overview-status">Loading…</div>
-        <div class="overview-frame">
-            <canvas class="overview-map" role="img" aria-label="World map in the Equal Earth projection; click to go there on the map"
-                title="World map, Equal Earth projection (true areas). Click to go there"></canvas>
-            <canvas class="overview-hover" aria-hidden="true"></canvas>
-        </div>`;
-    // What's hovered on the map is drawn on a canvas of its own over the overview, so
-    // following the pointer doesn't redraw every point and cell
-    overview = { section, canvas: section.querySelector('.overview-map'), hover: section.querySelector('.overview-hover'),
-        land: null, projection: null, timer: null, ready: null };
-    overview.canvas.addEventListener('click', (e) => {
-        if (!overview.projection) return;
-        var box = overview.canvas.getBoundingClientRect();
-        var lonLat = overview.projection.invert([e.clientX - box.left, e.clientY - box.top]);
-        // Outside the outline of the Earth there's nowhere to go
-        if (!lonLat || !(Math.abs(lonLat[0]) <= 180 && Math.abs(lonLat[1]) <= 90)) return;
-        map.flyTo({ center: lonLat, zoom: Math.max(map.getZoom(), 3) });
-    });
-    window.addEventListener('resize', drawOverview);
-    // Drawn once the key is on the page and has a size (and the rest of this script
-    // has run, as the key is built part way through), then kept up to date
-    requestAnimationFrame(() => loadOverview().then(() => {
-        drawOverview();
-        overview.timer = setInterval(drawOverview, OVERVIEW_REFRESH_MS);
-        // A pan or zoom shows at once (the view's frame moves), rather than at the next
-        // refresh, which then starts over from here
-        map.on('moveend', () => {
-            clearInterval(overview.timer);
-            drawOverview();
-            overview.timer = setInterval(drawOverview, OVERVIEW_REFRESH_MS);
-        });
-    }));
-    return section;
-}
-
-function loadOverview() {
-    if (!overview.ready) {
-        overview.ready = (async () => {
-            var [geo, scale, topojson, topo] = await Promise.all([import('d3-geo'), import('d3-scale'),
-                import('topojson-client'), import('world-atlas/land-110m.json')]);
-            d3 = { geoEqualEarth: geo.geoEqualEarth, geoPath: geo.geoPath, geoGraticule10: geo.geoGraticule10, scaleLinear: scale.scaleLinear };
-            overview.land = topojson.feature(topo.default, topo.default.objects.land);
-            overview.section.querySelector('.overview-status').remove();
-        })().catch((err) => {
-            overview.section.querySelector('.overview-status').textContent = `Could not load the world map: ${err.message}`;
-        });
-    }
-    return overview.ready;
-}
-
-function drawOverview() {
-    if (!overview || !overview.land) return;
-    var canvas = overview.canvas, box = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
-    var w = box.width, h = box.height;
-    if (!w || !h) return;
-    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
-        canvas.width = Math.round(w * dpr);
-        canvas.height = Math.round(h * dpr);
-    }
-    var ctx = canvas.getContext('2d');
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
-    var projection = overview.projection = d3.geoEqualEarth().fitExtent([[2, 2], [w - 2, h - 2]], { type: 'Sphere' });
-    var radius = w > 400 ? 1.6 : 1.1;  // Points, smaller on a small map
-    var path = d3.geoPath(projection, ctx);
-
-    // Sea, graticule and land, in the basemap's greys
-    ctx.beginPath();
-    path({ type: 'Sphere' });
-    ctx.fillStyle = '#dde3e6';
-    ctx.fill();
-    ctx.beginPath();
-    path(d3.geoGraticule10());
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.06)';
-    ctx.lineWidth = 0.5;
-    ctx.stroke();
-    ctx.beginPath();
-    path(overview.land);
-    ctx.fillStyle = '#f4f4f2';
-    ctx.fill();
-    ctx.strokeStyle = '#c4c9cc';
-    ctx.stroke();
-
+// ---------- What the world overview (src/ui/overview.js) shows of the map: points
+// that pass the layer switches and filters, coloured as on the map, and satellite coverage
+function drawOverviewContent(ctx, projection, d3, width) {
+    var radius = width > 400 ? 1.6 : 1.1;  // Points, smaller on a small map
     var hidden = new Set(effectiveHidden());
     var m = METRICS[state.colourBy];
     var scale = m && d3.scaleLinear().domain(m.stops.map((s) => s[0])).range(m.stops.map((s) => s[1])).clamp(true);
@@ -7644,54 +7583,5 @@ function drawOverview() {
             ctx.fill();
         }
     }
-    ctx.globalAlpha = 1;
-
-    // The map's own view, as a frame, so it's clear where a click goes back from
-    ctx.beginPath();
-    var b = map.getBounds();
-    if (b.getEast() - b.getWest() < 300) {
-        path({ type: 'Polygon', coordinates: [[[b.getWest(), b.getSouth()], [b.getWest(), b.getNorth()], [b.getEast(), b.getNorth()],
-            [b.getEast(), b.getSouth()], [b.getWest(), b.getSouth()]]] });
-        ctx.strokeStyle = '#212529';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-    }
-    drawOverviewHover();
 }
 
-// Marks on the overview what the map's pointer is over: the coverage cell's outline,
-// when that's hovered, and a ring round the spot so it shows however small the cell
-function drawOverviewHover() {
-    if (!overview || !overview.projection) return;
-    var canvas = overview.hover, main = overview.canvas, dpr = window.devicePixelRatio || 1;
-    if (canvas.width !== main.width || canvas.height !== main.height) {
-        canvas.width = main.width;
-        canvas.height = main.height;
-    }
-    var ctx = canvas.getContext('2d');
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
-    if (!overviewHovered) return;
-    var projection = overview.projection;
-    var at = projection([((overviewHovered.lng + 540) % 360) - 180, overviewHovered.lat]);
-    if (!at) return;
-    // Black on a white halo, like the hovered cell on the map
-    var stroke = (draw) => {
-        [['#ffffff', 3.5], ['#000000', 1.5]].forEach(([colour, width]) => {
-            ctx.beginPath();
-            draw();
-            ctx.strokeStyle = colour;
-            ctx.lineWidth = width;
-            ctx.stroke();
-        });
-    };
-    var h3 = hoveredCell && hoveredCell.split('|').pop();
-    if (h3) {
-        var ring = cellRing(h3).map(([lon, lat]) => projection([Math.max(-180, Math.min(180, lon)), lat]));
-        stroke(() => {
-            ring.forEach((xy, i) => (i ? ctx.lineTo(...xy) : ctx.moveTo(...xy)));
-            ctx.closePath();
-        });
-    }
-    stroke(() => ctx.arc(at[0], at[1], 6, 0, 2 * Math.PI));
-}
