@@ -1,7 +1,7 @@
 // Weather radar. Each radar's latest lowest scan (ODIM HDF5, read by the decoder's
 // radar_scan) is drawn as an image around it, reprojected from range and azimuth
 // onto the map's Mercator grid. initRadar wires it to the page
-import { isDataLink } from '../../messages.js';
+import { isDataLink } from '../../messages/messages.js';
 
 let map = null;
 let deps = null;

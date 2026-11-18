@@ -10,16 +10,16 @@ import { noteCacheLinks } from './data/caches.js';
 import { DATA_LINKS_MAX, linksSeen, decodeHref, fetchTracked, rememberLinks, bufrSource, fetchData, bufrPart, isUtf8 } from './data/download.js';
 import { COLORS, OBS_CLASSES, METRICS, COLOURABLE, SATELLITE_LAYERS, ORIGIN_COLOURABLE, NO_VALUE_COLOR, SOURCE_COLORS } from './config.js';
 import { parseMessage, DISCIPLINES, FORMATS, isDataLink, isUpdate, formatOf, GATEWAY_TOPIC, GATEWAY_SATELLITE, GATEWAY_AIRCRAFT,
-    GATEWAY_UPPER_AIR, isSpaceBased, disciplineOf, topicClass, stationId, pointFor, wis2boxVersion } from './messages.js';
+    GATEWAY_UPPER_AIR, isSpaceBased, disciplineOf, topicClass, stationId, pointFor, wis2boxVersion } from './messages/messages.js';
 import { esc, darken, svgEl, knots } from './lib/util.js';
 import { distanceKm, segments, unwrap, convexHull, inOrNearRing, H3_RESOLUTION, H3_RESOLUTION_MAX, h3SampleDeg, getResolution, h3Cell, h3Neighbors, cellRing, cellsOutline } from './lib/geo.js';
-import { connectFastest, brokerState } from './mqtt.js';
-import { callDecoder, preloadDecoder, decoderReady, decoderGaveUp, onDecoderSettled } from './decoder.js';
+import { connectFastest, brokerState } from './messages/mqtt.js';
+import { callDecoder, preloadDecoder, decoderReady, decoderGaveUp, onDecoderSettled } from './data/decoder.js';
 import { SATELLITE_NAMES, satelliteOscarUrl, INSTRUMENT_NAMES, AMV_METHODS, PIXEL_TYPES, satelliteNamed } from './data/satellite/names.js';
 import { showSpectrum } from './data/satellite/spectrum.js';
 import { oceanTiles, renderOceanProfile, renderTSDiagram, openOceanProfile } from './data/ocean/profile.js';
 import { waveSpectrum, miniWaveSpectrum, renderWaveSpectrum, marineCompass } from './data/ocean/wavespec.js';
-import { createOverview } from './ui/overview.js';
+import { createOverview } from './lib/ui/overview.js';
 import { WIND_PROFILE_COLUMNS, openSounding, renderWindProfile, reportSite, showSoundingCharts, soundingTiles, soundingTime, windProfileColumns,
     windProfileLevels, windProfileTiles } from './plots/sounding.js';
 import { showForecast } from './plots/forecast.js';
@@ -32,7 +32,7 @@ import { DIAMOND_HALF, arrowSdf, squareSdf, diamondSdf } from './map/symbols.js'
 import { formatValue, formatLabel, formatBytes, timeAgo, titleCase, stationName, scaleLabel, formatMetric, highlightJson } from './lib/format.js';
 import { aircraftTrack, aircraftAltitude, aircraftTiles, trackRoute } from './data/aviation/aircraft.js';
 import { initAirports, queueAirports } from './data/aviation/airports.js';
-import { makeMinimizable, initKeyToggles, startKeyToggles, keyToggle, hiddenKeyRows, bindKeyToggles } from './ui/panels.js';
+import { makeMinimizable, initKeyToggles, startKeyToggles, keyToggle, hiddenKeyRows, bindKeyToggles } from './lib/ui/panels.js';
 
 // Map
 const MAX_POINTS = 100000;        // Oldest points are dropped beyond this...

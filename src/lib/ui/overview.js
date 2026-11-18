@@ -4,7 +4,7 @@
 // draws what's on the map (points, satellite coverage) through drawContent. A
 // click goes to that place on the map. The D3 pieces it uses, topojson-client and
 // the coastlines are a separate bundle, loaded as it starts.
-import { cellRing } from '../lib/geo.js';
+import { cellRing } from '../geo.js';
 
 const OVERVIEW_REFRESH_MS = 2000;
 

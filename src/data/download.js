@@ -2,7 +2,7 @@
 // notifications seen for it), fastest cache first (caches.js), then the copies
 // caches that didn't announce it are likely to have (guessedCopies); and what came
 // back: BUFR (bufrPart) or text (isText)
-import { isDataLink } from '../messages.js';
+import { isDataLink } from '../messages/messages.js';
 import { canDownload, noteTrying, noteLatency, noteFailed, downloadOrder } from './caches.js';
 
 export const DATA_LINKS_MAX = 20000;

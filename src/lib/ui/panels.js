@@ -1,6 +1,6 @@
 // The map's panels: minimizing part of one, and the key's rows that hide what
 // they stand for with a click
-import { esc } from '../lib/util.js';
+import { esc } from '../util.js';
 
 // A panel on the map with a button that minimizes part of it (what the CSS hides under
 // .map-key-minimized: the key's Style by, the connection status under the world map), as each viewer left it

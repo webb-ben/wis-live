@@ -3,7 +3,7 @@
 // tried fastest first, and one that turns out to block browser downloads goes to
 // the back. The fastest usable cache is published as state.cache.
 import { setState } from '../state.js';
-import { isDataLink } from '../messages.js';
+import { isDataLink } from '../messages/messages.js';
 
 const CACHES_MAX = 50;  // Hosts kept (there are a handful of global caches)
 const PROBE_MS = 8000;

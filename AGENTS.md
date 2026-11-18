@@ -22,9 +22,9 @@ src/state.js               The shared state: state.colourBy, colouredOnly, model
                            filters, filterModes, hiddenLayers; setState / notify / subscribe
 src/config.js              COLORS, OBS_CLASSES (kinds of observation), METRICS (Style by
                            measures, with their colour scales), the layer lists they colour
-src/messages.js            parseMessage and what a notification says: topicClass,
+src/messages/messages.js   parseMessage and what a notification says: topicClass,
                            disciplineOf, formatOf, GATEWAY_* headings, stationId, pointFor
-src/mqtt.js                connectFastest({ onMessage, onState }): races the Global Brokers
+src/messages/mqtt.js       connectFastest({ onMessage, onState }): races the Global Brokers
 src/data/caches.js         The global caches seen and how fast each answers: downloadOrder
                            (fastest first; hosts that blocked a browser download are skipped
                            for good), canDownload; download.js's fetchTracked reports each
@@ -53,7 +53,7 @@ src/data/ocean/wavespec.js Wave spectra (waveSpectrum): the polar plot in the in
 src/data/radar/radar.js    Weather radar scans drawn as images (initRadar, plotRadar)
 src/data/gts/synop.js      Text SYNOPs (FM 12/13) read into BUFR-style rows (parseSynopBulletin)
 src/data/alerts/cap.js     CAP warnings as a card, with their area on the map (renderCap)
-src/decoder.js             callDecoder(fn, ...args): Pyodide + pybufrkit in Web Workers
+src/data/decoder.js        callDecoder(fn, ...args): Pyodide + pybufrkit in Web Workers
                            (DECODE_PY); onDecoderSettled(fn) once it has started or failed
 src/lib/util.js            esc, darken, svgEl, knots
 src/lib/geo.js             distances, hulls, lines across ±180, H3 cells (h3Cell, cellRing)
@@ -62,10 +62,10 @@ src/plots/sounding.js      Skew-T, the sounding dialog, wind-profile barbs (draw
 src/plots/forecast.js      dynamical.org forecasts at a point, compared with the observation
 src/plots/citypage.js      Environment Canada citypage weather and its hourly chart
 src/map/symbols.js         The point symbols as signed distance fields (diamond, square, arrow)
-src/ui/overview.js         The Equal Earth world map in the bottom-right panel (D3 canvas;
+src/lib/ui/overview.js     The Equal Earth world map in the bottom-right panel (D3 canvas;
                            createOverview: sea, land, the view's frame, hover and selection
                            marks; the page draws the points and coverage via drawContent)
-src/ui/panels.js           Minimizing part of a map panel (makeMinimizable), and key rows
+src/lib/ui/panels.js       Minimizing part of a map panel (makeMinimizable), and key rows
                            that hide their layers with a click (keyToggle, hiddenKeyRows)
 src/style.css              All custom styles
 public/assets/py/pybufrkit-*.whl  Pure-Python wheel of pybufrkit loaded by Pyodide
@@ -87,8 +87,9 @@ reuse them; each page is an HTML file at the root plus its own entry module.
 **Move things out of `src/main.js`; always aim for a negative diff there.** New
 features go in their own module, in a folder by subject rather than at the top
 of `src/`: kinds of data under `src/data/` (`ocean/`, `aviation/`, `satellite/`,
-`radar/`, `gts/`, `alerts/`), charts in `src/plots/`, map pieces in `src/map/`,
-panels in `src/ui/`, shared helpers in `src/lib/`, with
+`radar/`, `gts/`, `alerts/`, and the decoder), notifications and the brokers in
+`src/messages/`, charts in `src/plots/`, map pieces in `src/map/`, shared helpers
+in `src/lib/` (panels in `src/lib/ui/`), with
 only the wiring (map layers, state, the popup hooks) left in `main.js`. When
 you change code in `main.js` that could live elsewhere, move it out at the
 same time, so each change leaves the file smaller than it found it.
@@ -171,7 +172,7 @@ bottom; the core comes first, roughly in this order:
    Keep all three in sync when adding a filter. Filters, styling, a shown
    dataset and the Global Replay (`?replay=2h`, `90m`, or a URL-encoded ISO time;
    it turns the layer on) are mirrored in the URL (`readFiltersFromUrl`/`writeFiltersToUrl`).
-6. **MQTT** (`src/mqtt.js`) — `connectFastest` races the brokers in `hosts`
+6. **MQTT** (`src/messages/mqtt.js`) — `connectFastest` races the brokers in `hosts`
    and keeps the first one that connects and subscribes to `origin/a/wis2/#`
    and `cache/a/wis2/#`; the page passes `onMessage` and `onState`. It stays
    on that broker (switching would drop messages) and times a round trip every
@@ -180,8 +181,8 @@ bottom; the core comes first, roughly in this order:
 7. **Message handling** — `onMessage` takes the parsed WIS2 notification
    (GeoJSON), skips `ignoredTopics`, reduces geometry to a point with `pointFor`
    (large areas are dropped), and builds a record. What a notification says
-   (`topicClass`, `formatOf`, `disciplineOf`, ...) is in `src/messages.js`.
-8. **BUFR decoding** (`src/decoder.js`) — `callDecoder` lazily starts Web
+   (`topicClass`, `formatOf`, `disciplineOf`, ...) is in `src/messages/messages.js`.
+8. **BUFR decoding** (`src/data/decoder.js`) — `callDecoder` lazily starts Web
    Workers (`DECODER_WORKER`, a classic worker built from a string) that load
    Pyodide, install `bitstring==3.1.9` and `six`, unpack the bundled wheel, and
    run the embedded `DECODE_PY`.
@@ -211,7 +212,7 @@ measured value (origin stations too, via `isColourable`), per-satellite layers, 
 merging, Global Replay, the Global Discovery Catalogue (Datasets tab: rows
 are kept sorted by when each dataset was last seen, via `sortDatasetRows`),
 what the Equal Earth world map shows (`drawOverviewContent`, which
-filters with `passesFilters` like the key; the map itself is `src/ui/overview.js`),
+filters with `passesFilters` like the key; the map itself is `src/lib/ui/overview.js`),
 satellite coverage (each swath file is packed into `swathFiles`
 and adds to running totals per H3 cell, not points; a report becomes a record only
 when clicked, via `swathRecord`. Cells are kept in grids: `globalGrid` at
