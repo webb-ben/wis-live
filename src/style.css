@@ -1489,6 +1489,13 @@
 }
 .legend-range-satellite {
   --accent-range: #9c36b5;  /* OBS_CLASSES.satellite */
+}
+/* In Style by (the satellite page), level with its other controls, not under a row,
+   and stacked as it is elsewhere (Style by's labels are otherwise rows, see .legend-colour) */
+.map-style .legend-range {
+  display: block;
+  margin: 4px 0 2px;
+  padding: 4px 0 0;
 }.legend-range-value {
   display: block;
   margin-bottom: 4px;

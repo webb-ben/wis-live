@@ -2,6 +2,7 @@
 // callDecoder(fn, ...args) runs one of the Python functions in DECODE_PY and
 // resolves with its (JSON) result; onDecoderSettled(fn) runs fn once the decoder
 // has started, or has failed to.
+import { SATELLITE_PAGE } from '../page.js';
 
 const PYODIDE_URL = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/';
 // Served from public/ at the site's root; the CDN copy is the same file in the repo
@@ -403,8 +404,10 @@ export function preloadDecoder() {
 // once it is ready itself.
 let filesDecoderReady = false;
 
+// The satellite page keeps one too: it has no station colouring to keep from waiting,
+// and a second copy of Python is the largest thing it would hold
 function roomyForTwoDecoders() {
-    return !window.matchMedia('(max-width: 600px)').matches
+    return !SATELLITE_PAGE && !window.matchMedia('(max-width: 600px)').matches
         && (navigator.deviceMemory || 8) >= 4 && (navigator.hardwareConcurrency || 4) >= 4;
 }
 

@@ -16,6 +16,7 @@ import { satelliteKey, satelliteName, addSatelliteRow, satelliteLink } from './r
 import { metricValues } from '../metrics.js';
 import { METRICS, SATELLITE_STYLE } from '../../config.js';
 import { state } from '../../state.js';
+import { SATELLITE_PAGE } from '../../page.js';
 import { isGateway, isSpaceRecord, linkDecoded, newId, records, addPoint, removePoint, MAX_SATELLITE_POINTS, countPlotted } from '../../map/points.js';
 import { seenLayers, hiddenLayers, effectiveHidden } from '../../map/layers.js';
 import { darken, esc } from '../../lib/util.js';
@@ -27,7 +28,8 @@ import { datasetId, showDatasetInPopup } from '../catalogue.js';
 import { plotRecord } from '../decodeQueue.js';
 import { showLegendRow, keyChanged } from '../../lib/ui/legend.js';
 import { showInfo, closeInfo, selectedMarker, selectOnOverview, keepPopupInView, openPopup, bindMetricTiles } from '../../lib/ui/popup.js';
-export const SWATH_MIN_REPORTS = 5;
+// Files with fewer reports are points; on the satellite page every file is coverage
+export const SWATH_MIN_REPORTS = SATELLITE_PAGE ? 1 : 5;
 export const SWATH_FILES_MAX = 3000;  // Files whose coverage is kept, oldest dropped first...
 export const SWATH_KEEP_MS = 12 * 3600e3;  // ...and none older than this
 export const SWATH_FLUSH_MS = 1000;
@@ -165,16 +167,39 @@ export function productKey(satellite, topic, metrics) {
 // large file's reports are further apart than a small one's of the same product; drawn
 // each at their own resolution they'd be a patchwork, so all go in at the finest, the
 // thinned ones filled in from their reports (swathMeans)
+// fileRes null: a file too small to say (one report), which takes its product's, or
+// LONE_REPORT_RES for a product not seen before
 const products = new Map();
+export const LONE_REPORT_RES = 3;
 export function productLayer(key, fileRes) {
     var product = products.get(key);
-    if (!product) products.set(key, product = { id: products.size + 1, res: fileRes });
-    else if (fileRes > product.res) {
+    if (!product) products.set(key, product = { id: products.size + 1, res: fileRes ?? LONE_REPORT_RES });
+    else if (fileRes != null && fileRes > product.res) {
         // A denser file: the product's files already in move to the finer layer
         product.res = fileRes;
-        for (var file of swathFiles.values()) if (file.product === key) moveFile(file, coverageKey(file.satellite, product.id, fileRes));
+        for (var file of swathFiles.values()) {
+            if (file.product === key && file.sat !== layerFor(file)) moveFile(file, layerFor(file));
+        }
     }
     return product;
+}
+
+// The layer a file is drawn in now. Styled by satellite, where a cell only says whose
+// coverage it is, all of a satellite's products are one layer at SATELLITE_STYLE_RES_MAX
+// (each file's footprint fills its cells whatever its reports' spacing), so they merge
+// rather than stack. Otherwise, its product's layer
+export function layerFor(file) {
+    if (state.colourBy === SATELLITE_STYLE) return coverageKey(file.satellite, 'all', SATELLITE_STYLE_RES_MAX);
+    var product = products.get(file.product);
+    return coverageKey(file.satellite, product.id, product.res);
+}
+
+// After Style by changes to or from Satellite: every file into the layer it's drawn in now
+export function relayerFiles() {
+    for (var file of swathFiles.values()) {
+        var layer = layerFor(file);
+        if (file.sat !== layer) moveFile(file, layer);
+    }
 }
 
 // Moves a file to another coverage layer, in every grid it's in
@@ -196,9 +221,14 @@ export function cellRes(layer, grid) {
 }
 
 // A cell's neighbours on this grid's resolution, ring by ring
+// (remembered for up to RINGS_KEPT cells, the ones most used lately: a zoomed-in grid
+// over a wide view has tens of thousands, and eighteen neighbours each add up)
+export const RINGS_KEPT = 20000;
 export function gridRings(grid, h3) {
     var rings = grid.rings.get(h3);
-    if (!rings) grid.rings.set(h3, rings = h3NeighborRings(h3, grid.ringCount));
+    if (rings) return rings;
+    if (grid.rings.size >= RINGS_KEPT) grid.rings.delete(grid.rings.keys().next().value);
+    grid.rings.set(h3, rings = h3NeighborRings(h3, grid.ringCount));
     return rings;
 }
 
@@ -241,8 +271,9 @@ export function addSwathFile(job, reports) {
         return lon;
     };
     var ring = convexHull(reports.map((r) => [unwrapLon(r.coords[0]), r.coords[1]]));
-    // Reports in a line have no area to cover
-    if (!ring) { reports.forEach((r) => plotRecord(job, r)); return; }
+    // Reports in a line have no area to cover: points, except on the satellite page, where
+    // they're cells all the same, only those its reports are in (see buildSwathCells)
+    if (!ring && !SATELLITE_PAGE) { reports.forEach((r) => plotRecord(job, r)); return; }
     var old = swathFiles.get(first.fileKey);
     var oldShares = old && removeSwathFile(old);  // An update replaces it
     var values = reports.map(metricValues);
@@ -253,8 +284,10 @@ export function addSwathFile(job, reports) {
     // Its product's layer, at the finest resolution the product's files allow (this one
     // finer than those before moves them, see productLayer)
     var product = productKey(satellite, first.topic, metrics);
-    var layer = productLayer(product, resolutionForSpacing(reportSpacingKm(coords)));
-    var sat = coverageKey(satellite, layer.id, layer.res);
+    var spacing = reportSpacingKm(coords);  // None for one report (or all at one spot)
+    var layer = productLayer(product, isFinite(spacing) ? resolutionForSpacing(spacing) : null);
+    var sat = state.colourBy === SATELLITE_STYLE ? coverageKey(satellite, 'all', SATELLITE_STYLE_RES_MAX)
+        : coverageKey(satellite, layer.id, layer.res);
     var file = {
         key: first.fileKey,
         sat,  // Its coverage layer (coverageKey), which says its resolution (cellRes)
@@ -281,8 +314,8 @@ export function addSwathFile(job, reports) {
         means: {},
         fillMeans: {},  // The means that may fill its empty cells (see below)
         ring,  // Its footprint
-        cells: {},  // grid key -> cell id -> what this file adds to it (the global grid's only, see fileShare)
-        holes: {},  // finer grid key -> the cell ids it has hole shares in
+        cells: {},  // Kept shares, grid key -> cell id -> what it adds: none now (see fileShare)
+        holes: {},  // grid key -> the cell ids it has hole shares in
         points: null,
     };
     // The file's own means fill cells it covers that hold none of its reports, but only
@@ -316,9 +349,8 @@ export function addSwathFile(job, reports) {
     keyChanged();
 }
 
-// A file's share of a grid: cell id -> what it adds there. The global grid keeps every
-// file's share (file.cells); a finer grid, built only for the view, would hold one for
-// every file at up to resolution 5, so there it's built again when wanted (taking the
+// A file's share of a grid: cell id -> what it adds there. Shares aren't kept (see
+// addToGrid; file.cells stays empty), so one is built again when wanted (taking the
 // file off, holes round it, a cell's summary) from the same reports, which gives the
 // same share. Only its hole shares are noted (file.holes), as those are added later
 export function fileShare(file, grid) {
@@ -329,10 +361,10 @@ export function fileShare(file, grid) {
     return share;
 }
 
-// Adds a file to a grid, and keeps its share only where the grid keeps them
+// Adds a file to a grid. Its share isn't kept, in any grid: thousands of files' shares
+// were most of what coverage held, and one is built again from the file when wanted
 export function addToGrid(file, grid) {
     var share = buildSwathCells(file, grid);
-    if (grid === globalGrid) file.cells[grid.key] = share;
     grid.files.add(file);
     applySwathShare(file, share, 1, grid);
     return share;
@@ -353,6 +385,14 @@ export function buildSwathCells(file, grid) {
         return cells.get(id);
     };
     var ring = file.ring, spacing = h3SampleDeg(res);
+    // A footprint's cells, filled from the file's means: none for a file whose reports
+    // have no area (one, or in a line), which has only the cells its reports are in
+    if (ring) fillFootprint(file, grid, ring, spacing, cellFor);
+    reportCells(file, grid, cellFor);
+    return cells;
+}
+
+function fillFootprint(file, grid, ring, spacing, cellFor) {
     var xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
     var xMin = Math.min(...xs) - spacing, xMax = Math.max(...xs) + spacing;
     var yMin = Math.max(-90, Math.min(...ys) - spacing), yMax = Math.min(90, Math.max(...ys) + spacing);
@@ -373,6 +413,10 @@ export function buildSwathCells(file, grid) {
             }
         }
     }
+}
+
+// The cells a file's reports fall in, with their totals
+function reportCells(file, grid, cellFor) {
     for (var i = 0; i < file.n; i++) {
         if (!inBounds(file.coords[2 * i], file.coords[2 * i + 1], grid.bounds)) continue;
         var cell = cellFor(file.coords[2 * i], file.coords[2 * i + 1]);
@@ -393,7 +437,6 @@ export function buildSwathCells(file, grid) {
             cell.windY += speed * Math.cos(radians);
         }
     }
-    return cells;
 }
 
 // Adds a file's share to a grid's cells (sign 1), or takes it off again (-1)
@@ -687,6 +730,7 @@ export function swathFeature(cell, grid = shownGrid()) {
             outline: darken(file.template.color),
             born,
             latest,
+            res: getResolution(cell.h3),  // Finer layers are drawn over coarser ones (see swaths-fill)
             ...props,
         },
     };

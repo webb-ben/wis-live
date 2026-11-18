@@ -6,7 +6,7 @@ import { state, setState } from '../state.js';
 import { layerOf, records } from './points.js';
 import { topicClass } from '../messages/messages.js';
 import { map } from './map.js';
-import { swathOpacity, swathOpacityKey, syncOpacitySlider, swathPointsShown, swathFiles, syncSwathGrid } from '../data/satellite/coverage.js';
+import { swathOpacity, swathOpacityKey, syncOpacitySlider, swathPointsShown, swathFiles, syncSwathGrid, relayerFiles } from '../data/satellite/coverage.js';
 import { darken } from '../lib/util.js';
 import { satelliteMatch, syncSatelliteRows } from '../data/satellite/rows.js';
 import { updateModelField } from './modelFields.js';
@@ -76,16 +76,17 @@ export function paintAge() {
     // The coverage slider sets the even shading, and scales the cloud-amount range with
     // it (clear 0.05 to overcast 0.8 at 30%). Coverage doesn't fade with age: the slider
     // alone sets how strong it is
-    // The satellite page's coverage is opaque, whatever the style: where passes overlap,
-    // the latest observed (drawn on top) is the one seen, rather than a blend of them
-    var level = SATELLITE_PAGE ? 1 : swathOpacity[swathOpacityKey()];
+    // The satellite page's coverage starts opaque (its slider, in Style by, from 100%):
+    // where passes overlap, the one drawn on top is the one seen, rather than a blend.
+    // Its even shading stays even for cloud amount too
+    var level = swathOpacity[swathOpacityKey()];
     var cloud = state.colourBy !== 'cloudAmount' || SATELLITE_PAGE ? level
         : ['case', ['has', 'm_cloudAmount'], ['min', 1, ['*', level / 0.3,
             ['interpolate', ['linear'], ['get', 'm_cloudAmount'], 0, 0.05, 100, 0.8]]], level];
     map.setPaintProperty('swaths-fill', 'fill-opacity', cloud);
     // The selected cell: a little stronger than the coverage so it stands out, never solid
-    // (on the satellite page, as opaque as the rest: its white edge marks it)
-    map.setPaintProperty('swath-lift', 'fill-opacity', SATELLITE_PAGE ? 1 : Math.min(0.8, level + 0.2));
+    // (on the satellite page, as strong as the rest: its white edge marks it)
+    map.setPaintProperty('swath-lift', 'fill-opacity', SATELLITE_PAGE ? level : Math.min(0.8, level + 0.2));
     map.setPaintProperty('tracks', 'line-opacity', ['interpolate', ['linear'], ['-', Date.now(), ['get', 'born']], 0, 0.9, FADE_MS, 0.35]);
 }
 
@@ -95,8 +96,11 @@ export function restyle() {
 }
 
 export function setColourBy(key, legend) {
+    var wasBySatellite = state.colourBy === SATELLITE_STYLE;
     setState({ colourBy: key });
-    // Styled by satellite, coverage is no finer than resolution 3 (see gridResolution)
+    // Styled by satellite, each satellite's products merge into one layer (layerFor), no
+    // finer than resolution 3 (gridResolution)
+    if ((key === SATELLITE_STYLE) !== wasBySatellite) relayerFiles();
     syncSwathGrid();
     var m = METRICS[key];
     // What the colours mean, as text, for the minimized key (which hides Style by)

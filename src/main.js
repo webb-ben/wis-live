@@ -41,6 +41,7 @@ import { makeMinimizable, initKeyToggles, startKeyToggles, keyToggle, hiddenKeyR
 import { externalStation, twinKind, twinsNear, TWIN_LAYERS } from './map/twins.js';
 import { TRACK_REBUILD_MS, rebuildTracks, shipTrackLayers, trackKey, markTracksDirty } from './map/tracks.js';
 import { tickPulses } from './map/pulses.js';
+import { startArrowMotion } from './map/arrowMotion.js';
 import { satelliteColours, satelliteLabel, satelliteMatch, syncSatelliteRows, satelliteKey, satelliteName, addSatelliteRow, satelliteLink } from './data/satellite/rows.js';
 import { metricValues } from './data/metrics.js';
 import { swathsBuilt, SWATH_FLUSH_MS, flushSwaths } from './data/satellite/coverage.js';
@@ -297,6 +298,8 @@ map.on('load', () => {
     }, 'points');
     paintAge();
     setInterval(paintAge, 30 * 1000);
+    // Wind arrows drift a little the way they point (src/map/arrowMotion.js)
+    startArrowMotion();
     applyMapFilter();
     // Open coloured by observation type, or as the link says (style=temp and so on), near the visitor
     if (stylePanel) {

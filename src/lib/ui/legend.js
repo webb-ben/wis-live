@@ -82,8 +82,8 @@ export class LegendControl {
         range.addEventListener('input', showWindow);
         range.addEventListener('change', () => setReplayWindow(minutesShown()));
 
-        // How see-through satellite coverage is, under its row. The satellite page has none:
-        // its coverage is opaque (see paintAge)
+        // How see-through satellite coverage is, under its row. On the satellite page, whose
+        // sidebar is hidden, it's in Style by instead (see buildStylePanel)
         var coverageToggle = container.querySelector('.legend-toggle[data-layer="sat-coverage"]');
         if (coverageToggle && !SATELLITE_PAGE) coverageToggle.after(buildOpacitySlider());
 
@@ -309,6 +309,9 @@ export function buildStylePanel() {
             </label>
             <div class="legend-model-info" hidden><img alt="Model field legend"></div>
         </div>`;
+    // The satellite page sets how see-through its coverage is here, under the scale (it
+    // starts opaque, see paintAge)
+    if (SATELLITE_PAGE) stylePanel.querySelector('.key-options').before(buildOpacitySlider());
     stylePanel.querySelector('select').addEventListener('change', (e) => setColourBy(e.target.value, stylePanel));
     stylePanel.querySelector('.legend-coloured-only input').addEventListener('change', (e) => {
         setState({ colouredOnly: e.target.checked });

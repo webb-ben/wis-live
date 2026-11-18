@@ -13,7 +13,7 @@ import { satelliteKey, addSatelliteRow } from '../data/satellite/rows.js';
 import { metricValues } from '../data/metrics.js';
 import { indexTwin, unindexTwin } from './twins.js';
 import { showLegendRow } from '../lib/ui/legend.js';
-import { PAGE_CLASSES, classOnPage } from '../page.js';
+import { PAGE_CLASSES, classOnPage, SATELLITE_PAGE } from '../page.js';
 
 export const records = new Map();  // id -> record for every point on the map
 export const byDataId = new Map();  // data_id -> record, so each observation is drawn once
@@ -52,7 +52,10 @@ export function decoding(kind) {
 
 export const MAX_POINTS = 100000;        // Oldest points are dropped beyond this...
 export const MAX_DECODED_POINTS = 30000;  // ...with reports decoded from files capped separately so they can't crowd out the rest,
-export const MAX_SATELLITE_POINTS = 100000;  // ...and satellite points apart again: small files, and swaths while coverage is off (see SWATH_FILES_MAX)
+// ...and satellite points apart again: small files, and swaths while coverage is off (see
+// SWATH_FILES_MAX). The satellite page always draws swaths as coverage, so its points are
+// only the small files, and fewer are kept
+export const MAX_SATELLITE_POINTS = SATELLITE_PAGE ? 20000 : 100000;
 export const pools = { wis2: new Map(), decoded: new Map(), satellite: new Map() };  // Same records, in arrival order per cap
 const POOL_CAPS = { wis2: MAX_POINTS, decoded: MAX_DECODED_POINTS, satellite: MAX_SATELLITE_POINTS };
 

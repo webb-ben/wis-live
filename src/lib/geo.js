@@ -147,7 +147,16 @@ export function h3NeighborRings(cell, k) {
 // A cell's outline as [lon, lat], longitudes carried past ±180 where it crosses
 // so it isn't drawn the whole way round the globe
 export function cellRing(cell) {
-    return unwrap(cellToBoundary(cell, true));
+    var ring = unwrap(cellToBoundary(cell, true));
+    // A cell round a pole goes the whole way round it, so unwrapped its ring ends 360°
+    // from where it began; closed straight back it would cut a wedge out. Closed along
+    // the pole instead, it's drawn whole
+    var first = ring[0], last = ring[ring.length - 1];
+    if (Math.abs(last[0] - first[0]) > 180) {
+        var pole = ring.reduce((sum, [, lat]) => sum + lat, 0) > 0 ? 90 : -90;
+        ring.push([last[0], pole], [first[0], pole], first);
+    }
+    return ring;
 }
 
 // The border of a set of cells (a Set of H3 indexes), as short [lon, lat] segments: each

@@ -40,7 +40,11 @@ export function onMessage(topic, feature, replay) {
     revealGatewayRows(topic, feature);
     // Replayed messages are only drawn: decoding a past hour of files would swamp the decoder
     var kind = !replay && Object.keys(DECODE_LAYERS).find((key) => DECODE_LAYERS[key](topic, feature));
-    if (kind && decodeEnabled.has(kind)) queueDecode(kind, topic, feature);
+    if (kind && decodeEnabled.has(kind)) {
+        queueDecode(kind, topic, feature);
+        // The satellite page draws a decoded file as coverage, not its notification as a point
+        if (SATELLITE_PAGE) return null;
+    }
 
     if (ignoredTopics.some((t) => topic.includes(t))) {
         return; // Ignore this topic

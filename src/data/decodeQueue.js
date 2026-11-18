@@ -17,6 +17,7 @@ import { aircraftAltitude } from './aviation/aircraft.js';
 import { applyMapFilter } from '../map/filter.js';
 import { attachSpectrum } from './stationDecode.js';
 import { showLegendRow } from '../lib/ui/legend.js';
+import { SATELLITE_PAGE } from '../page.js';
 
 
 export const SATELLITE_ROWS_MAX = 200;  // Decoded values kept per satellite report (IASI has thousands of channels)
@@ -60,9 +61,11 @@ export const DECODE_LAYERS = {
     radar: (topic, feature) => topic.startsWith('cache/') && /radar/i.test(topic) && formatOf(feature) === 'hdf'
         && !radarNoReflectivity.has(radarHeading(feature))
         && !(feature.links || []).some((l) => isDataLink(l) && (l.length > RADAR_FILE_MAX_BYTES || /vrad/i.test(l.href))),
-    // Any space-based file not drawn from its notification: no geometry, or a swath too large to plot
+    // Any space-based file not drawn from its notification: no geometry, or a swath too
+    // large to plot. On the satellite page, where everything is coverage, every one
+    // (its notification isn't drawn as a point then, see onMessage)
     'cache-satellite': (topic, feature) => topic.startsWith('cache/') && !GATEWAY_TOPIC.test(topic) && isSpaceBased(topic)
-        && !(feature.geometry && feature.geometry.type && pointFor(feature.geometry)) && !NOT_BUFR.includes(formatOf(feature))
+        && (SATELLITE_PAGE || !(feature.geometry && feature.geometry.type && pointFor(feature.geometry))) && !NOT_BUFR.includes(formatOf(feature))
         && !(feature.links || []).some((l) => isDataLink(l) && l.length > SATELLITE_FILE_MAX_BYTES),
 };
 

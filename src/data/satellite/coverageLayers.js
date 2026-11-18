@@ -16,10 +16,15 @@ export function addCoverageLayers({ pointLayers, nearestPoint }) {
     // tolerance 0: MapLibre's default simplification cuts corners off cells this small
     // at low zooms, which shows as a clipped outline on the selected or hovered cell
     map.addSource('swaths', { type: 'geojson', data: empty, tolerance: 0 });
-    // No antialiasing, so neighbouring cells meet without hairline seams. Where passes
-    // overlap, the latest observed is drawn on top (on the satellite page, where coverage
-    // is opaque, it's the one seen; see paintAge)
-    map.addLayer({ id: 'swaths-fill', type: 'fill', source: 'swaths', layout: { 'fill-sort-key': ['get', 'latest'] },
+    // No antialiasing, so neighbouring cells meet without hairline seams. Where coverage
+    // overlaps, the finer layer is drawn on top, so the most detailed product shows and a
+    // coarser one only fills in round it: two products of one measure (another instrument
+    // or channel) can differ widely, so they're never averaged together. Among layers of
+    // one resolution, the latest observed is on top. On the satellite page, where coverage
+    // is opaque (see paintAge), the one on top is the one seen. (Resolution in the
+    // ten-thousand-billions, past any time in ms, then the time)
+    map.addLayer({ id: 'swaths-fill', type: 'fill', source: 'swaths',
+        layout: { 'fill-sort-key': ['+', ['*', ['get', 'res'], 1e13], ['get', 'latest']] },
         paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.3, 'fill-antialias': false } });
     map.addLayer({ id: 'swath-arrows', type: 'symbol', source: 'swaths', filter: ['boolean', false],
         layout: {
