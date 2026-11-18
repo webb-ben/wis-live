@@ -1,8 +1,8 @@
 // Aircraft reports (AMDAR and similar): their altitude, route and phase of flight,
 // and each aircraft's track drawn in the air, as bands at its altitude with chevrons
 // along the way and an arrowhead at its latest report
-import { distanceKm, segments, unwrap } from '../lib/geo.js';
-import { esc } from '../lib/util.js';
+import { distanceKm, segments, unwrap } from '../../lib/geo.js';
+import { esc } from '../../lib/util.js';
 
 const TRACK_MAX_GAP_MS = 90 * 60e3;
 const AIRCRAFT_MAX_KMH = 1300;           // Faster than this means a mixed-up identifier

@@ -3,7 +3,7 @@
 // [pressure dbar or depth m, temperature °C, salinity, part, temperature flag,
 //  salinity flag, { descriptor: [value, flag] }]. Shown as temperature and salinity
 // against depth, each biogeochemical variable beside them, and a T–S diagram.
-import { svgEl, esc } from '../lib/util.js';
+import { svgEl, esc } from '../../lib/util.js';
 
 // GTSPP quality flags (033050): 3 probably bad, 4 bad. 8 (interpolated) and the rest are kept
 const isBad = (flag) => flag === 3 || flag === 4;

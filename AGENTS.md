@@ -34,24 +34,34 @@ src/data/download.js       Downloading a notification's file (fetchData): every 
                            copy (rememberLinks), fastest first, then the copies caches
                            that didn't announce it likely have (guessedCopies); bufrSource,
                            fetchTracked, decodeHref; bufrPart / isText on what came back
-src/aviation/aircraft.js   Aircraft reports: altitude, route and flight-phase tiles, and
-                           each aircraft's track as shapes in the air (aircraftTrack)
-src/aviation/airports.js   Airport METARs from the Iowa Environmental Mesonet, a network
-                           at a time (initAirports, queueAirports)
-src/decoder.js             callDecoder(fn, ...args): Pyodide + pybufrkit in Web Workers
-                           (DECODE_PY); onDecoderSettled(fn) once it has started or failed
-src/lib/util.js            esc, darken, svgEl, knots
-src/lib/geo.js             distances, hulls, lines across ±180, H3 cells (h3Cell, cellRing)
-src/satellite/names.js     satellite and instrument names from BUFR code tables
-src/satellite/spectrum.js  CrIS/IASI infrared spectra (showSpectrum)
-src/ocean/profile.js       Ocean profiles (Argo and BGC floats, XBT/CTD, gliders): T, S and
+src/data/reports.js        What a decoded report is: reportClass (its GTS sublayer),
+                           reportId, reportTime
+src/data/aviation/aircraft.js  Aircraft reports: altitude, route and flight-phase tiles,
+                           and each aircraft's track as shapes in the air (aircraftTrack)
+src/data/aviation/airports.js  Airport METARs from the Iowa Environmental Mesonet, a
+                           network at a time (initAirports, queueAirports)
+src/data/satellite/names.js  satellite and instrument names from BUFR code tables
+src/data/satellite/spectrum.js  CrIS/IASI infrared spectra (showSpectrum)
+src/data/ocean/profile.js  Ocean profiles (Argo and BGC floats, XBT/CTD, gliders): T, S and
                            BGC against depth, T–S diagram with σt, tiles, expanded view;
                            levels come from _ocean in DECODE_PY (decode_bufr's 'ocean')
-src/marine/wavespec.js     Wave spectra (waveSpectrum): the polar plot in the info panel
+src/data/ocean/wavespec.js Wave spectra (waveSpectrum): the polar plot in the info panel
                            with wind and wave arrows (renderWaveSpectrum), the small one
                            drawn on the map when styled by wave spectrum (miniWaveSpectrum),
                            and the sea-state compass (marineCompass). The map style that
                            uses it (WAVE_STYLE, ?style=waves) isn't in Style by yet
+src/data/radar/radar.js    Weather radar scans drawn as images (initRadar, plotRadar)
+src/data/gts/synop.js      Text SYNOPs (FM 12/13) read into BUFR-style rows (parseSynopBulletin)
+src/data/alerts/cap.js     CAP warnings as a card, with their area on the map (renderCap)
+src/decoder.js             callDecoder(fn, ...args): Pyodide + pybufrkit in Web Workers
+                           (DECODE_PY); onDecoderSettled(fn) once it has started or failed
+src/lib/util.js            esc, darken, svgEl, knots
+src/lib/geo.js             distances, hulls, lines across ±180, H3 cells (h3Cell, cellRing)
+src/lib/format.js          formatValue, formatLabel, timeAgo, stationName, highlightJson...
+src/plots/sounding.js      Skew-T, the sounding dialog, wind-profile barbs (drawBarb)
+src/plots/forecast.js      dynamical.org forecasts at a point, compared with the observation
+src/plots/citypage.js      Environment Canada citypage weather and its hourly chart
+src/map/symbols.js         The point symbols as signed distance fields (diamond, square, arrow)
 src/ui/overview.js         The Equal Earth world map in the bottom-right panel (D3 canvas;
                            createOverview: sea, land, the view's frame, hover and selection
                            marks; the page draws the points and coverage via drawContent)
@@ -75,8 +85,10 @@ map, UI) so further pages, such as one for satellites or an MQTT explorer, can
 reuse them; each page is an HTML file at the root plus its own entry module.
 
 **Move things out of `src/main.js`; always aim for a negative diff there.** New
-features go in their own module, in a folder by subject (`src/ocean/`,
-`src/marine/`, `src/aviation/`, `src/data/`...) rather than at the top of `src/`, with
+features go in their own module, in a folder by subject rather than at the top
+of `src/`: kinds of data under `src/data/` (`ocean/`, `aviation/`, `satellite/`,
+`radar/`, `gts/`, `alerts/`), charts in `src/plots/`, map pieces in `src/map/`,
+panels in `src/ui/`, shared helpers in `src/lib/`, with
 only the wiring (map layers, state, the popup hooks) left in `main.js`. When
 you change code in `main.js` that could live elsewhere, move it out at the
 same time, so each change leaves the file smaller than it found it.

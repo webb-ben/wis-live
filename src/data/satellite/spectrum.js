@@ -1,7 +1,7 @@
 // Infrared spectra from hyperspectral sounders (CrIS, IASI): each channel's
 // radiance as a brightness temperature against wavenumber, so the CO₂, ozone and
 // water-vapour bands show at a glance.
-import { svgEl } from '../lib/util.js';
+import { svgEl } from '../../lib/util.js';
 export const PLANCK_C1 = 1.191042e-5;  // mW m-2 sr-1 (cm-1)-4
 export const PLANCK_C2 = 1.4387752;    // K cm
 export const IASI_WAVENUMBERS = [645, 0.25];  // cm-1 of channel 1, and the spacing (IASI carries no band edges)

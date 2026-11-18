@@ -1,7 +1,7 @@
 // Wave spectra from buoy and ship reports (022080 bands, 022069 energy, and
 // their directions), drawn as a polar plot for the info panel and small for
 // the map, and the sea-state compass for reports without one
-import { svgEl } from '../lib/util.js';
+import { svgEl } from '../../lib/util.js';
 
 // Directional wave spectrum: one entry per frequency band with its energy
 // density (022069) and the direction the waves come from, from the first-order
