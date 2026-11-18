@@ -652,6 +652,34 @@
 .ocean-ts {
   margin-bottom: 6px;
 }
+/* The expanded view: the depth profiles and the T–S diagram side by side (or one
+   above the other, ocean-stacked, when the window is too narrow), the table below */
+.ocean-expanded {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 12px 20px;
+  justify-content: center;
+}
+.ocean-expanded.ocean-stacked {
+  grid-template-columns: auto;
+}
+.ocean-expanded .pp-section {
+  margin-top: 0;
+}
+.ocean-wide {
+  grid-column: 1 / -1;
+}
+/* The popup's graphs under one heading, with the button that expands them all */
+.ocean-graphs-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 10px 0 4px;
+}
+.ocean-graphs-head .pp-section {
+  margin: 0;
+}
 .ocean-line {
   fill: none;
   stroke-width: 1.5;

@@ -113,7 +113,9 @@ export function oceanTiles(ocean, values) {
 
 // Temperature, salinity and each biogeochemical variable against depth, side by side
 // on one depth axis, as many abreast as the width has room for (at least PANEL_MIN_W
-// each) and the rest in further charts below. A hover line reads off every panel
+// each, or opts.perRow) and the rest in further charts below. opts.only: 'physical'
+// (temperature and salinity) or 'bgc' (the rest). A hover line reads off every panel.
+// Returns whether anything was drawn
 const PANEL_MIN_W = 110;
 export function renderOceanProfile(container, ocean, opts) {
     var parts = partsOf(ocean);
@@ -121,15 +123,25 @@ export function renderOceanProfile(container, ocean, opts) {
         { label: 'Temperature', unit: '°C', colour: '#e41a1c', get: temperatureOf },
         { label: 'Salinity', unit: 'psu', colour: '#1f4fb4', get: salinityOf },
         ...extrasOf(ocean).map((x) => ({ label: x.label, unit: x.unit, colour: x.colour, get: extraOf(x.id), extra: true })),
-    ].map((p) => ({ ...p, lines: (p.extra ? [null] : parts).map((part) => ({ part, points: series(ocean.levels, part, p.get) })) }))
+    ].filter((p) => !opts.only || (opts.only === 'bgc') === !!p.extra)
+        .map((p) => ({ ...p, lines: (p.extra ? [null] : parts).map((part) => ({ part, points: series(ocean.levels, part, p.get) })) }))
         .filter((p) => p.lines.some((l) => l.points.length));
-    if (!panels.length) return;
-    var perRow = Math.max(1, Math.floor((opts.width - 48) / PANEL_MIN_W));
+    if (!panels.length) {
+        container.replaceChildren();
+        return false;
+    }
+    var perRow = opts.perRow || Math.max(1, Math.floor((opts.width - 48) / PANEL_MIN_W));
     var charts = [];
     for (var i = 0; i < panels.length; i += perRow) {
         charts.push(profileChart(ocean, panels.slice(i, i + perRow), parts[0] ?? 0, opts));
     }
     container.replaceChildren(...charts);
+    return true;
+}
+
+// Whether the profile has biogeochemical values to draw
+export function hasBgc(ocean) {
+    return extrasOf(ocean).length > 0;
 }
 
 function profileChart(ocean, panels, main, opts) {
@@ -363,7 +375,12 @@ export function oceanTable(ocean) {
     </table>`;
 }
 
-// The expanded view: the profile and T–S diagram at full size, and the table
+// The expanded view: everything measured against depth (temperature, salinity and
+// each biogeochemical variable) in one row on one depth axis, so a feature lines up
+// across all of them; the T–S diagram beside it where there's room, else below; then
+// the table at standard depths
+const EXPANDED_PANEL_MIN_W = 120;
+const TS_W = 440;
 export function openOceanProfile(ocean, label, subtitle) {
     var dialog = document.querySelector('.sounding-dialog');
     if (!dialog) {
@@ -380,19 +397,37 @@ export function openOceanProfile(ocean, label, subtitle) {
             </div>
             <button type="button" class="btn-close" aria-label="Close"></button>
         </div>
-        <div class="sounding-body">
-            <div class="sounding-pair">
+        <div class="ocean-expanded">
+            <section>
+                <div class="pp-section">With ${ocean.unit === 'dbar' ? 'pressure' : 'depth'}</div>
                 <div class="ocean-big-profile"></div>
+            </section>
+            <section>
+                <div class="pp-section">T–S diagram</div>
                 <div class="ocean-big-ts"></div>
-            </div>
-            ${oceanTable(ocean)}
+            </section>
+            <section class="ocean-wide">
+                <div class="pp-section">At standard ${ocean.unit === 'dbar' ? 'pressures' : 'depths'}</div>
+                ${oceanTable(ocean)}
+            </section>
         </div>`;
     dialog.querySelector('strong').textContent = label;
     dialog.querySelector('.pp-status').textContent = subtitle;
     dialog.querySelector('.btn-close').addEventListener('click', () => dialog.close());
-    var room = window.innerWidth - 48;
-    var width = room >= 800 ? Math.min(560, (room - 16) / 2) : Math.min(520, room);
-    renderOceanProfile(dialog.querySelector('.ocean-big-profile'), ocean, { width, height: Math.round(width * 1.15) });
-    renderTSDiagram(dialog.querySelector('.ocean-big-ts'), ocean, { width, height: Math.round(width * 0.9) });
+    var room = Math.min(window.innerWidth - 48, 1360);
+    var panels = 2 + extrasOf(ocean).length;
+    var gap = 20;
+    // Beside the T–S diagram if every panel still gets its minimum width there; else the
+    // profile takes the whole width, and wraps only if even that is too narrow
+    var beside = room - TS_W - gap - 48 >= panels * EXPANDED_PANEL_MIN_W;
+    var profileW = beside ? room - TS_W - gap : room;
+    var perRow = Math.max(1, Math.min(panels, Math.floor((profileW - 48) / EXPANDED_PANEL_MIN_W)));
+    var height = Math.round(Math.min(560, window.innerHeight * 0.62));
+    renderOceanProfile(dialog.querySelector('.ocean-big-profile'), ocean, { width: profileW, height, perRow });
+    var tsW = beside ? TS_W : Math.min(560, room);
+    if (!renderTSDiagram(dialog.querySelector('.ocean-big-ts'), ocean, { width: tsW, height: beside ? height : Math.round(tsW * 0.8) })) {
+        dialog.querySelector('.ocean-big-ts').closest('section').remove();
+    }
+    dialog.querySelector('.ocean-expanded').classList.toggle('ocean-stacked', !beside);
     dialog.showModal();
 }

@@ -2263,11 +2263,17 @@ function renderDecoded(out, title, result) {
         ${winds ? '<div class="wind-profile"></div>' : ''}
         ${tiles.length ? `<div class="pp-tiles">${tiles.join('')}</div>` : ''}
         ${ocean ? `
-        <div class="pp-section">Profile</div>
-        <div class="ocean-profile"></div>
-        <div class="pp-section">Temperature and salinity</div>
-        <div class="ocean-ts"></div>
-        <button type="button" class="btn btn-sm btn-outline-secondary sounding-expand">Expand profile</button>` : ''}
+        <div class="ocean-graphs">
+            <div class="ocean-graphs-head">
+                <div class="pp-section">Profile</div>
+                <button type="button" class="btn btn-sm btn-outline-secondary ocean-expand">Expand graphs</button>
+            </div>
+            <div class="ocean-profile"></div>
+            <div class="pp-section ocean-bgc-head">Biogeochemistry</div>
+            <div class="ocean-bgc"></div>
+            <div class="pp-section ocean-ts-head">T–S diagram</div>
+            <div class="ocean-ts"></div>
+        </div>` : ''}
         ${spectrum ? '<div class="pp-section">Infrared spectrum</div><div class="pp-spectrum"></div>' : ''}
         ${marine ? `
         <div class="pp-section">${satellite ? 'Sea state from space' : marine.ship ? 'Sea state and ship' : 'Sea state'}</div>
@@ -2298,15 +2304,16 @@ function renderDecoded(out, title, result) {
     }
     if (winds) showWindProfiles(out.querySelector('.wind-profile'), result);
     if (ocean) {
-        renderOceanProfile(out.querySelector('.ocean-profile'), ocean, { width: 300, height: 340 });
-        // No T–S diagram without both measured (an XBT has temperature only)
-        if (!renderTSDiagram(out.querySelector('.ocean-ts'), ocean, { width: 300, height: 240 })) {
-            out.querySelector('.ocean-ts').previousElementSibling.remove();
-            out.querySelector('.ocean-ts').remove();
-        }
+        // Temperature and salinity, then any biogeochemical variables, then the T–S diagram;
+        // a part with nothing to draw goes with its heading (an XBT has temperature only)
+        var graphs = out.querySelector('.ocean-graphs');
+        var drop = (cls) => graphs.querySelectorAll(`.${cls}, .${cls}-head`).forEach((el) => el.remove());
+        renderOceanProfile(graphs.querySelector('.ocean-profile'), ocean, { width: 300, height: 340, only: 'physical' });
+        if (!renderOceanProfile(graphs.querySelector('.ocean-bgc'), ocean, { width: 300, height: 300, only: 'bgc' })) drop('ocean-bgc');
+        if (!renderTSDiagram(graphs.querySelector('.ocean-ts'), ocean, { width: 300, height: 240 })) drop('ocean-ts');
         var when = soundingTime(values);
         var subtitle = [when ? when.toUTCString().replace(':00 GMT', ' UTC') : null, `${ocean.levels.length.toLocaleString()} levels`].filter(Boolean).join(' · ');
-        out.querySelector('.sounding-expand').addEventListener('click', () => openOceanProfile(ocean, name || (title && title.textContent) || 'Ocean profile', subtitle));
+        graphs.querySelector('.ocean-expand').addEventListener('click', () => openOceanProfile(ocean, name || (title && title.textContent) || 'Ocean profile', subtitle));
     }
     if (spectrum) showSpectrum(out.querySelector('.pp-spectrum'), result);
     if (sounding) {
@@ -3823,7 +3830,10 @@ function readFiltersFromUrl() {
     // link styles the map by satellite or by a satellite measure, which needs them on
     if (style === SATELLITE_STYLE || (METRICS[style] && METRICS[style].targets === 'satellite')) hiddenLayers.delete('satellite');
     setState({ colouredOnly: params.get('require') === '1', modelFieldOn: params.get('base') === '1' });
-    if (/^urn:wmo:md:/.test(params.get('dataset') || '')) startDataset = params.get('dataset');
+    // The full id, or without its urn:wmo:md: (dataset=ma-marocmeteo:h6vqw6); either may be URL-encoded or not
+    var dataset = (params.get('dataset') || '').trim();
+    if (/^[a-z0-9-]+:\S+$/i.test(dataset) && !/^urn:/i.test(dataset)) dataset = `urn:wmo:md:${dataset}`;
+    if (/^urn:wmo:md:/i.test(dataset)) startDataset = dataset;
     var replayMinutes = params.has('replay') ? replayMinutesFrom(params.get('replay')) : null;
     if (replayMinutes) {
         hiddenLayers.delete('replay');
@@ -3870,7 +3880,9 @@ function writeFiltersToUrl() {
     set('replay', hiddenLayers.has('replay') ? '' : replayParam(Math.round(replayWindowMs / 60000)));
     var share = document.querySelector('.queue-share');
     if (share) share.hidden = !['topic', 'centre', 'format', 'discipline', 'style', 'require', 'base', 'dataset', 'replay'].some((p) => params.has(p));
-    var query = params.toString().replace(/%2C/gi, ',');  // Commas read better unescaped
+    // Commas, colons and slashes read better unescaped (a dataset's urn:wmo:md:..., a
+    // topic's a/b/c), and are all allowed as they are in a query
+    var query = params.toString().replace(/%2C/gi, ',').replace(/%3A/gi, ':').replace(/%2F/gi, '/');
     try {
         history.replaceState(history.state, '', `${location.pathname}${query ? `?${query}` : ''}${location.hash}`);
     } catch (err) {
@@ -5975,6 +5987,7 @@ const GDCS = [
 ];
 const GDC_PROBE_MS = 8000;
 let gdcRanked = null;
+let gdcRankedYet = false;  // Whether the first ranking is done (see gdcRecord)
 
 // Time one record from each catalogue, all at once, and order GDCS by how long each took
 // (those that failed or timed out last). Done as the page opens and again every minute
@@ -6000,6 +6013,7 @@ function rankGdcs(again) {
             GDCS.sort((a, b) => a.ms - b.ms);
             // The one in use, shown in the map key
             setState({ catalogue: isFinite(GDCS[0].ms) ? { name: GDCS[0].name, host: new URL(GDCS[0].api).host, ms: GDCS[0].ms } : { failed: true } });
+            gdcRankedYet = true;
         });
         if (!gdcRanked) gdcRanked = ranking;
     }
@@ -6008,6 +6022,26 @@ function rankGdcs(again) {
 // Timed as the page opens rather than on the first lookup, so the map key can say which is in use
 rankGdcs();
 setInterval(() => document.hidden || rankGdcs(true), 60e3);
+
+// The same request of every catalogue at once: the first good answer is used and the
+// others are stopped. A 404 only counts once none has the record
+async function gdcFetchFirst(path) {
+    var aborts = GDCS.map(() => new AbortController());
+    var notFound = null;
+    try {
+        var { response, i } = await Promise.any(GDCS.map(async (gdc, i) => {
+            var response = await fetch(gdc.api + path, { signal: aborts[i].signal });
+            if (response.status === 404) notFound = response;
+            if (!response.ok) throw new Error(`${gdc.name} answered ${response.status}`);
+            return { response, i };
+        }));
+    } catch (err) {
+        if (notFound) return notFound;
+        throw err.errors ? err.errors[0] : err;
+    }
+    aborts.forEach((abort, j) => j !== i && abort.abort());
+    return response;
+}
 
 // A catalogue request (a path under the records), from the fastest catalogue that answers
 async function gdcFetch(path, options) {
@@ -6059,7 +6093,11 @@ function noteDataset(feature) {
 
 function gdcRecord(id) {
     if (!gdcRecords.has(id)) {
-        gdcRecords.set(id, gdcFetch(`/${encodeURIComponent(id)}?f=json`)
+        // Before the catalogues are first ranked (which waits for the slowest, up to
+        // GDC_PROBE_MS), all of them are asked and the first answer taken, so a link's
+        // dataset or an early popup isn't held up
+        var path = `/${encodeURIComponent(id)}?f=json`;
+        gdcRecords.set(id, (gdcRankedYet ? gdcFetch(path) : gdcFetchFirst(path))
             .then((response) => (response.ok ? response.json() : null))
             .catch(() => null));
         if (gdcRecords.size > GDC_CACHE_MAX) gdcRecords.delete(gdcRecords.keys().next().value);
@@ -6196,7 +6234,16 @@ async function showDatasetFromUrl(id) {
         writeFiltersToUrl();  // Nothing to show; the parameter goes
         return;
     }
-    var report = () => {};
+    // Shown on the map straight away; the Datasets tab lists the catalogue alongside,
+    // and the progress goes on the dataset's row once the list has it
+    var note = null, said = null;
+    var report = (text) => {
+        said = text;
+        if (!note) return;
+        note.hidden = false;
+        note.textContent = text;
+    };
+    showDatasetOnMap(d, report);
     if (gdcEls && !PHONE.matches) {
         document.body.classList.add('queue-open');
         gdcSearched = true;  // Searched here, so the tab doesn't start its own
@@ -6204,13 +6251,9 @@ async function showDatasetFromUrl(id) {
         await searchCatalogue();
         var row = [...gdcEls.list.children].find((r) => r.gdc && r.gdc.id === id && !r.hidden);
         if (row) row.scrollIntoView({ block: 'center' });
-        var note = row ? row.querySelector('.gdc-note') : gdcEls.status;
-        report = (text) => {
-            note.hidden = false;
-            note.textContent = text;
-        };
+        note = row ? row.querySelector('.gdc-note') : gdcEls.status;
+        if (said) report(said);
     }
-    showDatasetOnMap(d, report);
 }
 
 // The Datasets tab: a search box over the whole catalogue, narrowed by the sidebar's filters
@@ -7296,8 +7339,11 @@ function bufrSource(feature, props, topic) {
 // KMA, CMA, NCM) don't let browsers download. The file's name is the origin's, the
 // last part of its link and of most caches' (NCM's add a number and DWD's are
 // sometimes named after the data_id, so theirs count only when there's nothing
-// else), URL-encoded. Retry tries them once every copy announced has failed
-// (source.guess, set by showDecodeError)
+// else), URL-encoded. Once every copy announced has failed, the main cache's (Met
+// Office / NOAA, the first here) is tried once for each file without asking; Retry
+// tries them all (source.guess, set by showDecodeError)
+const MAIN_CACHE_HOST = 'wis2globalcache.s3.amazonaws.com';
+const mainCacheTried = new Set();  // Guessed main-cache copies already asked for, so each file is tried there once
 const GUESSABLE_CACHES = [
     (s, file) => s.topic && `https://wis2globalcache.s3.amazonaws.com/data/${s.topic.replace(/^(cache|origin)\/a\/wis2\//, '')}/${file}`,
     (s, file) => s.dataId && s.pubtime && `https://global-cache-of-japan.s3.ap-northeast-1.amazonaws.com/wis2/data/${encodeURI(s.dataId)}/${Math.floor(Date.parse(s.pubtime) / 1000)}/${file}`,
@@ -7333,11 +7379,18 @@ async function fetchData(source) {
     // skipped (see caches.js, which learns from how each attempt goes)
     var known = [...source.urls, ...(dataLinks.get(source.dataId) || [])];
     var urls = downloadOrder(known);
-    // On Retry, then the caches that haven't announced it (see guessedCopies)
-    var guessed = source.guess ? downloadOrder(guessedCopies(source, known)) : [];
+    // Then the caches that haven't announced it (see guessedCopies): the main cache once
+    // for each file, the rest on Retry
+    var guessed = guessedCopies(source, known)
+        .filter((url) => source.guess || (url.startsWith(`https://${MAIN_CACHE_HOST}/`) && !mainCacheTried.has(url)));
+    guessed = downloadOrder(guessed);
     urls = [...urls, ...guessed.filter((url) => !urls.includes(url))];
     var answered = 0;
     for (var url of urls) {
+        if (guessed.includes(url) && url.startsWith(`https://${MAIN_CACHE_HOST}/`)) {
+            mainCacheTried.add(url);
+            if (mainCacheTried.size > DATA_LINKS_MAX) mainCacheTried.delete(mainCacheTried.values().next().value);
+        }
         try {
             var response = await fetchTracked(url);
             if (!response.ok) continue;
