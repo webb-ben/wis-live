@@ -155,3 +155,12 @@ export const NO_VALUE_COLOR = '#ced4da';
 
 // The two sources' accent colours, as in the legend sections (style.css)
 export const SOURCE_COLORS = { wis2: '#1c7ed6', gts: '#7048e8' };
+
+// Style by (state.colourBy): each satellite in its own colour (see satelliteColour), not a measure
+export const SATELLITE_STYLE = 'satellite';
+
+// Style by: each ship or buoy that reports a wave spectrum drawn as a small polar
+// spectrum (see miniWaveSpectrum); everything else grey. Needs their files decoded
+export const WAVE_STYLE = 'waves';
+
+export const WAVE_CLASSES = ['ship', 'buoy'];
