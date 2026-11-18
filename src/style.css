@@ -1884,6 +1884,11 @@
   padding-bottom: 0;
   border-bottom: 0;
 }
+/* Folded, only the credits line is left of About: no rule above it */
+.map-world.map-key-minimized .key-about {
+  padding-top: 0;
+  border-top: 0;
+}
 .key-colour-name {
   display: none;
   font-weight: 600;

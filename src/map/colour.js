@@ -6,7 +6,7 @@ import { state, setState } from '../state.js';
 import { layerOf, records } from './points.js';
 import { topicClass } from '../messages/messages.js';
 import { map } from './map.js';
-import { swathOpacity, swathOpacityKey, syncOpacitySlider, swathPointsShown, swathFiles } from '../data/satellite/coverage.js';
+import { swathOpacity, swathOpacityKey, syncOpacitySlider, swathPointsShown, swathFiles, syncSwathGrid } from '../data/satellite/coverage.js';
 import { darken } from '../lib/util.js';
 import { satelliteMatch, syncSatelliteRows } from '../data/satellite/rows.js';
 import { updateModelField } from './modelFields.js';
@@ -96,6 +96,8 @@ export function restyle() {
 
 export function setColourBy(key, legend) {
     setState({ colourBy: key });
+    // Styled by satellite, coverage is no finer than resolution 3 (see gridResolution)
+    syncSwathGrid();
     var m = METRICS[key];
     // What the colours mean, as text, for the minimized key (which hides Style by)
     var colourName = legend.querySelector('.key-colour-name');

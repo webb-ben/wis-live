@@ -77,7 +77,7 @@ export function inOrNearRing([x, y], ring, margin) {
 // down to H3_RESOLUTION_MAX zoomed in. A file is never drawn finer than its reports'
 // spacing allows, nor coarser than H3_RESOLUTION_MIN (see resolutionForSpacing)
 export const H3_RESOLUTION = 2;
-export const H3_RESOLUTION_MAX = 5;
+export const H3_RESOLUTION_MAX = 4;  // About 45 km between cells: finer is more cells than the reports kept fill
 
 export function h3Cell(lon, lat, resolution = H3_RESOLUTION) {
     return latLngToCell(lat, ((lon + 540) % 360) - 180, resolution);

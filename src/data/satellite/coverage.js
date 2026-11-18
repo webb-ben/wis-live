@@ -10,7 +10,7 @@
 // map, and a report only becomes a full record when it is clicked (or drawn as a
 // point, with coverage switched off). Of each report only the values the map can be
 // styled by are kept (metrics, in typed arrays): a popup decodes the rest again.
-import { h3Cell, H3_RESOLUTION_MAX, H3_RESOLUTION, convexHull, h3SampleDeg, inOrNearRing, h3Neighbors, h3NeighborRings, reportSpacingKm, resolutionForSpacing, cellRing, distanceKm, cellsBorder, enclosedGaps, getResolution } from '../../lib/geo.js';
+import { h3Cell, H3_RESOLUTION_MAX, H3_RESOLUTION, convexHull, h3SampleDeg, inOrNearRing, h3Neighbors, h3NeighborRings, reportSpacingKm, resolutionForSpacing, h3SpacingKm, cellRing, distanceKm, cellsBorder, enclosedGaps, getResolution } from '../../lib/geo.js';
 import { map } from '../../map/map.js';
 import { satelliteKey, satelliteName, addSatelliteRow, satelliteLink } from './rows.js';
 import { metricValues } from '../metrics.js';
@@ -31,6 +31,9 @@ export const SWATH_MIN_REPORTS = 5;
 export const SWATH_FILES_MAX = 3000;  // Files whose coverage is kept, oldest dropped first...
 export const SWATH_KEEP_MS = 12 * 3600e3;  // ...and none older than this
 export const SWATH_FLUSH_MS = 1000;
+export const OUTLINE_REFRESH_MS = 3000;
+let outlineStale = false;  // Coverage changed since the selected satellite was outlined
+let outlineRefreshed = 0;
 export let swathFeatureIds = 0;
 export let swathsBuilt = 0;
 export let swathPointsShown = false;  // Coverage switched off: swath reports are drawn as points
@@ -53,13 +56,17 @@ export function swathCellId(sat, lon, lat, grid = shownGrid()) {
 }
 
 // ---------- Finer cells zoomed in: about the same size on screen at any zoom
-// (resolution 2 below zoom 2, then one finer per zoom level, to H3_RESOLUTION_MAX at
-// zoom 4). GRID_ZOOM_SHIFT brings each step that many zoom levels earlier than the
+// (resolution 2 below zoom 2, then one finer per zoom level, to H3_RESOLUTION_MAX, 4,
+// from zoom 3). GRID_ZOOM_SHIFT brings each step that many zoom levels earlier than the
 // zoom itself would (resolution 3 at zoom 3 without it). Finer cells cover only the
 // area in view, with as much again round it, so panning a little doesn't rebuild them
+// Styled by satellite, where cells show whose coverage it is rather than a value, no
+// finer than SATELLITE_STYLE_RES_MAX (setColourBy builds the grid again on a change)
 export const GRID_ZOOM_SHIFT = 1;
+export const SATELLITE_STYLE_RES_MAX = 3;
 export function gridResolution(zoom) {
-    return Math.min(H3_RESOLUTION_MAX, Math.max(H3_RESOLUTION, Math.floor(zoom) + GRID_ZOOM_SHIFT));
+    var max = state.colourBy === SATELLITE_STYLE ? SATELLITE_STYLE_RES_MAX : H3_RESOLUTION_MAX;
+    return Math.min(max, Math.max(H3_RESOLUTION, Math.floor(zoom) + GRID_ZOOM_SHIFT));
 }
 
 // [west, south, east, north] of the view, west to east possibly past ±180
@@ -132,12 +139,55 @@ export function newGrid(key, res, bounds) {
         ringCount: NEIGHBOR_RINGS, rings: new Map(), means: new Map() };
 }
 
-// The coverage layer a file's cells go in: its satellite and the resolution its
-// reports' spacing allows ('sat:satellite:metop-b@4'). A satellite sends products as
-// dense as an imager's or as sparse as cloud-motion winds; each spacing is a layer of
-// its own, so cells of one resolution only ever neighbour cells of the same
-export function coverageKey(satellite, res) {
-    return `${satellite}@${res}`;
+// The coverage layer a file's cells go in: its satellite, its product, and the
+// product's resolution ('sat:satellite:metop-b~3@4'). A satellite sends products as
+// dense as an imager's or as sparse as cloud-motion winds, so each product is a layer of
+// its own, and cells of one resolution only ever neighbour cells of the same
+export function coverageKey(satellite, productId, res) {
+    return `${satellite}~${productId}@${res}`;
+}
+
+// The satellite a coverage layer is of
+export function layerSatellite(layer) {
+    return layer.slice(0, layer.lastIndexOf('~'));
+}
+
+// A file's product: its satellite, its topic without bulletin numbers (the GTS splits
+// one product over headings like IEDX41 and IEDX25 of the same topic), and the
+// measures it has, which tell products sharing a topic apart
+export function productKey(satellite, topic, metrics) {
+    var path = topic.toLowerCase().split('/').filter((part) => !/^\d+$/.test(part)).join('/');
+    return `${satellite}#${path}#${Object.keys(metrics).sort().join(',')}`;
+}
+
+// Each product's layer: product key -> { id, res }. Its resolution is the finest any of
+// its files' report spacing allows. Files are thinned to DECODE_FILE_MAX_REPORTS, so a
+// large file's reports are further apart than a small one's of the same product; drawn
+// each at their own resolution they'd be a patchwork, so all go in at the finest, the
+// thinned ones filled in from their reports (swathMeans)
+const products = new Map();
+export function productLayer(key, fileRes) {
+    var product = products.get(key);
+    if (!product) products.set(key, product = { id: products.size + 1, res: fileRes });
+    else if (fileRes > product.res) {
+        // A denser file: the product's files already in move to the finer layer
+        product.res = fileRes;
+        for (var file of swathFiles.values()) if (file.product === key) moveFile(file, coverageKey(file.satellite, product.id, fileRes));
+    }
+    return product;
+}
+
+// Moves a file to another coverage layer, in every grid it's in
+function moveFile(file, layer) {
+    var inGrids = grids().filter((grid) => grid.files.has(file));
+    for (var grid of inGrids) {
+        applySwathShare(file, fileShare(file, grid), -1, grid);
+        grid.files.delete(file);
+    }
+    file.cells = {};
+    file.holes = {};
+    file.sat = layer;
+    for (var g of inGrids) refreshSatelliteHoles(layer, g, shareCells(addToGrid(file, g)));
 }
 
 // The resolution of a coverage layer's cells on a grid
@@ -182,9 +232,7 @@ export function setViewGrid(grid) {
 export function addSwathFile(job, reports) {
     var first = reports[0], n = reports.length;
     var coords = Float32Array.from(reports.flatMap((r) => r.coords));
-    // Its cells as fine as its reports' spacing allows, in that spacing's layer
-    var res = resolutionForSpacing(reportSpacingKm(coords));
-    var sat = coverageKey(satelliteKey(first) || `${first.subLayer}:${first.fileKey}`, res);
+    var satellite = satelliteKey(first) || `${first.subLayer}:${first.fileKey}`;
     // Longitudes unwrapped around the first report so a pass across ±180 stays whole
     var lon0 = first.coords[0];
     var unwrapLon = (lon) => {
@@ -202,14 +250,20 @@ export function addSwathFile(job, reports) {
     for (var key of [...Object.keys(METRICS), 'windDir']) {
         if (values.some((v) => `m_${key}` in v)) metrics[key] = Float32Array.from(values, (v) => v[`m_${key}`] ?? NaN);
     }
+    // Its product's layer, at the finest resolution the product's files allow (this one
+    // finer than those before moves them, see productLayer)
+    var product = productKey(satellite, first.topic, metrics);
+    var layer = productLayer(product, resolutionForSpacing(reportSpacingKm(coords)));
+    var sat = coverageKey(satellite, layer.id, layer.res);
     var file = {
         key: first.fileKey,
-        sat,
+        sat,  // Its coverage layer (coverageKey), which says its resolution (cellRes)
+        satellite,
+        product,
         n,
         // What every report shares; swathRecord adds the rest
         template: { ...first, decoded: null, satName: satelliteName(first) },
         coords,
-        res,  // The finest its cells are drawn (see resolutionForSpacing)
         // When its last report was observed: where coverage overlaps, the latest is on top
         latest: reports.reduce((t, r) => Math.max(t, r.observed || 0), 0),
         observed: Float64Array.from(reports, (r) => r.observed),
@@ -358,6 +412,7 @@ export function applySwathCell(file, id, c, sign, grid) {
     }
     // Any change on the global grid can change its cells' estimates
     if (grid === globalGrid) grid.means.clear();
+    outlineStale = true;
     if (sign > 0) cell.files.add(file);
     else cell.files.delete(file);
     if (!c.hole) cell.real += sign;
@@ -484,6 +539,13 @@ export function trimSwathFiles() {
 // Redraws only the cells that changed since last time
 export function flushSwaths(now) {
     trimSwathFiles();
+    // A selected satellite's outline follows its coverage as files come and go, at most
+    // every OUTLINE_REFRESH_MS (its border is worked out over all its cells)
+    if (outlineStale && selectedSat && now - outlineRefreshed >= OUTLINE_REFRESH_MS) {
+        outlineStale = false;
+        outlineRefreshed = now;
+        refreshSatelliteOutline();
+    }
     var grid = shownGrid();
     if (!grid.dirty.size && !grid.removed.length) return;
     swathsBuilt = now;
@@ -724,6 +786,7 @@ export function buildCellSummary(id, cell, lngLat, grid) {
         <dl class="pp-meta">
             ${reports ? `<dt>Observed</dt><dd>${t1 - t0 < 60e3 ? `${esc(new Date(t1).toLocaleString())}` : `${esc(new Date(t0).toLocaleDateString())} ${when(t0)}–${when(t1)} UTC`} (${timeAgo(new Date(t1).toISOString())})</dd>` : ''}
             <dt>Cell</dt><dd class="pp-mono" title="H3 cell, resolution ${getResolution(cell.h3)}">${esc(cell.h3)}</dd>
+            <dt>Level</dt><dd>H3 ${getResolution(cell.h3)} · cells about ${Math.round(h3SpacingKm(getResolution(cell.h3)))} km apart</dd>
         </dl>
         <div class="pp-status">${reports
             ? 'The cell is coloured by the reports in it, blended with those in the cells around it, so a lone report doesn\'t stand apart; the values here are its own reports\'. Of each file only some reports are kept, spread across it; these are the ones here.'
@@ -880,15 +943,15 @@ export function outlineSatellite(sat) {
 }
 
 // The border round the outside of what's drawn of a satellite on a grid, as [lon, lat]
-// segments: every layer of it (each product spacing, see coverageKey), but only cells
+// segments: every layer of it (each product, see coverageKey), but only cells
 // shown for the measure styled by (the satellite page leaves out cells without a
 // value). Cells of different resolutions share no edges, so a layer's edge whose far
 // side another layer covers is inside the coverage, and left out
 export function satelliteBorder(sat, grid) {
     var metric = METRICS[state.colourBy] && state.colourBy;
-    var satellite = sat.slice(0, sat.lastIndexOf('@')), layers = new Map();
+    var satellite = layerSatellite(sat), layers = new Map();
     for (var c of grid.cells.values()) {
-        if (c.sat.slice(0, c.sat.lastIndexOf('@')) !== satellite) continue;
+        if (layerSatellite(c.sat) !== satellite) continue;
         if (metric && state.colouredOnly && swathMeans(c, grid)[metric] == null) continue;
         if (!layers.has(c.sat)) layers.set(c.sat, new Set());
         layers.get(c.sat).add(c.h3);
