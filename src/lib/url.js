@@ -2,7 +2,7 @@ import { filters, filterModes } from './filters.js';
 import { FORMATS, DISCIPLINES } from '../messages/messages.js';
 import { SATELLITE_STYLE, WAVE_STYLE, METRICS } from '../config.js';
 import { hiddenLayers } from '../map/layers.js';
-import { SATELLITE_PAGE, GBON_PAGE, REPLAY_START_MINUTES, metricOnPage } from '../page.js';
+import { SATELLITE_PAGE, GBON_PAGE, GTS_PAGE, REPLAY_START_MINUTES, metricOnPage } from '../page.js';
 import { setState, state } from '../state.js';
 import { setStartDataset, shownDataset, startDataset, setShownDataset } from '../data/catalogue.js';
 import { setReplayWindowMs, REPLAY_RANGE_MINUTES, replayWindowMs } from '../messages/replay.js';
@@ -42,7 +42,8 @@ export function readFiltersFromUrl() {
     if (/^urn:wmo:md:/i.test(dataset)) setStartDataset(dataset);
     // replay=off: switched off where it starts on (the GBON page)
     if (params.get('replay') === 'off') hiddenLayers.add('replay');
-    var replayMinutes = params.has('replay') ? replayMinutesFrom(params.get('replay')) : null;
+    // Not on the GTS page, which has no replay (see layers.js)
+    var replayMinutes = params.has('replay') && !GTS_PAGE ? replayMinutesFrom(params.get('replay')) : null;
     if (replayMinutes) {
         hiddenLayers.delete('replay');
         setReplayWindowMs(replayMinutes * 60 * 1000);
