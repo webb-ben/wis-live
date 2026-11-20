@@ -3,24 +3,31 @@
 //  - home (index.html): everything but satellites
 //  - gbon (gbon.html): the Global Basic Observing Network's kinds, surface weather
 //    stations and upper-air soundings
+//  - metocean (metocean.html): the sea's, ships and buoys (floats among them)
+//  - gts (gts.html): what the GTS gateways pass between the GTS and WIS2, both ways
 //  - satellites (satellites.html): only satellites, drawn as coverage
 // No imports, so anything (state.js included) can use it
 export const PAGE = document.documentElement.dataset.page || 'home';
 export const SATELLITE_PAGE = PAGE === 'satellites';
 export const GBON_PAGE = PAGE === 'gbon';
+export const METOCEAN_PAGE = PAGE === 'metocean';
+export const GTS_PAGE = PAGE === 'gts';
 
 // Every page, for the links between them
 export const PAGES = [
     { key: 'home', href: './', label: 'All observations' },
-    { key: 'gbon', href: 'gbon.html', label: 'Surface and upper air (GBON)' },
-    { key: 'satellites', href: 'satellites.html', label: 'Satellite observations' },
+    { key: 'gbon', href: 'gbon.html', label: 'Surface and upper air' },
+    { key: 'metocean', href: 'metocean.html', label: 'Ships and buoys' },
+    { key: 'gts', href: 'gts.html', label: 'GTS gateways' },
+    { key: 'satellites', href: 'satellites.html', label: 'Satellites' },
 ];
 export const OTHER_PAGES = PAGES.filter((p) => p.key !== PAGE);
 
-// The kinds of observation (OBS_CLASSES keys) the page shows; null for every kind.
-// Only the GBON page sorts by kind: the home and satellite pages split by topic (see
-// topicOnPage), as a satellite file's reports aren't all sorted as satellites
-export const PAGE_CLASSES = GBON_PAGE ? ['station', 'upperair'] : null;
+// The kinds of observation (OBS_CLASSES keys) the page shows; null for every kind. Only
+// the GBON and metocean pages sort by kind (by topic first, then each report's kind, see
+// topicOnPage and addPoint): the home and satellite pages split by topic, as a satellite
+// file's reports aren't all sorted as satellites, and the GTS page by its gateways
+export const PAGE_CLASSES = GBON_PAGE ? ['station', 'upperair'] : METOCEAN_PAGE ? ['ship', 'buoy'] : null;
 
 export function classOnPage(cls) {
     return !PAGE_CLASSES || PAGE_CLASSES.includes(cls);
@@ -33,18 +40,26 @@ export function metricOnPage(metric) {
     return !(GBON_PAGE && metric.group.startsWith('Sea'));
 }
 
+// The GTS gateway centres, as WMO lists them (WIS 2.0 Global Services, community.wmo.int):
+// DWD and JMA republish the GTS into WIS2, CMA and the Met Office pass a subset of
+// WIS2 on to the GTS. The GTS page hears no other centre, so add new ones here
+export const GATEWAY_CENTRES = ['de-dwd-gts-to-wis2', 'jp-jma-gts-to-wis2', 'cn-cma-wis2-to-gts', 'uk-metoffice-wis2-to-gts'];
+
 // The Global Broker topics the page subscribes to (MQTT filters: + one level, # the
 // rest). The satellite page takes only satellites': WIS2's space-based observations,
 // under any centre, data policy and discipline, and the GTS gateways' satellite
 // bulletins, headed IN and IE (as isSpaceBased). The others take everything, and
-// leave out what isn't theirs (see topicOnPage)
+// leave out what isn't theirs (see topicOnPage). The GTS page takes the gateway
+// centres by name, as MQTT can't match the end of one (-gts-to-wis2)
 export const PAGE_TOPICS = SATELLITE_PAGE
     ? ['origin', 'cache'].flatMap((channel) => [
         `${channel}/a/wis2/+/data/+/+/space-based-observations/#`,
         `${channel}/a/wis2/+/data/core/I/N/#`,
         `${channel}/a/wis2/+/data/core/I/E/#`,
     ])
-    : ['origin/a/wis2/#', 'cache/a/wis2/#'];
+    : GTS_PAGE
+        ? ['origin', 'cache'].flatMap((channel) => GATEWAY_CENTRES.map((centre) => `${channel}/a/wis2/${centre}/#`))
+        : ['origin/a/wis2/#', 'cache/a/wis2/#'];
 
 // The links to the other pages, as HTML
 export function otherPageLinks() {

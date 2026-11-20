@@ -28,7 +28,8 @@ export function readFiltersFromUrl() {
     list(FILTER_PARAMS.disciplines).filter((d) => DISCIPLINES.hasOwnProperty(d)).forEach((d) => filters.disciplines.add(d));
     list('hide').filter((key) => filterModes.hasOwnProperty(key)).forEach((key) => { filterModes[key] = 'hide'; });
     // Only the styles this page offers (see page.js); another page's are ignored. Wave
-    // spectra are ships' and buoys', which the GBON page doesn't show
+    // spectra are ships' and buoys', which the GBON page doesn't show (the metocean and
+    // GTS pages do)
     var style = params.get('style');
     var onPage = SATELLITE_PAGE ? style === SATELLITE_STYLE || (METRICS[style] && metricOnPage(METRICS[style]))
         : style === 'kind' || (style === WAVE_STYLE && !GBON_PAGE) || (METRICS[style] && metricOnPage(METRICS[style]));

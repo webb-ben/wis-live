@@ -139,6 +139,12 @@ export function resolutionForSpacing(spacingKm) {
     return H3_RESOLUTION_MIN;
 }
 
+// A cell's centre, as [lon, lat]
+export function cellCentre(cell) {
+    var [lat, lon] = cellToLatLng(cell);
+    return [lon, lat];
+}
+
 // A cell's neighbours by distance: [ring 1, ring 2, ... ring k]
 export function h3NeighborRings(cell, k) {
     return gridDiskDistances(cell, k).slice(1);

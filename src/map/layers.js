@@ -3,7 +3,7 @@
 // off, or under one that is)
 import { state } from '../state.js';
 import { COLORS, OBS_CLASSES, SATELLITE_LAYERS } from '../config.js';
-import { SATELLITE_PAGE, GBON_PAGE, classOnPage } from '../page.js';
+import { SATELLITE_PAGE, GTS_PAGE, PAGE_CLASSES, classOnPage } from '../page.js';
 
 // GTS sublayers that start off. Their bulletins aren't downloaded until they're
 // switched on, so their rows appear when the first such notification arrives
@@ -63,20 +63,24 @@ const ALL_LAYER_GROUPS = [
 ];
 
 // The home page lists all but Satellites; the satellite page lists Satellites, and the
-// Global Replay for past satellite notifications; the GBON page only the rows of its
-// kinds (cache-station, gts-upperair...) and the sources over them, without radar,
-// METAR, WIS2-to-GTS or aircraft tracks (see page.js)
-const GBON_LEFT_OUT = ['radar', 'airports', 'wis2gts'];
-const rowOnGbon = (l) => {
+// Global Replay for past satellite notifications; the GTS page the gateways' group (GTS-
+// to-WIS2 and WIS2-to-GTS); a page of some kinds (GBON, metocean) only the rows of its
+// kinds (cache-station, gts-buoy...) and the sources over them, without radar, METAR,
+// WIS2-to-GTS or aircraft tracks (see page.js)
+const KINDS_LEFT_OUT = ['radar', 'airports', 'wis2gts'];
+const rowOfKinds = (l) => {
     var match = /^(?:cache|gts|replay)-(.+)$/.exec(l.key);
-    return match ? classOnPage(match[1]) : !GBON_LEFT_OUT.includes(l.key);
+    return match ? classOnPage(match[1]) : !KINDS_LEFT_OUT.includes(l.key);
 };
 export const LAYER_GROUPS = SATELLITE_PAGE
     ? ALL_LAYER_GROUPS.filter((g) => g.key === 'space' || g.key === 'other').map((g) => g.key === 'space' ? g
         : { ...g, subtitle: 'Past satellite notifications', layers: g.layers.filter((l) => l.key === 'replay') })
-    : GBON_PAGE
-        ? ALL_LAYER_GROUPS.filter((g) => g.key !== 'space').map((g) => ({ ...g, layers: g.layers.filter(rowOnGbon) }))
-        : ALL_LAYER_GROUPS.filter((g) => g.key !== 'space');
+    : GTS_PAGE
+        ? ALL_LAYER_GROUPS.filter((g) => g.key === 'gts' || g.key === 'other').map((g) => g.key === 'gts' ? g
+            : { ...g, subtitle: 'Past gateway bulletins', layers: g.layers.filter((l) => l.key === 'replay') })
+        : PAGE_CLASSES
+            ? ALL_LAYER_GROUPS.filter((g) => g.key !== 'space').map((g) => ({ ...g, layers: g.layers.filter(rowOfKinds) }))
+            : ALL_LAYER_GROUPS.filter((g) => g.key !== 'space');
 
 // Layer switches that are off, and which start off: kept in state.js
 export const hiddenLayers = state.hiddenLayers;

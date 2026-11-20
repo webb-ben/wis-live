@@ -2,7 +2,7 @@
 // the layer switches. Read it from `state`; change it with setState (or, for the
 // Sets and objects changed in place, change them and call notify), and anything
 // subscribed hears which keys changed. Mirrored in the URL by the main page.
-import { SATELLITE_PAGE } from './page.js';
+import { SATELLITE_PAGE, GTS_PAGE } from './page.js';
 
 export const state = {
     // Style by: 'kind' (observation type), 'satellite' (a colour each, where the
@@ -19,8 +19,10 @@ export const state = {
     // Layer switches that are off. Off at first: radar, the Global Replay, METAR,
     // WIS2-to-GTS, aircraft and ground-based GNSS (cache, GTS and replay), aircraft
     // tracks. Satellites are only on the satellite page, where they start on
-    hiddenLayers: new Set(['radar', 'replay', 'cache-gnss', 'gts-gnss', 'replay-gnss', 'airports', 'wis2gts',
-        'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks', ...(SATELLITE_PAGE ? [] : ['satellite'])]),
+    // The GTS page starts with both its gateways on (WIS2-to-GTS too)
+    hiddenLayers: new Set(['radar', 'replay', 'cache-gnss', 'gts-gnss', 'replay-gnss', 'airports',
+        'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks', ...(SATELLITE_PAGE ? [] : ['satellite']),
+        ...(GTS_PAGE ? [] : ['wis2gts'])]),
     // The services in use, fastest first: { name, ms } of the Global Discovery
     // Catalogue, and { host, id, name, ms } of the global cache downloads try first
     catalogue: null,

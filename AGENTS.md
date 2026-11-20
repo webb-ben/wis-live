@@ -18,13 +18,17 @@ https://benwebb.com/wis-live/). The page is not affiliated with WMO.
 ```
 index.html                 Page shell: meta tags, analytics, the app module, #map
 gbon.html                  The GBON page: the same app, <html data-page="gbon">
+metocean.html              The metocean page: the same app, <html data-page="metocean">
+gts.html                   The GTS gateways page: the same app, <html data-page="gts">
 satellites.html            The satellite page: the same app, <html data-page="satellites">
 src/page.js                Which page this is (PAGE): index.html (home) takes every
-                           notification but space-based ones, satellites.html only those,
-                           gbon.html only surface stations and upper-air soundings
-                           (PAGE_CLASSES: by topic in topicOnPage, then by each report's
-                           kind in addPoint); each lists its own layer groups (layers.js)
-                           and Style by measures (metricOnPage), and links to the others
+                           notification but space-based ones, satellites.html only those;
+                           gbon.html only surface stations and upper-air soundings, and
+                           metocean.html only ships and buoys (PAGE_CLASSES: by topic in
+                           topicOnPage, then by each report's kind in addPoint); gts.html
+                           only the GTS gateways' topics (both ways). Each lists its own
+                           layer groups (layers.js) and Style by measures (metricOnPage),
+                           and links to the others
 src/main.js                Both pages' wiring: map, sidebar, popups (being split up; see below)
 src/state.js               The shared state: state.colourBy, colouredOnly, modelFieldOn,
                            filters, filterModes, hiddenLayers; setState / notify / subscribe
