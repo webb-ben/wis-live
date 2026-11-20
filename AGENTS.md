@@ -201,6 +201,8 @@ bottom; the core comes first, roughly in this order:
    Keep all three in sync when adding a filter. Filters, styling, a shown
    dataset and the Global Replay (`?replay=2h`, `90m`, or a URL-encoded ISO time;
    it turns the layer on) are mirrored in the URL (`readFiltersFromUrl`/`writeFiltersToUrl`).
+   The first visit's welcome (`src/lib/ui/welcome.js`) is never shown in an iframe;
+   `?welcome=0` turns it off elsewhere and `?welcome=1` forces it.
 6. **MQTT** (`src/messages/mqtt.js`) — `connectFastest` races the brokers in `hosts`
    and keeps the first one that connects and subscribes to `origin/a/wis2/#`
    and `cache/a/wis2/#`; the page passes `onMessage` and `onState`. It stays

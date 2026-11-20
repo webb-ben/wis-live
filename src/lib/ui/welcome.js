@@ -1,5 +1,6 @@
 // The welcome shown on a first visit (issue #9): what the site is, and its views.
-// Shown once per browser (localStorage, wis-welcomed); About on the map reopens it
+// Shown once per browser (localStorage, wis-welcomed), never in an iframe or with
+// ?welcome=0 (see welcomeFirstVisit); About on the map reopens it
 import { PAGES, PAGE } from '../../page.js';
 
 const SEEN_KEY = 'wis-welcomed';
@@ -51,8 +52,22 @@ export function showWelcome() {
     }
 }
 
-// On a first visit only (any page counts)
+// Whether the page is inside another (an iframe). A page on another site can't be
+// asked, which throws: that's embedded too
+function embedded() {
+    try {
+        return window.self !== window.top;
+    } catch (err) {
+        return true;
+    }
+}
+
+// On a first visit only (any page counts). Never in an embed, or with ?welcome=0
+// in the address; ?welcome=1 shows it even in an embed or after a visit
 export function welcomeFirstVisit() {
+    var param = new URLSearchParams(location.search).get('welcome');
+    if (param === '1') return showWelcome();
+    if (param === '0' || embedded()) return;
     var seen = false;
     try {
         seen = localStorage.getItem(SEEN_KEY) === '1';
