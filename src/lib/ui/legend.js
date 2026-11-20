@@ -1,8 +1,9 @@
 import { showWelcome } from './welcome.js';
+import { serviceOptions, servicePick, pickService } from '../services.js';
 import maplibregl from 'maplibre-gl';
 import { LAYER_GROUPS, hiddenLayers, ancestors, effectiveHidden, seenLayers } from '../../map/layers.js';
 import { darken, PHONE, esc } from '../util.js';
-import { replayPosition, replayWindowMs, REPLAY_TICKS, replayMinutesAt, replayWindowLabel, setReplayWindow, scheduleReplay } from '../../messages/replay.js';
+import { replayPosition, replayWindowMs, REPLAY_TICKS, replayMinutesAt, replayWindowLabel, setReplayWindow, scheduleReplay, REPLAY_HOST } from '../../messages/replay.js';
 import { setOpacitySlider, syncOpacitySlider, swathOpacity, swathOpacityKey, hoveredCell, swathFiles, swathCells } from '../../data/satellite/coverage.js';
 import { paintAge, setColourBy, showColourStatus, isColourable, windArrows } from '../../map/colour.js';
 import { notify, setState, state } from '../../state.js';
@@ -163,6 +164,14 @@ export class MapKey {
         notices.append(...[banner, mapKeySlow].filter(Boolean));
         mapKeyStatus = document.createElement('div');
         mapKeyStatus.className = 'key-status';
+        // A service picked from a line's dropdown (see services.js); the lines follow
+        mapKeyStatus.addEventListener('change', (e) => {
+            var select = e.target.closest('select[data-service]');
+            if (!select) return;
+            pickService(select.dataset.service, select.value);
+            select.blur();
+            updateMapKey();
+        });
         overview = createOverview({ map, drawContent: drawOverviewContent, hoveredCell: () => hoveredCell });
         // On the satellite page the world map heads the legend's panel, bottom left (added
         // first, see main.js); this panel keeps the notices, connection lines and About
@@ -484,31 +493,58 @@ export function updateMapKey() {
     rows.push(...offRows);
     if (shapes.length || offShapes.length) rows.push(`<div class="key-shapes">${[...shapes, ...offShapes].join('')}</div>`);
     // Under the world map, apart from the key: the Global Broker messages come from, the
-    // fastest Global Discovery Catalogue (dataset records come from it) and the fastest
-    // global cache (downloads try it first), each host with how long it took to answer
+    // fastest Global Discovery Catalogue (dataset records come from it), the fastest
+    // global cache (downloads try it first) and, while it's on, the Global Replay, each
+    // with how long it took to answer. Each is a dropdown of that kind's services, to
+    // use one rather than the fastest (see services.js)
     var ms = (n) => (n == null || !isFinite(n) ? '' : ` · ${Math.round(n)} ms`);
     var line = (dot, text, title) => `<div class="key-note key-broker"><span class="broker-dot ${dot}"></span>`
         + `<span class="key-broker-text" title="${esc(title)}">${esc(text)}</span></div>`;
+    // name: the line's label; host: the one in use (if known); after: what follows it
+    // (its time, or that it's being found or can't be reached)
+    var service = (kind, dot, name, host, after, title) => {
+        var options = serviceOptions(kind);
+        // A single service (the replay) as text, its time at the right like the dropdowns'
+        if (options.length < 2) {
+            return `<div class="key-note key-broker" title="${esc(title)}"><span class="broker-dot ${dot}"></span>`
+                + `<span class="key-broker-name">${esc(name)}:</span><span class="key-broker-text">${esc(host || '')}</span>`
+                + `<span class="key-broker-after">${esc(after)}</span></div>`;
+        }
+        var picked = servicePick(kind);
+        var choices = [`<option value=""${picked ? '' : ' selected'}>${esc(!picked && host ? host : 'Automatic')}</option>`,
+            ...options.map((o) => `<option value="${esc(o.value)}"${o.value === picked ? ' selected' : ''}>${esc(o.label + ms(o.ms))}</option>`)];
+        return `<div class="key-note key-broker" title="${esc(title)}"><span class="broker-dot ${dot}"></span>`
+            + `<span class="key-broker-name">${esc(name)}:</span>`
+            + `<select class="key-service" data-service="${kind}" aria-label="${esc(name)} in use">${choices.join('')}</select>`
+            + `<span class="key-broker-after">${esc(after)}</span></div>`;
+    };
     var broker = brokerState.host || '';
-    var status = {
-        connected: `Broker: ${broker}${ms(brokerState.ms)}`,
-        reconnecting: `Reconnecting to ${broker}…`,
-        connecting: 'Connecting to a broker…',
-        retrying: 'No Global Broker reachable, retrying…',
+    var after = {
+        connected: ms(brokerState.ms),
+        reconnecting: ' · reconnecting…',
+        connecting: ' · connecting…',
+        retrying: ' · none reachable, retrying…',
     }[brokerState.state];
-    var brokerHtml = line(`broker-${brokerState.state}`, status, 'WIS2 Global Broker the live messages come from, and its round trip time (measured every minute)');
+    var brokerHtml = service('broker', `broker-${brokerState.state}`, 'Broker', broker, after,
+        'WIS2 Global Broker the live messages come from, and its round trip time (measured every minute). Pick one to use it rather than the fastest');
     // Grey while being found, green once one has answered, like the broker's dot
-    brokerHtml += state.catalogue && state.catalogue.failed
-        ? line('broker-retrying', 'Catalogue: none reachable', 'No Global Discovery Catalogue answered; dataset records are tried again on demand')
-        : state.catalogue
-        ? line('broker-connected', `Catalogue: ${state.catalogue.host}${ms(state.catalogue.ms)}`,
-            `Global Discovery Catalogue the dataset records come from: the fastest to answer, checked every minute (${state.catalogue.name})`)
-        : line('broker-connecting', 'Catalogue: finding the fastest…', 'Timing the Global Discovery Catalogues');
-    brokerHtml += state.cache
-        ? line('broker-connected', `Cache: ${state.cache.host}${ms(state.cache.ms)}`,
-            `Global cache downloads try first: the fastest to answer, checked every minute (${state.cache.name})`)
-        : line('broker-connecting', 'Cache: finding the fastest…', 'Timing the global caches as their messages arrive');
-    if (mapKeyStatus && brokerHtml !== mapKeyStatus.dataset.html) {
+    var catalogue = state.catalogue;
+    brokerHtml += service('catalogue', !catalogue ? 'broker-connecting' : catalogue.failed ? 'broker-retrying' : 'broker-connected', 'Catalogue',
+        catalogue && catalogue.host, !catalogue ? ' · finding the fastest…' : catalogue.failed ? ' · none reachable' : ms(catalogue.ms),
+        'Global Discovery Catalogue the dataset records come from: the fastest to answer, checked every minute, unless one is picked');
+    brokerHtml += service('cache', state.cache ? 'broker-connected' : 'broker-connecting', 'Cache',
+        state.cache && state.cache.host, state.cache ? ms(state.cache.ms) : ' · finding the fastest…',
+        'Global cache downloads try first: the fastest to answer, checked every minute, unless one is picked. Caches are listed as their messages arrive');
+    // The Global Replay's, while it's on
+    if (!effectiveHidden().includes('replay') && LAYER_GROUPS.some((g) => g.layers.some((l) => l.key === 'replay'))) {
+        var replay = state.replay;
+        brokerHtml += service('replay', !replay ? 'broker-connecting' : replay.failed ? 'broker-retrying' : 'broker-connected', 'Replay',
+            REPLAY_HOST, !replay ? ' · asking…' : replay.failed ? ' · not answering' : ms(replay.ms),
+            'Global Replay the past notifications come from, and how long its pages take to answer');
+    }
+    // Rebuilt only when it changed, and not while a dropdown has the focus (it would close)
+    var picking = mapKeyStatus && mapKeyStatus.contains(document.activeElement) && document.activeElement.tagName === 'SELECT';
+    if (mapKeyStatus && !picking && brokerHtml !== mapKeyStatus.dataset.html) {
         mapKeyStatus.innerHTML = mapKeyStatus.dataset.html = brokerHtml;
     }
     // Layers switched off for a slow network: a notice above the world map, with the filters

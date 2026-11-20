@@ -28,7 +28,7 @@ function build() {
         </ul>
         <p class="welcome-note">Not affiliated with WMO.</p>
         <form method="dialog" class="welcome-actions">
-            <button class="btn btn-primary" value="close" autofocus>Explore the map</button>
+            <button class="btn btn-primary" value="close" autofocus>Explore</button>
         </form>`;
     // A click on the backdrop (outside the dialog's box) closes it too
     dialog.addEventListener('click', (e) => {

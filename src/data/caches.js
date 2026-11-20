@@ -4,6 +4,7 @@
 // the back. The fastest usable cache is published as state.cache.
 import { setState } from '../state.js';
 import { isDataLink } from '../messages/messages.js';
+import { registerService, servicePick } from '../lib/services.js';
 
 const CACHES_MAX = 50;  // Hosts kept (there are a handful of global caches)
 const PROBE_MS = 8000;
@@ -169,7 +170,9 @@ export function canDownload(url) {
 // not yet timed included, so the fastest gets its chance), then other hosts that
 // allow browser downloads, then the rest. Hosts that blocked a download are left out
 export function downloadOrder(urls) {
+    var picked = servicePick('cache');
     var score = (url) => {
+        if (picked && hostOf(url) === picked) return -1;  // Picked under the world map (see services.js)
         var cache = cacheHosts.get(hostOf(url));
         if (cache && isFinite(cache.ms)) return cache.ms;
         return corsFriendly(url) || okHosts.has(hostOf(url)) ? 1e9 : 2e9;
@@ -177,13 +180,27 @@ export function downloadOrder(urls) {
     return [...new Set(urls)].filter((url) => !isBlocked(hostOf(url))).sort((a, b) => score(a) - score(b));
 }
 
-// The fastest cache that isn't known to block browsers, as state.cache. Only a new
-// cache, or a time that moved by a fifth, is published, so listeners aren't busy
+// The fastest cache that isn't known to block browsers, or the one picked (once it's
+// been seen), as state.cache. Only a new cache, or a time that moved by a fifth, is
+// published, so listeners aren't busy
 let published = null;
 function publish() {
-    var fastest = [...cacheHosts.values()].filter((c) => !c.blocked && isFinite(c.ms)).sort((a, b) => a.ms - b.ms)[0];
+    var usable = [...cacheHosts.values()].filter((c) => !c.blocked);
+    var fastest = usable.find((c) => c.host === servicePick('cache'))
+        || usable.filter((c) => isFinite(c.ms)).sort((a, b) => a.ms - b.ms)[0];
     if (!fastest) return;
     if (published && published.host === fastest.host && Math.abs(published.ms - fastest.ms) < published.ms * 0.2) return;
     published = { host: fastest.host, id: fastest.id, name: fastest.name, ms: fastest.ms };
     setState({ cache: published });
 }
+
+// The caches seen so far that let the browser download, to pick from
+registerService('cache', {
+    options: () => [...cacheHosts.values()].filter((c) => !c.blocked || c.host === servicePick('cache'))
+        .sort((a, b) => a.host.localeCompare(b.host))
+        .map((c) => ({ value: c.host, label: `${c.host} (${c.name})`, ms: c.ms })),
+    use() {
+        published = null;  // Published again, whatever the time
+        publish();
+    },
+});

@@ -3,7 +3,7 @@ import { noteCacheLinks } from '../data/caches.js';
 import { noteDataset } from '../data/catalogue.js';
 import { revealGatewayRows, DECODE_LAYERS, decodeEnabled, queueDecode } from '../data/decodeQueue.js';
 import { pointFor, stationId, disciplineOf, formatOf, isUpdate, topicClass, isSpaceBased, GATEWAY_TOPIC } from './messages.js';
-import { SATELLITE_PAGE, GTS_PAGE, PAGE_CLASSES } from '../page.js';
+import { SATELLITE_PAGE, SATELLITES_ON_PAGE, GTS_PAGE, PAGE_CLASSES } from '../page.js';
 import { latestByStation, records, observedAt, removePoint, newId, addPoint } from '../map/points.js';
 import { COLORS, OBS_CLASSES } from '../config.js';
 import { shipTrackKey } from '../data/reports.js';
@@ -17,13 +17,14 @@ export const ignoredTopics = [
 // Kinds of observation the GBON page never shows, by what a notification's topic says
 // it holds: their files aren't downloaded there. Files that don't say are decoded,
 // and only their stations and soundings drawn (see addPoint)
-// Whether this page takes a notification (see page.js): satellites only on theirs; on
+// Whether this page takes a notification (see page.js): satellites on theirs (only them)
+// and All observations; on
 // the GTS page only the gateways'; on a page of some kinds (GBON, metocean) nothing
 // whose topic says it's another kind, so its file isn't downloaded. A topic that
 // doesn't say ('other') is taken, and only the page's kinds of report in its file drawn
 // (see addPoint)
 export function topicOnPage(topic, feature) {
-    if (isSpaceBased(topic) !== SATELLITE_PAGE) return false;
+    if (isSpaceBased(topic) ? !SATELLITES_ON_PAGE : SATELLITE_PAGE) return false;
     if (GTS_PAGE && !GATEWAY_TOPIC.test(topic)) return false;
     if (!PAGE_CLASSES) return true;
     var props = (feature && feature.properties) || {};

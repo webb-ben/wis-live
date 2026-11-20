@@ -2,7 +2,7 @@ import { filters, filterModes } from './filters.js';
 import { FORMATS, DISCIPLINES } from '../messages/messages.js';
 import { SATELLITE_STYLE, WAVE_STYLE, METRICS } from '../config.js';
 import { hiddenLayers } from '../map/layers.js';
-import { SATELLITE_PAGE, GBON_PAGE, metricOnPage } from '../page.js';
+import { SATELLITE_PAGE, GBON_PAGE, REPLAY_START_MINUTES, metricOnPage } from '../page.js';
 import { setState, state } from '../state.js';
 import { setStartDataset, shownDataset, startDataset, setShownDataset } from '../data/catalogue.js';
 import { setReplayWindowMs, REPLAY_RANGE_MINUTES, replayWindowMs } from '../messages/replay.js';
@@ -40,6 +40,8 @@ export function readFiltersFromUrl() {
     var dataset = (params.get('dataset') || '').trim();
     if (/^[a-z0-9-]+:\S+$/i.test(dataset) && !/^urn:/i.test(dataset)) dataset = `urn:wmo:md:${dataset}`;
     if (/^urn:wmo:md:/i.test(dataset)) setStartDataset(dataset);
+    // replay=off: switched off where it starts on (the GBON page)
+    if (params.get('replay') === 'off') hiddenLayers.add('replay');
     var replayMinutes = params.has('replay') ? replayMinutesFrom(params.get('replay')) : null;
     if (replayMinutes) {
         hiddenLayers.delete('replay');
@@ -83,7 +85,10 @@ export function writeFiltersToUrl() {
     set('base', state.modelFieldOn && m && m.wms ? '1' : '');
     if (!startDataset) set('dataset', shownDataset ? shownDataset.id : '');  // Kept while a link's dataset is still loading
     // A duration, not a time, so the link still means something tomorrow
-    set('replay', hiddenLayers.has('replay') ? '' : replayParam(Math.round(replayWindowMs / 60000)));
+    // Left out as the page opens: off, or on at its start window where it starts on (GBON)
+    var minutes = Math.round(replayWindowMs / 60000);
+    set('replay', hiddenLayers.has('replay') ? (REPLAY_START_MINUTES ? 'off' : '')
+        : minutes === REPLAY_START_MINUTES ? '' : replayParam(minutes));
     var share = document.querySelector('.queue-share');
     if (share) share.hidden = !['topic', 'centre', 'format', 'discipline', 'style', 'require', 'base', 'dataset', 'replay'].some((p) => params.has(p));
     // Commas, colons and slashes read better unescaped (a dataset's urn:wmo:md:..., a

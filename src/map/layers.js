@@ -62,7 +62,7 @@ const ALL_LAYER_GROUPS = [
     ] },
 ];
 
-// The home page lists all but Satellites; the satellite page lists Satellites, and the
+// The home page lists every group (Satellites starting off, see state.js); the satellite page lists Satellites, and the
 // Global Replay for past satellite notifications; the GTS page the gateways' group (GTS-
 // to-WIS2 and WIS2-to-GTS); a page of some kinds (GBON, metocean) only the rows of its
 // kinds (cache-station, gts-buoy...) and the sources over them, without radar, METAR,
@@ -80,7 +80,7 @@ export const LAYER_GROUPS = SATELLITE_PAGE
             : { ...g, subtitle: 'Past gateway bulletins', layers: g.layers.filter((l) => l.key === 'replay') })
         : PAGE_CLASSES
             ? ALL_LAYER_GROUPS.filter((g) => g.key !== 'space').map((g) => ({ ...g, layers: g.layers.filter(rowOfKinds) }))
-            : ALL_LAYER_GROUPS.filter((g) => g.key !== 'space');
+            : ALL_LAYER_GROUPS;
 
 // Layer switches that are off, and which start off: kept in state.js
 export const hiddenLayers = state.hiddenLayers;

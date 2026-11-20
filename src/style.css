@@ -768,6 +768,11 @@
   stroke: #000000;
   stroke-width: 0.7;
 }
+/* A time the radar measured no winds */
+.windprof-col.windprof-empty {
+  stroke: #adb5bd;
+  stroke-dasharray: 3 3;
+}
 .windprof-barb {
   fill: none;
   stroke-width: 1.2;
@@ -2018,6 +2023,37 @@
 }
 .key-broker + .key-broker {
   margin-top: 0;
+}
+/* A line's service as a dropdown (see services.js): reads as text until hovered */
+.key-broker-name {
+  flex: none;
+  margin-right: 3px;
+}
+.key-service {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 14px 0 2px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%236c757d'/%3E%3C/svg%3E") no-repeat right 3px center;
+  color: inherit;
+  font: inherit;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  appearance: none;
+}
+.key-service:hover,
+.key-service:focus-visible {
+  border-color: #ced4da;
+  background-color: #f8f9fa;
+}
+/* Each line's time, at its right end */
+.key-broker-after {
+  flex: none;
+  margin-left: auto;
+  padding-left: 4px;
+  white-space: nowrap;
 }
 .map-key-main {
   min-width: 0;

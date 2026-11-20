@@ -473,7 +473,7 @@ connectFastest({
     onState: updateMapKey,
 });
 // And which catalogue and global cache (see rankGdcs and caches.js)
-subscribe(['catalogue', 'cache', 'slowNetwork'], updateMapKey);
+subscribe(['catalogue', 'cache', 'replay', 'slowNetwork'], updateMapKey);
 
 // ---------- Colouring stations, ships and buoys by a measured value. Values come from
 

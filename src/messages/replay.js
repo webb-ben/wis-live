@@ -6,6 +6,9 @@ import { disciplineOf, formatOf } from './messages.js';
 import { writeFiltersToUrl } from '../lib/url.js';
 import { filterModes, filters, passesFilterChips } from '../lib/filters.js';
 import { onMessage } from './handle.js';
+import { REPLAY_START_MINUTES } from '../page.js';
+import { state, setState } from '../state.js';
+import { registerService } from '../lib/services.js';
 
 // Global Replay: past notifications from the WIS2 Global Replay service
 // (OGC API - Features). The view's past replayWindowMs is fetched newest first,
@@ -44,7 +47,7 @@ export const REPLAY_RANGE_MINUTES = [720, 5];
 
 export const REPLAY_TICKS = [720, 360, 180, 60, 30, 15, 5];
 
-export const REPLAY_DEFAULT_MINUTES = 5;
+export const REPLAY_DEFAULT_MINUTES = REPLAY_START_MINUTES || 5;
 
 export let replayWindowMs = REPLAY_DEFAULT_MINUTES * 60 * 1000;
 
@@ -139,6 +142,21 @@ export function replayMatches(topic, feature) {
     return passesFilterChips({ topic, channel, centre: t.split('/', 1)[0], discipline: disciplineOf(t), format: formatOf(feature) });
 }
 
+export const REPLAY_HOST = new URL(REPLAY_API).host;
+
+// The one Global Replay there is, listed like the other services (see services.js)
+registerService('replay', {
+    options: () => [{ value: REPLAY_HOST, label: REPLAY_HOST, ms: state.replay && state.replay.ms }],
+    use() {},
+});
+
+// How long a page of the replay took to answer, smoothed like the caches' times, for
+// the status lines under the world map
+function noteReplayTime(ms) {
+    var last = state.replay && !state.replay.failed ? state.replay.ms : null;
+    setState({ replay: { host: REPLAY_HOST, ms: last == null ? ms : last * 0.7 + ms * 0.3 } });
+}
+
 export async function loadReplay() {
     var bbox = viewBbox();
     var since = new Date(Date.now() - replayWindowMs).toISOString().replace(/\.\d+Z$/, 'Z');
@@ -157,10 +175,12 @@ export async function loadReplay() {
         for (var prefix of topics) {
             var url = prefix ? `${base}&topic=${encodeURIComponent(prefix)}` : base;
             for (var fetched = 0; url && fetched < REPLAY_MAX / topics.length && !abort.signal.aborted;) {
+                var asked = performance.now();
                 var response = await fetch(url, { signal: abort.signal });
                 if (!response.ok) throw new Error(`Global Replay answered ${response.status}`);
                 var page = await response.json();
                 if (abort.signal.aborted) break;
+                noteReplayTime(performance.now() - asked);
                 for (var feature of page.features || []) {
                     var topic = feature.properties && feature.properties.topic;
                     if (topic && topic.includes('/a/wis2/') && replayMatches(topic, feature)) replayBacklog.push([topic, feature]);
@@ -174,6 +194,7 @@ export async function loadReplay() {
     } catch (err) {
         if (err.name !== 'AbortError') {
             replayedView = '';  // Try again on the next pan
+            setState({ replay: { host: REPLAY_HOST, failed: true } });
             console.debug(`Could not load the Global Replay: ${err.message}`);
         }
     }

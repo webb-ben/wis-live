@@ -22,7 +22,8 @@ metocean.html              The metocean page: the same app, <html data-page="met
 gts.html                   The GTS gateways page: the same app, <html data-page="gts">
 satellites.html            The satellite page: the same app, <html data-page="satellites">
 src/page.js                Which page this is (PAGE): index.html (home) takes every
-                           notification but space-based ones, satellites.html only those;
+                           notification, satellites a layer that starts off
+                           (SATELLITES_ON_PAGE), satellites.html only space-based ones;
                            gbon.html only surface stations and upper-air soundings, and
                            metocean.html only ships and buoys (PAGE_CLASSES: by topic in
                            topicOnPage, then by each report's kind in addPoint); gts.html
@@ -200,7 +201,8 @@ bottom; the core comes first, roughly in this order:
    `matchesFilters`) and the dataset list (via `datasetMatchesFilters`).
    Keep all three in sync when adding a filter. Filters, styling, a shown
    dataset and the Global Replay (`?replay=2h`, `90m`, or a URL-encoded ISO time;
-   it turns the layer on) are mirrored in the URL (`readFiltersFromUrl`/`writeFiltersToUrl`).
+   it turns the layer on; the GBON page opens with it on at 1h, and `replay=off`
+   switches it off there) are mirrored in the URL (`readFiltersFromUrl`/`writeFiltersToUrl`).
    The first visit's welcome (`src/lib/ui/welcome.js`) is never shown in an iframe;
    `?welcome=0` turns it off elsewhere and `?welcome=1` forces it.
 6. **MQTT** (`src/messages/mqtt.js`) — `connectFastest` races the brokers in `hosts`

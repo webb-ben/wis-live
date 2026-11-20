@@ -9,6 +9,7 @@ import { paintFilterMode, applyFilters, selectQueueTab, queueFilter } from '../l
 import { writeFiltersToUrl } from '../lib/url.js';
 import { PHONE } from '../lib/util.js';
 import { onMessage } from '../messages/handle.js';
+import { registerService, servicePick } from '../lib/services.js';
 
 
 // WIS2 Global Discovery Catalogue (OGC API - Records): what each dataset
@@ -50,15 +51,30 @@ export function rankGdcs(again) {
         })).then((times) => {
             // Sorted in place in one go, so a request going through GDCS sees whole orders
             GDCS.forEach((gdc, i) => { gdc.ms = times[i]; });
-            GDCS.sort((a, b) => a.ms - b.ms);
-            // The one in use, shown in the map key
-            setState({ catalogue: isFinite(GDCS[0].ms) ? { name: GDCS[0].name, host: new URL(GDCS[0].api).host, ms: GDCS[0].ms } : { failed: true } });
+            orderGdcs();
             gdcRankedYet = true;
         });
         if (!gdcRanked) gdcRanked = ranking;
     }
     return gdcRanked;
 }
+
+const gdcHost = (gdc) => new URL(gdc.api).host;
+
+// Fastest first, or the one picked under the world map first (see services.js), and
+// the one in use shown in the map key
+function orderGdcs() {
+    var picked = servicePick('catalogue');
+    GDCS.sort((a, b) => (gdcHost(b) === picked) - (gdcHost(a) === picked) || (a.ms ?? Infinity) - (b.ms ?? Infinity));
+    var gdc = GDCS[0];
+    setState({ catalogue: isFinite(gdc.ms) ? { name: gdc.name, host: gdcHost(gdc), ms: gdc.ms }
+        : gdc.ms === undefined ? { name: gdc.name, host: gdcHost(gdc), ms: null } : { failed: true } });
+}
+
+registerService('catalogue', {
+    options: () => GDCS.map((gdc) => ({ value: gdcHost(gdc), label: `${gdcHost(gdc)} (${gdc.name})`, ms: gdc.ms })),
+    use: orderGdcs,
+});
 
 // The same request of every catalogue at once: the first good answer is used and the
 // others are stopped. A 404 only counts once none has the record

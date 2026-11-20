@@ -2,6 +2,7 @@
 // connects and subscribes. A page passes what to do with each message and with
 // the broker's state.
 import mqtt from 'mqtt';
+import { registerService, servicePick } from '../lib/services.js';
 
 // Public WIS2 Global Brokers reachable from a browser (WSS only)
 const hosts = [
@@ -28,6 +29,7 @@ const options = {
 };
 
 let client = null;
+let attempt = 0;  // Each connectFastest's; candidates of an older one give up
 let handlers = { onMessage() {}, onState() {} };
 
 // Which Global Broker the page is on: connecting (racing them all), connected,
@@ -63,8 +65,12 @@ export function connectFastest({ onMessage, onState, subscribe } = handlers) {
     console.log('Connecting mqtt client');
     setBrokerState('connecting', null, null);
     let failures = 0;
+    const mine = ++attempt;
+    // The one picked under the world map, or all of them (see services.js)
+    const picked = hosts.find((h) => new URL(h).host === servicePick('broker'));
+    const racing = picked ? [picked] : hosts;
 
-    hosts.forEach((host) => {
+    racing.forEach((host) => {
         const start = performance.now();
         const candidate = mqtt.connect(host, { ...options, reconnectPeriod: 0 });
         candidate.setMaxListeners(10);
@@ -74,10 +80,10 @@ export function connectFastest({ onMessage, onState, subscribe } = handlers) {
             if (failed || candidate === client) return;
             failed = true;
             candidate.end(true);
-            if (!client && ++failures === hosts.length) {
+            if (mine === attempt && !client && ++failures === racing.length) {
                 console.log('All brokers failed, retrying...');
                 setBrokerState('retrying', null, null);
-                setTimeout(() => connectFastest(), 5000);
+                setTimeout(() => mine === attempt && connectFastest(), 5000);
             }
         };
 
@@ -87,7 +93,7 @@ export function connectFastest({ onMessage, onState, subscribe } = handlers) {
                     console.log(`Subscribe failed on ${host}`);
                     return fail();
                 }
-                if (client) return candidate.end(true); // Another broker won
+                if (client || mine !== attempt) return candidate.end(true); // Another broker won, or another was picked
 
                 client = candidate;
                 client.options.reconnectPeriod = options.reconnectPeriod;
@@ -108,7 +114,7 @@ export function connectFastest({ onMessage, onState, subscribe } = handlers) {
             if (candidate === client) {
                 candidate.end(true);
                 client = null;
-                connectFastest();
+                if (mine === attempt) connectFastest();
             } else {
                 fail();
             }
@@ -117,3 +123,19 @@ export function connectFastest({ onMessage, onState, subscribe } = handlers) {
         candidate.on('close', fail);
     });
 }
+
+// Switches broker: '' races them all again, a host connects to that one only. The
+// messages between are missed (the brokers carry the same ones)
+registerService('broker', {
+    options: () => hosts.map((h) => {
+        var host = new URL(h).host;
+        return { value: host, label: host, ms: host === brokerState.host ? brokerState.ms : null };
+    }),
+    use() {
+        var old = client;
+        client = null;
+        attempt++;  // The old one's candidates, and its close, give up
+        if (old) old.end(true);
+        connectFastest();
+    },
+});

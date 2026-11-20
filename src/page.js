@@ -1,6 +1,6 @@
 // Which page this is, from <html data-page="...">; the pages share every module, and
 // this is what they ask to tell them apart:
-//  - home (index.html): everything but satellites
+//  - home (index.html): everything, satellites a layer that starts off
 //  - gbon (gbon.html): the Global Basic Observing Network's kinds, surface weather
 //    stations and upper-air soundings
 //  - metocean (metocean.html): the sea's, ships and buoys (floats among them)
@@ -12,17 +12,22 @@ export const SATELLITE_PAGE = PAGE === 'satellites';
 export const GBON_PAGE = PAGE === 'gbon';
 export const METOCEAN_PAGE = PAGE === 'metocean';
 export const GTS_PAGE = PAGE === 'gts';
+// The GBON page opens with the Global Replay on, reaching back this far (minutes);
+// the others with it off, at 5 minutes once switched on
+export const REPLAY_START_MINUTES = GBON_PAGE ? 60 : null;
+// Pages that take satellites: theirs, and All observations, where they're a layer that starts off
+export const SATELLITES_ON_PAGE = SATELLITE_PAGE || PAGE === 'home';
 
 // Every page, for the links between them and the welcome (see welcome.js)
 export const PAGES = [
     { key: 'home', href: './', label: 'All observations',
-        about: 'Everything arriving through WIS2 except satellites: stations, soundings, ships, buoys, aircraft, radar and more' },
+        about: 'Everything arriving through WIS2' },
     { key: 'gbon', href: 'gbon.html', label: 'Surface and upper air',
         about: 'The Global Basic Observing Network: weather stations and upper-air soundings' },
     { key: 'metocean', href: 'metocean.html', label: 'Ships and buoys',
         about: 'Observations at sea: ships, drifting and moored buoys, and ocean floats' },
     { key: 'gts', href: 'gts.html', label: 'GTS gateways',
-        about: 'Bulletins the gateways pass between the older Global Telecommunication System and WIS2' },
+        about: 'Bulletins the p Global Telecommunication System gateways and WIS2' },
     { key: 'satellites', href: 'satellites.html', label: 'Satellites',
         about: 'Space-based observations, drawn as areas of coverage' },
 ];
@@ -38,10 +43,11 @@ export function classOnPage(cls) {
     return !PAGE_CLASSES || PAGE_CLASSES.includes(cls);
 }
 
-// Whether a measure is offered to Style by: satellite measures on the satellite page
-// only, and no sea-surface ones on the GBON page, which has no ships or buoys
+// Whether a measure is offered to Style by: satellite measures where satellites are
+// (only them on the satellite page), and no sea-surface ones on the GBON page, which
+// has no ships or buoys
 export function metricOnPage(metric) {
-    if ((metric.targets === 'satellite') !== SATELLITE_PAGE) return false;
+    if (metric.targets === 'satellite' ? !SATELLITES_ON_PAGE : SATELLITE_PAGE) return false;
     return !(GBON_PAGE && metric.group.startsWith('Sea'));
 }
 
