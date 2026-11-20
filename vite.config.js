@@ -15,6 +15,8 @@ export default defineConfig({
             input: {
                 main: 'index.html',
                 gbon: 'gbon.html',
+                metocean: 'metocean.html',
+                gts: 'gts.html',
                 satellites: 'satellites.html',
             },
             output: {

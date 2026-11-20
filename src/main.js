@@ -41,13 +41,14 @@ import { makeMinimizable, initKeyToggles, startKeyToggles, keyToggle, hiddenKeyR
 import { externalStation, twinKind, twinsNear, TWIN_LAYERS } from './map/twins.js';
 import { TRACK_REBUILD_MS, rebuildTracks, shipTrackLayers, trackKey, markTracksDirty } from './map/tracks.js';
 import { tickPulses } from './map/pulses.js';
-import { startArrowMotion } from './map/arrowMotion.js';
+import { startWindFlow } from './map/windFlow.js';
+import { RecentreControl } from './map/recentre.js';
 import { satelliteColours, satelliteLabel, satelliteMatch, syncSatelliteRows, satelliteKey, satelliteName, addSatelliteRow, satelliteLink } from './data/satellite/rows.js';
 import { metricValues } from './data/metrics.js';
 import { swathsBuilt, SWATH_FLUSH_MS, flushSwaths } from './data/satellite/coverage.js';
 import { addCoverageLayers } from './data/satellite/coverageLayers.js';
 import { SATELLITE_PAGE, PAGE_TOPICS } from './page.js';
-import { isColourable, isColourTarget, satelliteStyled, IS_AIRCRAFT, setColourBy, paintAge, showColourStatus, windArrows } from './map/colour.js';
+import { isColourable, isColourTarget, satelliteStyled, IS_AIRCRAFT, setColourBy, paintAge, showColourStatus, windArrows, POINT_RADIUS } from './map/colour.js';
 import { showDatasetFromUrl, gdcSearched, searchCatalogue, sortDatasetRows, datasetId, showDatasetInPopup, filterDatasetRows, initCatalogue, noteDataset, rankGdcs, startDataset, shownDataset, setShownDataset, setStartDataset } from './data/catalogue.js';
 import { scheduleReplay, replayPosition, replayWindowMs, REPLAY_TICKS, replayMinutesAt, replayWindowLabel, setReplayWindow, setReplayWindowMs, REPLAY_RANGE_MINUTES } from './messages/replay.js';
 import { applyMapFilter } from './map/filter.js';
@@ -116,8 +117,7 @@ function nearestPoint(point) {
     return best;
 }
 
-// Point size by zoom, shared by the WIS2 circles and the GTS diamonds
-const POINT_RADIUS = ['interpolate', ['linear'], ['zoom'], 1, 2, 4, 4.5, 8, 8, 15, 16];
+// Point size by zoom (POINT_RADIUS, in colour.js), shared by the WIS2 circles and the GTS diamonds;
 // icon-size per pixel of circle radius, with diamonds a little larger so their area matches a circle's
 const DIAMOND_SCALE = 1.3 / (DIAMOND_HALF / 2);
 
@@ -298,8 +298,8 @@ map.on('load', () => {
     }, 'points');
     paintAge();
     setInterval(paintAge, 30 * 1000);
-    // Wind arrows drift a little the way they point (src/map/arrowMotion.js)
-    startArrowMotion();
+    // Styled by wind, streaks flow the way it blows (src/map/windFlow.js)
+    startWindFlow();
     applyMapFilter();
     // Open coloured by observation type, or as the link says (style=temp and so on), near the visitor
     if (stylePanel) {
@@ -411,6 +411,12 @@ document.querySelector('.queue-pane-layers').appendChild(new LegendControl().onA
 // Style by are bottom left instead
 map.addControl(new StyleControl(), SATELLITE_PAGE ? 'bottom-left' : 'top-right');
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-left');
+// Under them, a button that centres the globe again (src/map/recentre.js)
+map.addControl(new RecentreControl(() => {
+    var padding = panelPaddingNow();
+    panelPadding = `${padding.left}|${padding.right}|${padding.bottom}`;
+    return padding;
+}), 'top-left');
 map.addControl(new MapKey(), 'bottom-right');
 addAbout();
 
@@ -418,7 +424,8 @@ addAbout();
 // uncovered: the sidebar and info panel become map padding as they open and close
 let panelPadding = '';
 
-function updateMapPadding() {
+// The map's padding for the panels open now
+function panelPaddingNow() {
     var queue = document.querySelector('.queue');
     var info = document.body.classList.contains('info-open') && infobar;
     var left = 0, right = 0, bottom = 0;
@@ -428,10 +435,15 @@ function updateMapPadding() {
         left = document.body.classList.contains('queue-open') && queue ? queue.getBoundingClientRect().width : 0;
         right = info ? infobar.getBoundingClientRect().width : 0;
     }
-    var key = `${left}|${right}|${bottom}`;
+    return { left, right, top: 0, bottom };
+}
+
+function updateMapPadding() {
+    var padding = panelPaddingNow();
+    var key = `${padding.left}|${padding.right}|${padding.bottom}`;
     if (key === panelPadding) return;
     panelPadding = key;
-    map.easeTo({ padding: { left, right, top: 0, bottom }, duration: 200 });
+    map.easeTo({ padding, duration: 200 });
 }
 new MutationObserver(updateMapPadding).observe(document.body, { attributes: true, attributeFilter: ['class'] });
 window.addEventListener('resize', () => { panelPadding = ''; updateMapPadding(); });

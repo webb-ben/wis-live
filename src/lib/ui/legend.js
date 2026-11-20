@@ -23,7 +23,8 @@ import { satelliteColours, satelliteLabel } from '../../data/satellite/rows.js';
 import { radars, RADAR_COLORS } from '../../data/radar/radar.js';
 import { brokerState } from '../../messages/mqtt.js';
 import { SHED_LAYERS } from '../../messages/network.js';
-import { SATELLITE_PAGE, metricOnPage, otherPageLinks } from '../../page.js';
+import { SATELLITE_PAGE, METOCEAN_PAGE, metricOnPage, otherPageLinks } from '../../page.js';
+import { flowShown } from '../../map/windFlow.js';
 // The panels on the map: the layers in the sidebar (LegendControl), the key of what
 // is drawn with Style by (StyleControl, top right), and the world map with the
 // connection lines and About (MapKey, bottom right)
@@ -58,8 +59,21 @@ export class LegendControl {
             </label>`}`).join('')}
             </section>`).join('')}`;
 
-        // How far back the Global Replay reaches, under its row: earlier on the left, now on the right
-        container.querySelector('.legend-toggle[data-layer="replay"]').insertAdjacentHTML('afterend', `
+        // How far back the Global Replay reaches, under its row: earlier on the left, now on
+        // the right (every page lists the Replay; one that didn't would just have no slider)
+        var replayRow = container.querySelector('.legend-toggle[data-layer="replay"]');
+        if (replayRow) this.addReplayWindow(container, replayRow);
+
+        // How see-through satellite coverage is, under its row. On the satellite page, whose
+        // sidebar is hidden, it's in Style by instead (see buildStylePanel)
+        var coverageToggle = container.querySelector('.legend-toggle[data-layer="sat-coverage"]');
+        if (coverageToggle && !SATELLITE_PAGE) coverageToggle.after(buildOpacitySlider());
+        this.bindRows(container);
+        return container;
+    }
+
+    addReplayWindow(container, replayRow) {
+        replayRow.insertAdjacentHTML('afterend', `
             <label class="legend-option legend-range" data-layer="replay-window">
                 <span class="legend-range-value">Since <output></output></span>
                 <input type="range" min="0" max="1000" step="1" value="${Math.round(replayPosition(replayWindowMs / 60000) * 1000)}"
@@ -81,12 +95,10 @@ export class LegendControl {
         setInterval(showWindow, 30 * 1000);  // The start time moves with the clock
         range.addEventListener('input', showWindow);
         range.addEventListener('change', () => setReplayWindow(minutesShown()));
+    }
 
-        // How see-through satellite coverage is, under its row. On the satellite page, whose
-        // sidebar is hidden, it's in Style by instead (see buildStylePanel)
-        var coverageToggle = container.querySelector('.legend-toggle[data-layer="sat-coverage"]');
-        if (coverageToggle && !SATELLITE_PAGE) coverageToggle.after(buildOpacitySlider());
-
+    // The rows' switches: hiding layers, and the decoding that goes with them
+    bindRows(container) {
         container.querySelectorAll('.legend-toggle[data-layer]').forEach((row) => {
             var key = row.dataset.layer;
             row.querySelector('input').addEventListener('change', (e) => {
@@ -120,7 +132,6 @@ export class LegendControl {
         syncSublayers();
         // The decode layers are defined further down the script, so start once it has run
         setTimeout(syncDecoding);
-        return container;
     }
 
     onRemove() {
@@ -267,7 +278,9 @@ function byFrequency([a], [b]) {
 function styleOptions(seen) {
     var offered = Object.entries(METRICS).filter(([key, m]) => metricOnPage(m) && (!seen || seen.has(key) || key === state.colourBy))
         .sort(byFrequency);
+    // The metocean page offers ships' and buoys' wave spectra too (elsewhere only by link, ?style=waves)
     return (SATELLITE_PAGE ? `<option value="${SATELLITE_STYLE}">Satellite</option>` : '<option value="kind">Observation type</option>')
+        + (METOCEAN_PAGE ? `<option value="${WAVE_STYLE}">Wave spectrum</option>` : '')
         + [...new Set(offered.map(([, m]) => m.group))].map((group) => `<optgroup label="${group}">${offered
             .filter(([, m]) => m.group === group).map(([key, m]) => `<option value="${key}">${m.label}</option>`).join('')}</optgroup>`).join('');
 }
@@ -446,7 +459,10 @@ export function updateMapKey() {
             '<span class="legend-dot legend-line" style="--color: linear-gradient(90deg, #99e9f2, #22b8cf, #1971c2, #5f3dc4)"></span>Aircraft tracks by altitude'));
     }
     if (state.modelFieldOn && m && m.wms) rows.push(`<div class="key-note">Base layer: ECCC model ${esc(m.wmsLabel || m.label.toLowerCase())}</div>`);
-    if (windArrows()) {
+    if (flowShown()) {
+        // Streaks in place of the arrows (src/map/windFlow.js)
+        rows.push('<div class="key-note"><span class="key-arrow">〰</span>Streaks flow the way the wind blows, near where it was measured; brighter is stronger.</div>');
+    } else if (windArrows()) {
         rows.push('<div class="key-note"><span class="key-arrow">➜</span>Arrows point the way the wind blows; longer is stronger. Zoom in for more.</div>');
         rows.push(`<div class="key-note">${symbol('ring', m.stops[0][1])}Calm</div>`);
     }
