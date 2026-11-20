@@ -3,7 +3,10 @@ import { noteCacheLinks } from '../data/caches.js';
 import { noteDataset } from '../data/catalogue.js';
 import { revealGatewayRows, DECODE_LAYERS, decodeEnabled, queueDecode } from '../data/decodeQueue.js';
 import { pointFor, stationId, disciplineOf, formatOf, isUpdate, topicClass, isSpaceBased, GATEWAY_TOPIC } from './messages.js';
-import { SATELLITE_PAGE, SATELLITES_ON_PAGE, GTS_PAGE, PAGE_CLASSES } from '../page.js';
+import { SATELLITE_PAGE, SATELLITES_ON_PAGE, GTS_PAGE, RADAR_PAGE, PAGE_CLASSES } from '../page.js';
+
+// GTS upper-wind bulletins (IUP…): wind profilers', radars' and PILOT balloons'
+const RADAR_WIND_BULLETIN = /-gts-to-wis2\/data\/core\/I\/U\/P\//;
 import { latestByStation, records, observedAt, removePoint, newId, addPoint } from '../map/points.js';
 import { COLORS, OBS_CLASSES } from '../config.js';
 import { shipTrackKey } from '../data/reports.js';
@@ -20,12 +23,16 @@ export const ignoredTopics = [
 // Whether this page takes a notification (see page.js): satellites on theirs (only them)
 // and All observations; on
 // the GTS page only the gateways'; on a page of some kinds (GBON, metocean) nothing
-// whose topic says it's another kind, so its file isn't downloaded. A topic that
+// whose topic says it's another kind, so its file isn't downloaded (the radar page
+// takes radar topics and upper-wind bulletins too). A topic that
 // doesn't say ('other') is taken, and only the page's kinds of report in its file drawn
 // (see addPoint)
 export function topicOnPage(topic, feature) {
     if (isSpaceBased(topic) ? !SATELLITES_ON_PAGE : SATELLITE_PAGE) return false;
     if (GTS_PAGE && !GATEWAY_TOPIC.test(topic)) return false;
+    // Radar volumes are filed under surface observations, and the GTS's radar and
+    // profiler winds under upper air (IUP…, with PILOT balloons, which addPoint leaves out)
+    if (RADAR_PAGE && (/radar/i.test(topic) || RADAR_WIND_BULLETIN.test(topic))) return true;
     if (!PAGE_CLASSES) return true;
     var props = (feature && feature.properties) || {};
     var cls = topicClass({ topic, webcam: topic.includes('webcam'), props });

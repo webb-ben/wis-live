@@ -5,6 +5,8 @@
 //    stations and upper-air soundings
 //  - metocean (metocean.html): the sea's, ships and buoys (floats among them)
 //  - gts (gts.html): what the GTS gateways pass between the GTS and WIS2, both ways
+//  - radar (radar.html): weather radar volumes, and winds measured from the ground by
+//    radars and wind profilers
 //  - satellites (satellites.html): only satellites, drawn as coverage
 // No imports, so anything (state.js included) can use it
 export const PAGE = document.documentElement.dataset.page || 'home';
@@ -12,6 +14,7 @@ export const SATELLITE_PAGE = PAGE === 'satellites';
 export const GBON_PAGE = PAGE === 'gbon';
 export const METOCEAN_PAGE = PAGE === 'metocean';
 export const GTS_PAGE = PAGE === 'gts';
+export const RADAR_PAGE = PAGE === 'radar';
 // The GBON page opens with the Global Replay on, reaching back this far (minutes);
 // the others with it off, at 5 minutes once switched on
 export const REPLAY_START_MINUTES = GBON_PAGE ? 60 : null;
@@ -26,6 +29,8 @@ export const PAGES = [
         about: 'The Global Basic Observing Network: weather stations and upper-air soundings' },
     { key: 'metocean', href: 'metocean.html', label: 'Ships and buoys',
         about: 'Observations at sea: ships, drifting and moored buoys, and ocean floats' },
+    { key: 'radar', href: 'radar.html', label: 'Radar',
+        about: 'Weather radar reflectivity, and winds measured by radars and wind profilers' },
     { key: 'gts', href: 'gts.html', label: 'GTS gateways',
         about: 'Bulletins the p Global Telecommunication System gateways and WIS2' },
     { key: 'satellites', href: 'satellites.html', label: 'Satellites',
@@ -37,18 +42,18 @@ export const OTHER_PAGES = PAGES.filter((p) => p.key !== PAGE);
 // the GBON and metocean pages sort by kind (by topic first, then each report's kind, see
 // topicOnPage and addPoint): the home and satellite pages split by topic, as a satellite
 // file's reports aren't all sorted as satellites, and the GTS page by its gateways
-export const PAGE_CLASSES = GBON_PAGE ? ['station', 'upperair'] : METOCEAN_PAGE ? ['ship', 'buoy'] : null;
+export const PAGE_CLASSES = GBON_PAGE ? ['station', 'upperair'] : METOCEAN_PAGE ? ['ship', 'buoy'] : RADAR_PAGE ? ['radarwind'] : null;
 
 export function classOnPage(cls) {
     return !PAGE_CLASSES || PAGE_CLASSES.includes(cls);
 }
 
 // Whether a measure is offered to Style by: satellite measures where satellites are
-// (only them on the satellite page), and no sea-surface ones on the GBON page, which
-// has no ships or buoys
+// (only them on the satellite page), and no sea-surface ones on the GBON and radar pages,
+// which have no ships or buoys
 export function metricOnPage(metric) {
     if (metric.targets === 'satellite' ? !SATELLITES_ON_PAGE : SATELLITE_PAGE) return false;
-    return !(GBON_PAGE && metric.group.startsWith('Sea'));
+    return !((GBON_PAGE || RADAR_PAGE) && metric.group.startsWith('Sea'));
 }
 
 // The GTS gateway centres, as WMO lists them (WIS 2.0 Global Services, community.wmo.int):

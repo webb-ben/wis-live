@@ -19,6 +19,7 @@ https://benwebb.com/wis-live/). The page is not affiliated with WMO.
 index.html                 Page shell: meta tags, analytics, the app module, #map
 gbon.html                  The GBON page: the same app, <html data-page="gbon">
 metocean.html              The metocean page: the same app, <html data-page="metocean">
+radar.html                 The radar page: the same app, <html data-page="radar">
 gts.html                   The GTS gateways page: the same app, <html data-page="gts">
 satellites.html            The satellite page: the same app, <html data-page="satellites">
 src/page.js                Which page this is (PAGE): index.html (home) takes every
@@ -26,7 +27,9 @@ src/page.js                Which page this is (PAGE): index.html (home) takes ev
                            (SATELLITES_ON_PAGE), satellites.html only space-based ones;
                            gbon.html only surface stations and upper-air soundings, and
                            metocean.html only ships and buoys (PAGE_CLASSES: by topic in
-                           topicOnPage, then by each report's kind in addPoint); gts.html
+                           topicOnPage, then by each report's kind in addPoint); radar.html
+                           radar volumes and radar and profiler winds (radar topics and GTS
+                           IUP bulletins too, radar layer on); gts.html
                            only the GTS gateways' topics (both ways). Each lists its own
                            layer groups (layers.js) and Style by measures (metricOnPage),
                            and links to the others
