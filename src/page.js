@@ -40,10 +40,10 @@ export function metricOnPage(metric) {
     return !(GBON_PAGE && metric.group.startsWith('Sea'));
 }
 
-// The GTS gateway centres, as heard on the Global Brokers in November 2026: DWD
-// (Offenbach) and JMA (Tokyo) republish the GTS into WIS2. No WIS2-to-GTS centre
-// was publishing then; add one here when it does, or the GTS page won't hear it
-export const GATEWAY_CENTRES = ['de-dwd-gts-to-wis2', 'jp-jma-gts-to-wis2'];
+// The GTS gateway centres, as WMO lists them (WIS 2.0 Global Services, community.wmo.int):
+// DWD and JMA republish the GTS into WIS2, CMA and the Met Office pass a subset of
+// WIS2 on to the GTS. The GTS page hears no other centre, so add new ones here
+export const GATEWAY_CENTRES = ['de-dwd-gts-to-wis2', 'jp-jma-gts-to-wis2', 'cn-cma-wis2-to-gts', 'uk-metoffice-wis2-to-gts'];
 
 // The Global Broker topics the page subscribes to (MQTT filters: + one level, # the
 // rest). The satellite page takes only satellites': WIS2's space-based observations,
