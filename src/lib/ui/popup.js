@@ -19,7 +19,8 @@ import { renderCitypage } from '../../plots/citypage.js';
 import { METRICS, SATELLITE_STYLE } from '../../config.js';
 import { state } from '../../state.js';
 import { setColourBy } from '../../map/colour.js';
-import { windProfileLevels, soundingTiles, windProfileTiles, soundingTime, showSoundingCharts, openSounding, windProfileColumns, WIND_PROFILE_COLUMNS, renderWindProfile, reportSite } from '../../plots/sounding.js';
+import { windProfileLevels, soundingTiles, windProfileTiles, soundingTime, showSoundingCharts, openSounding, windProfileColumns, WIND_PROFILE_COLUMNS, renderWindProfile, reportSite,
+    emptyWindTiles, shortSiteName, windProfileColumnsOrEmpty } from '../../plots/sounding.js';
 import { satelliteTiles } from '../../data/satellite/tiles.js';
 import { oceanTiles, renderOceanProfile, renderTSDiagram, openOceanProfile } from '../../data/ocean/profile.js';
 import { aircraftTiles } from '../../data/aviation/aircraft.js';
@@ -493,6 +494,8 @@ export function renderDecoded(out, title, result) {
     var name = [1015, 1019, 1011].map((id) => stationName(values.get(id))).find(Boolean);
     // Ocean profilers have a platform number (001087), not a name
     if (!name && values.has(1087) && result.ocean) name = `Float ${values.get(1087)[0]}`;
+    // Radars and profilers often only have a short site name (e.g. ROS)
+    if (!name) name = shortSiteName(values);
     if (name && title) title.textContent = name;
 
     var profile = result.profile && result.profile.filter((l) => l[0] > 0);
@@ -503,12 +506,14 @@ export function renderDecoded(out, title, result) {
     var ocean = !sounding && !satellite && result.ocean && result.ocean.levels.length >= 3 ? result.ocean : null;
     // Wind profilers and radar VAD winds: heights without pressure
     var winds = !sounding && !satellite && !ocean ? windProfileLevels(result.rows) : null;
+    // A radar or profiler that measured no winds this time
+    var noWinds = !sounding && !satellite && !ocean && !winds && [3, 6].includes((values.get(2003) || [])[0]);
     // Hyperspectral sounders: channel radiances, maybe only the first of them for now (see showSpectrum)
     var spectrum = satellite && (result.fullSpectrum || values.has(14044) || values.has(14046));
-    var marine = sounding || winds || ocean ? null : marineDetails(result.rows, satellite);
+    var marine = sounding || winds || ocean || noWinds ? null : marineDetails(result.rows, satellite);
     var tiles = sounding ? soundingTiles(profile) : satellite ? satelliteTiles(result.rows, values) : winds ? windProfileTiles(winds, values)
-        : ocean ? oceanTiles(ocean, values) : [];
-    for (var key of sounding || satellite || winds || ocean ? [] : KEY_VALUES) {
+        : ocean ? oceanTiles(ocean, values) : noWinds ? emptyWindTiles(values) : [];
+    for (var key of sounding || satellite || winds || ocean || noWinds ? [] : KEY_VALUES) {
         var id = key.ids.find((i) => values.has(i));
         if (!id || (key.unless && key.unless.some((i) => values.has(i)))) continue;
         if (key.wind) {
@@ -534,7 +539,7 @@ export function renderDecoded(out, title, result) {
         ${sounding ? `
         <div class="sounding"></div>
         <button type="button" class="btn btn-sm btn-outline-secondary sounding-expand">Expand sounding</button>` : ''}
-        ${winds ? '<div class="wind-profile"></div>' : ''}
+        ${winds || noWinds ? '<div class="wind-profile"></div>' : ''}
         ${tiles.length ? `<div class="pp-tiles">${tiles.join('')}</div>` : ''}
         ${ocean ? `
         <div class="ocean-graphs">
@@ -577,7 +582,7 @@ export function renderDecoded(out, title, result) {
         // The compass's wind, wave and heading arrows go on the spectrum instead
         renderWaveSpectrum(out.querySelector('.wave-spectrum'), marine.spectrum, { width: 300, ...marine.dirs });
     }
-    if (winds) showWindProfiles(out.querySelector('.wind-profile'), result);
+    if (winds || noWinds) showWindProfiles(out.querySelector('.wind-profile'), result);
     if (ocean) {
         // Temperature and salinity, then any biogeochemical variables, then the T–S diagram;
         // a part with nothing to draw goes with its heading (an XBT has temperature only)
@@ -704,7 +709,7 @@ export function showWindProfiles(container, result) {
         var time = c.time || fallback;
         if (!columns.some((k) => k.time === time)) columns.push({ time, levels: c.levels });
     });
-    add(windProfileColumns(result.rows), opened);
+    add(windProfileColumnsOrEmpty(result.rows, opened), opened);
     var draw = (status) => {
         var nearest = columns.slice().sort((a, b) => Math.abs(a.time - opened) - Math.abs(b.time - opened)).slice(0, WIND_PROFILE_COLUMNS);
         renderWindProfile(container, nearest, { width: 300, height: 280, status });
@@ -735,7 +740,7 @@ export function showWindProfiles(container, result) {
                 var where = reportSite(rows);
                 // A file can hold several sites; keep only this one's, once per time
                 if (site && where && distanceKm(site, where) > 5) continue;
-                add(windProfileColumns(rows), observedAt(r));
+                add(windProfileColumnsOrEmpty(rows, observedAt(r)), observedAt(r));
                 if (container.isConnected) draw('Adding this site’s other reports…');
             } catch (err) {
                 console.debug(`Could not decode a wind profile: ${err.message}`);

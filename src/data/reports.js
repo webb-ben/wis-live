@@ -8,13 +8,15 @@ import { windProfileLevels } from '../plots/sounding.js';
 export function reportClass(values, profile, rows) {
     if (values.has(1007)) return 'satellite';
     if (values.has(1008) || values.has(1006) || values.has(7010) || values.has(8009) || values.has(8004)) return 'aircraft';
-    // Wind profilers are 6 in code table 0 02 003. Radar (3) only says some radar measured the
-    // winds (e.g. weather radar VAD winds, which Norway sends as IUPD bulletins), so it counts
-    // only with winds at heights
+    // Wind profilers are 6 in code table 0 02 003. Radar (3) says some radar measured the
+    // winds (e.g. weather radar VAD winds: Norway's and DWD's IUPD bulletins, the Met
+    // Office's IUPA)
     if (values.get(2003) === 6 || (values.get(2003) === 3 && rows && windProfileLevels(rows))) return 'radarwind';
     if (profile && profile.length >= 2) return 'upperair';
-    // Radars that sent no winds this time (e.g. Clee Hill's IUPA, Hannover's IUPD) aren't soundings either
-    if (values.get(2003) === 3) return 'other';
+    // A radar that sent no winds this time (e.g. Rostock's, Hannover's or Clee Hill's,
+    // when the air is too clear for its beam to see anything move) is still a radar
+    // wind profile, an empty one, not a sounding (see emptyWindTiles)
+    if (values.get(2003) === 3) return 'radarwind';
     // PILOTs name their equipment, even with no levels to report
     if (values.has(2003)) return 'upperair';
     if (values.has(1011)) return 'ship';

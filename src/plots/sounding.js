@@ -66,6 +66,21 @@ export function windProfileColumns(rows) {
     return columns.length ? columns : null;
 }
 
+// As windProfileColumns, but a radar's or profiler's report with no winds (002003 radar
+// or wind profiler) comes back as one empty column at its time, so it can be drawn as a
+// gap among the site's other reports. Null for any other report without winds
+export function windProfileColumnsOrEmpty(rows, fallbackTime) {
+    var columns = windProfileColumns(rows);
+    if (columns) return columns;
+    var get = (id) => (rows.find((r) => r[0] === id) || [])[2];
+    if (![3, 6].includes(get(2003))) return null;
+    var time = typeof get(4001) === 'number' ? Date.UTC(get(4001), get(4002) - 1, get(4003), get(4004) || 0, get(4005) || 0) : fallbackTime;
+    var levels = [];
+    var station = get(7030) ?? get(7001);
+    levels.station = typeof station === 'number' ? station : null;
+    return [{ time, levels }];
+}
+
 // The latest time's levels, for the tiles and to tell a wind profile from other reports
 export function windProfileLevels(rows) {
     var columns = windProfileColumns(rows);
@@ -87,6 +102,32 @@ export function windProfileTiles(levels, values) {
     if ((values.get(8021) || [])[0] === 2 && typeof period === 'number' && period) tiles.push(tile('Averaged over', `${Math.abs(period)} min`));
     tiles.push(tile('Levels', levels.length.toLocaleString()));
     return tiles;
+}
+
+// A radar or profiler report with no winds at any height this time: what it does say
+export function emptyWindTiles(values) {
+    var tile = (label, text) => `<div class="pp-tile"><div>${esc(label)}</div><strong>${esc(text)}</strong></div>`;
+    var equipment = { 3: 'Radar', 6: 'Wind profiler' }[(values.get(2003) || [])[0]];
+    var tiles = [];
+    if (equipment) tiles.push(tile('Measured by', equipment));
+    tiles.push(tile('Winds', 'None this time'));
+    var height = (values.get(7001) || values.get(7030) || [])[0];
+    if (typeof height === 'number') tiles.push(tile('Site height', `${Math.round(height)} m`));
+    return tiles;
+}
+
+// DWD's weather radars, by the short site name (001018) their wind profiles carry
+const DWD_RADARS = { ASB: 'Borkum', BOO: 'Boostedt', DRS: 'Dresden', EIS: 'Eisberg', ESS: 'Essen', FBG: 'Feldberg',
+    FLD: 'Flechtdorf', HNR: 'Hannover', ISN: 'Isen', MEM: 'Memmingen', MHP: 'Hohenpeißenberg', NEU: 'Neuhaus',
+    NHB: 'Neuheilenbach', OFT: 'Offenthal', PRO: 'Prötzel', ROS: 'Rostock', TUR: 'Türkheim', UMD: 'Ummendorf' };
+
+// A site known only by its short name (001018), as radars name themselves: spelled out
+// for a German one (WMO block 10)
+export function shortSiteName(values) {
+    var code = ((values.get(1018) || [])[0] || '').toString().replace(/[\x00-\x20ÿ]+/g, '').toUpperCase();
+    if (!code) return null;
+    var german = (values.get(1001) || [])[0] === 10;
+    return german && DWD_RADARS[code] ? `${DWD_RADARS[code]} (${code})` : code;
 }
 
 // Wind speed in 5 kt bins, calm to 60 kt and over, as on profiler time-height plots
@@ -146,6 +187,8 @@ export function renderWindProfile(container, columns, opts) {
     var agl = columns.every((c) => c.levels.station !== null);
     var above = (c, l) => l.height - (agl ? c.levels.station : 0);
     var heights = columns.flatMap((c) => c.levels.map((l) => above(c, l)));
+    // With no winds at all, the first 3 km, where weather radars see winds when they do
+    if (!heights.length) heights = [0, 3000];
     var lo = Math.min(...heights), hi = Math.max(...heights);
     var hMin = Math.min(0, lo), hMax = hi + Math.max(100, (hi - lo) * 0.04);
     var y = (z) => m.top + h * (hMax - z) / (hMax - hMin);
@@ -173,7 +216,8 @@ export function renderWindProfile(container, columns, opts) {
     var lastLabel = -Infinity;
     for (var c of columns) {
         var cx = x(c.time);
-        svgEl('line', { x1: cx, x2: cx, y1: m.top, y2: m.top + h, class: 'windprof-col' }, svg);
+        // A time with no winds is a dashed line, an empty column
+        svgEl('line', { x1: cx, x2: cx, y1: m.top, y2: m.top + h, class: c.levels.length ? 'windprof-col' : 'windprof-col windprof-empty' }, svg);
         if (cx - lastLabel < 32) continue;
         lastLabel = cx;
         svgEl('text', { x: cx, y: m.top + h + 13, class: 'skewt-label', 'text-anchor': 'middle' }, svg).textContent = hhmm(c.time);
@@ -193,6 +237,10 @@ export function renderWindProfile(container, columns, opts) {
         }
     }
     svgEl('rect', { x: m.left, y: m.top, width: w, height: h, class: 'skewt-frame' }, svg);
+    if (!drawn.length) {
+        svgEl('text', { x: m.left + w / 2, y: m.top + h / 2, class: 'skewt-axis', 'text-anchor': 'middle' }, svg)
+            .textContent = columns.length > 1 ? 'No winds at these times' : 'No winds this time';
+    }
 
     // The colour scale, in knots
     var sx = m.left + w + 8, kMax = BARB_COLORS.length * 5;
