@@ -43,6 +43,7 @@ import { TRACK_REBUILD_MS, rebuildTracks, shipTrackLayers, trackKey, markTracksD
 import { tickPulses } from './map/pulses.js';
 import { startWindFlow } from './map/windFlow.js';
 import { RecentreControl } from './map/recentre.js';
+import { welcomeFirstVisit } from './lib/ui/welcome.js';
 import { satelliteColours, satelliteLabel, satelliteMatch, syncSatelliteRows, satelliteKey, satelliteName, addSatelliteRow, satelliteLink } from './data/satellite/rows.js';
 import { metricValues } from './data/metrics.js';
 import { swathsBuilt, SWATH_FLUSH_MS, flushSwaths } from './data/satellite/coverage.js';
@@ -419,6 +420,7 @@ map.addControl(new RecentreControl(() => {
 }), 'top-left');
 map.addControl(new MapKey(), 'bottom-right');
 addAbout();
+welcomeFirstVisit();
 
 // Keep the globe (the map's centre) in the middle of the area the panels leave
 // uncovered: the sidebar and info panel become map padding as they open and close

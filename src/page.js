@@ -13,13 +13,18 @@ export const GBON_PAGE = PAGE === 'gbon';
 export const METOCEAN_PAGE = PAGE === 'metocean';
 export const GTS_PAGE = PAGE === 'gts';
 
-// Every page, for the links between them
+// Every page, for the links between them and the welcome (see welcome.js)
 export const PAGES = [
-    { key: 'home', href: './', label: 'All observations' },
-    { key: 'gbon', href: 'gbon.html', label: 'Surface and upper air' },
-    { key: 'metocean', href: 'metocean.html', label: 'Ships and buoys' },
-    { key: 'gts', href: 'gts.html', label: 'GTS gateways' },
-    { key: 'satellites', href: 'satellites.html', label: 'Satellites' },
+    { key: 'home', href: './', label: 'All observations',
+        about: 'Everything arriving through WIS2 except satellites: stations, soundings, ships, buoys, aircraft, radar and more' },
+    { key: 'gbon', href: 'gbon.html', label: 'Surface and upper air',
+        about: 'The Global Basic Observing Network: weather stations and upper-air soundings' },
+    { key: 'metocean', href: 'metocean.html', label: 'Ships and buoys',
+        about: 'Observations at sea: ships, drifting and moored buoys, and ocean floats' },
+    { key: 'gts', href: 'gts.html', label: 'GTS gateways',
+        about: 'Bulletins the gateways pass between the older Global Telecommunication System and WIS2' },
+    { key: 'satellites', href: 'satellites.html', label: 'Satellites',
+        about: 'Space-based observations, drawn as areas of coverage' },
 ];
 export const OTHER_PAGES = PAGES.filter((p) => p.key !== PAGE);
 

@@ -1,3 +1,4 @@
+import { showWelcome } from './welcome.js';
 import maplibregl from 'maplibre-gl';
 import { LAYER_GROUPS, hiddenLayers, ancestors, effectiveHidden, seenLayers } from '../../map/layers.js';
 import { darken, PHONE, esc } from '../util.js';
@@ -559,6 +560,13 @@ export function addAbout() {
     if (toggle) credits.appendChild(toggle);
     about.innerHTML = '<div class="key-about-title">ⓘ About and credits</div><p class="key-about-text"></p>';
     about.querySelector('.key-about-text').textContent = ABOUT_TEXT;
+    // The first visit's welcome, again (see welcome.js)
+    var more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'key-about-more';
+    more.textContent = 'What is this?';
+    more.addEventListener('click', showWelcome);
+    about.querySelector('.key-about-text').append(' ', more);
     // The satellite page has no sidebar, where the other pages keep their links to the
     // rest: its links are here, shown with the About text when the panel is opened
     if (SATELLITE_PAGE) about.querySelector('.key-about-text').insertAdjacentHTML('afterend',
