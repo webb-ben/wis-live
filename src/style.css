@@ -1487,6 +1487,21 @@
   border-radius: 6px;
   font-size: 11px;
 }
+/* Centre the globe (src/map/recentre.js), under the zoom buttons */
+.recentre-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #333333;
+}
+/* Wind streaks (src/map/windFlow.js), over the map but under its controls, never in the
+   way of a click */
+.wind-flow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
 .legend-range-satellite {
   --accent-range: #9c36b5;  /* OBS_CLASSES.satellite */
 }

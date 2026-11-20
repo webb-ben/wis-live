@@ -57,6 +57,18 @@ export function isArrow() {
     return ['all', isColourTarget(), ['has', 'm_windDir'], ['>', ['coalesce', ['get', `m_${state.colourBy}`], 0], 0]];
 }
 
+// Point size by zoom, shared by the WIS2 circles and the GTS diamonds (main.js)
+export const POINT_RADIUS = ['interpolate', ['linear'], ['zoom'], 1, 2, 4, 4.5, 8, 8, 15, 16];
+// Calm reports under a wind measure (no arrow or streak to show) step back: this size
+// and this strength of the others'
+export const CALM_SIZE = 0.5;
+export const CALM_OPACITY = 0.35;
+
+// A calm report: one a wind measure colours, at 0
+export function isCalm() {
+    return ['all', isColourTarget(), ['==', ['to-number', ['get', `m_${state.colourBy}`], -1], 0]];
+}
+
 export function paintAge() {
     var opacity = ['interpolate', ['linear'], ['-', Date.now(), ['get', 'born']], 0, 1, FADE_MS, 0.35];
     // While stations are coloured by a measure, everything else steps back
@@ -66,6 +78,8 @@ export function paintAge() {
         var kept = satelliteStyled() ? isColourTarget() : ['any', isColourTarget(), IS_AIRCRAFT];
         opacity = ['case', kept, opacity, ['*', opacity, 0.25]];
     }
+    // Calm reports under a wind measure, fainter (see CALM_OPACITY)
+    if (windArrows()) opacity = ['case', isCalm(), ['*', opacity, CALM_OPACITY], opacity];
     map.setPaintProperty('points', 'circle-opacity', ['case', ['get', 'origin'], 0, opacity]);
     map.setPaintProperty('points', 'circle-stroke-opacity', opacity);
     map.setPaintProperty('points-gts', 'icon-opacity', opacity);
@@ -142,11 +156,14 @@ export function setColourBy(key, legend) {
         originRing = color;
         var outline = ['case', ['has', 'spec'], ['get', 'outline'], darken(NO_VALUE_COLOR)];
     }
-    // Calm reports under a wind measure are empty: an outline with no fill
+    // Calm reports under a wind measure are empty: an outline with no fill, smaller (and
+    // fainter, see paintAge)
     var pointColor = windArrows()
         ? ['case', ['all', target, ['==', ['to-number', ['get', `m_${key}`], -1], 0]], 'rgba(0, 0, 0, 0)', color]
         : color;
     map.setPaintProperty('points', 'circle-color', pointColor);
+    map.setPaintProperty('points', 'circle-radius', !windArrows() ? POINT_RADIUS
+        : ['interpolate', ['linear'], ['zoom'], ...POINT_RADIUS.slice(3).flatMap((v, i) => (i % 2 ? [['case', isCalm(), v * CALM_SIZE, v]] : [v]))]);
     // Outlines follow the style (a measure's scale, or each satellite's colour), else each point's own
     var styledOutline = outline || ['get', 'outline'];
     map.setPaintProperty('points-gts', 'icon-halo-color', styledOutline);
