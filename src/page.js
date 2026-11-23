@@ -32,7 +32,7 @@ export const PAGES = [
     { key: 'radar', href: 'radar.html', label: 'Radar',
         about: 'Weather radar reflectivity, and winds measured by radars and wind profilers' },
     { key: 'gts', href: 'gts.html', label: 'GTS gateways',
-        about: 'Bulletins the p Global Telecommunication System gateways and WIS2' },
+        about: 'Bulletins sent to the Global Telecommunication System gateways and WIS2' },
     { key: 'satellites', href: 'satellites.html', label: 'Satellites',
         about: 'Space-based observations, drawn as areas of coverage' },
 ];

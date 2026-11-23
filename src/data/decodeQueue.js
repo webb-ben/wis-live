@@ -93,6 +93,65 @@ export const decodeQueues = {
 
 export const queueFor = (kind) => decodeQueues[/satellite$/.test(kind) ? 'satellite' : 'obs'];
 
+// Satellite files are chosen before they're downloaded: the GTS alone announces a few
+// hundred a minute (EUMETSAT's IELX and INCX bulletins most), each taking a quarter to
+// two thirds of a second to decode, far more than a browser can keep up with. So each
+// product (its topic without bulletin numbers, as coverage's productKey) keeps only its
+// newest file waiting, a newer one taking its place without the older being fetched,
+// and the products take turns, each taken at most once per SATELLITE_PRODUCT_GAP_MS:
+// a busy product can't crowd out the rest, and what's drawn stays recent. On the
+// satellite page, which has nothing else to decode, products come round more often
+export const SATELLITE_PRODUCT_GAP_MS = SATELLITE_PAGE ? 15e3 : 60e3;
+const SATELLITE_PRODUCTS_MAX = 300;  // Products remembered (there are a few dozen)
+const satelliteWaiting = new Map();  // product -> its newest job not yet taken
+const satelliteTaken = new Map();  // product -> when a file of it was last taken
+let satelliteTimer = null;
+
+// Both GTS-to-WIS2 gateways republish the same bulletins, so their copies are one product
+export function satelliteProduct(topic) {
+    return topic.replace(/^[^/]+\/a\/wis2\//, '').replace(/^[^/]+-gts-to-wis2\//, 'gts/').split('/').filter((part) => !/^\d+$/.test(part)).join('/').toLowerCase();
+}
+
+function waitSatellite(job) {
+    var product = satelliteProduct(job.topic);
+    var older = satelliteWaiting.get(product);
+    if (older) decodeSeen.delete(older.key);  // Passed over, never fetched; another copy may come
+    satelliteWaiting.delete(product);  // So the Map's order stays oldest arrival first
+    satelliteWaiting.set(product, job);
+    if (satelliteWaiting.size > SATELLITE_PRODUCTS_MAX) {
+        var [first, dropped] = satelliteWaiting.entries().next().value;
+        satelliteWaiting.delete(first);
+        decodeSeen.delete(dropped.key);
+    }
+}
+
+// The next satellite file to fetch: of the products due, the one taken longest ago.
+// Null when none is due, with a wake-up for when the first will be
+function takeSatellite() {
+    var now = Date.now(), best = null, bestTaken = Infinity, wait = Infinity;
+    for (var product of satelliteWaiting.keys()) {
+        var taken = satelliteTaken.get(product) || 0;
+        if (taken + SATELLITE_PRODUCT_GAP_MS > now) {
+            wait = Math.min(wait, taken + SATELLITE_PRODUCT_GAP_MS - now);
+        } else if (taken < bestTaken) {
+            best = product;
+            bestTaken = taken;
+        }
+    }
+    if (best === null) {
+        if (wait < Infinity && !satelliteTimer) {
+            satelliteTimer = setTimeout(() => { satelliteTimer = null; pumpDecode(); }, wait + 50);
+        }
+        return null;
+    }
+    var job = satelliteWaiting.get(best);
+    satelliteWaiting.delete(best);
+    satelliteTaken.delete(best);
+    satelliteTaken.set(best, now);
+    if (satelliteTaken.size > SATELLITE_PRODUCTS_MAX) satelliteTaken.delete(satelliteTaken.keys().next().value);
+    return job;
+}
+
 export let lastDecoded = 'satellite';  // Which queue the decoder took from last
 
 export let decodeBusy = false;
@@ -148,6 +207,11 @@ export function queueDecode(kind, topic, feature) {
         return;
     }
     var q = queueFor(kind);
+    if (q === decodeQueues.satellite) {
+        waitSatellite({ kind, key, topic, feature, href });
+        pumpDecode();
+        return;
+    }
     q.queue.push({ kind, key, topic, feature, href });
     if (q.queue.length > q.max) decodeSeen.delete(q.queue.shift().key);  // A later copy may try again
     pumpDecode();
@@ -157,8 +221,11 @@ export function queueDecode(kind, topic, feature) {
 // fetched at once while the decoder works through the ones already here (ready)
 export function pumpDecode() {
     for (var q of Object.values(decodeQueues)) {
-        while (q.fetching < q.fetches && q.ready.length < q.fetches && q.queue.length) {
-            fetchForDecode(q, q.queue.pop());  // Newest first, to stay close to real time
+        while (q.fetching < q.fetches && q.ready.length < q.fetches) {
+            // Newest first, to stay close to real time; satellites by product (see takeSatellite)
+            var job = q === decodeQueues.satellite ? takeSatellite() : q.queue.pop();
+            if (!job) break;
+            fetchForDecode(q, job);
         }
     }
 }
@@ -310,7 +377,15 @@ export function trimRows(rows) {
 
 export function setDecodeEnabled(kind, enabled) {
     enabled ? decodeEnabled.add(kind) : decodeEnabled.delete(kind);
-    if (!enabled) queueFor(kind).queue = queueFor(kind).queue.filter((job) => job.kind !== kind);
+    if (!enabled) {
+        queueFor(kind).queue = queueFor(kind).queue.filter((job) => job.kind !== kind);
+        for (var [product, job] of satelliteWaiting) {
+            if (job.kind === kind) {
+                satelliteWaiting.delete(product);
+                decodeSeen.delete(job.key);
+            }
+        }
+    }
     applyMapFilter();
     pumpDecode();
 }
