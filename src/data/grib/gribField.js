@@ -42,15 +42,18 @@ function sectionsOf(bytes) {
         if (bytes[i] === 71 && bytes[i + 1] === 82 && bytes[i + 2] === 73 && bytes[i + 3] === 66) { start = i; break; }
     }
     if (start < 0) throw new Error('not GRIB');
-    var found = {}, at = start + 16;
+    var found = {}, at = start + 16, stop = null;
     while (at + 5 <= bytes.length) {
         var length = view.getUint32(at), number = bytes[at + 4];
-        if (length < 5 || number > 7 || at + length > bytes.length) break;
+        if (length < 5 || number > 7) { stop = `an unreadable section ${number} at byte ${at}`; break; }
+        if (at + length > bytes.length) { stop = `section ${number} runs to byte ${(at + length).toLocaleString()}`; break; }
         found[number] = { at, length };
         if (number === 7) break;
         at += length;
     }
-    if (!found[5] || !found[7]) throw new Error('the file ended before its data');
+    if (!found[5] || !found[7]) {
+        throw new Error(`its data wasn't in the ${bytes.length.toLocaleString()} bytes downloaded${stop ? ` (${stop})` : ''}`);
+    }
     return { view, found };
 }
 

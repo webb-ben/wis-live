@@ -7,12 +7,23 @@
 // each switched on and off there, and a click on the map lists the products under it.
 // A forecast message clicked in the message list outlines its area too (showGribArea)
 import maplibregl from 'maplibre-gl';
-import { fetchHead, fetchData, bufrSource } from '../download.js';
+import { fetchHead, fetchData } from '../download.js';
 import { esc } from '../../lib/util.js';
-import { disciplineOf, formatOf, FORMATS } from '../../messages/messages.js';
+import { disciplineOf, formatOf, FORMATS, isDataLink } from '../../messages/messages.js';
 import { parseGribHeader, gribSummary, latLonOutline, gridLocator } from './gribHeader.js';
 import { callDecoder } from '../decoder.js';
 import { decodeField, renderFields, fieldDrawable, packingName, JPEG_MAX_BITS, colourScale, colourOn, rgbOn } from './gribField.js';
+
+// Where a forecast file can be downloaded from: every copy its notification links, whatever
+// its size. (bufrSource leaves out files over 5 MB, as the BUFR decoder would download them
+// whole; forecasts only ever have their headers or one field read, by range, so ECMWF's
+// 16 GB ensembles, CMA's 88 MB and the Met Office's NetCDF have to be let through)
+function forecastSource(feature, topic) {
+    var props = feature.properties || {};
+    var urls = (feature.links || []).filter(isDataLink).map((l) => l.href);
+    if (!urls.length) return null;
+    return { content: null, dataId: props.data_id, urls, topic, pubtime: props.pubtime || null, format: formatOf(feature, topic), feature };
+}
 
 // A file's series: its topic and file name without its run, lead time and other long numbers.
 // A level's stays: ECCC's 20261123T18Z_MSC_RDPS_AirTemp_IsbL-0850_RLatLon0.09_PT025H.grib2 is a
@@ -91,6 +102,7 @@ export function addGribLayers(before) {
     });
     map.on('mousemove', 'grib-fill', () => { map.getCanvas().style.cursor = 'pointer'; });
     map.on('mouseleave', 'grib-fill', () => { map.getCanvas().style.cursor = ''; });
+    showActivity();  // "Waiting for forecast files" until the first arrives
 }
 
 // The map's filters (applyMapFilter's expression)
@@ -119,6 +131,7 @@ export function queueGrib(job) {
     waiting.set(series, job);
     if (waiting.size > WAITING_MAX) waiting.delete(waiting.keys().next().value);
     pump();
+    showActivity();
     return true;
 }
 
@@ -145,7 +158,7 @@ function pump() {
 
 // The header of a message's file: { header, href }
 export async function readGribHead(feature, topic) {
-    var source = bufrSource(feature, feature.properties || {}, topic);
+    var source = forecastSource(feature, topic);
     var { bytes, url } = await fetchHead(source);
     return { header: parseGribHeader(bytes), href: url };
 }
@@ -172,7 +185,12 @@ async function readFile(job) {
     var props = job.feature.properties || {};
     var link = (job.feature.links || []).find((l) => l.rel === 'canonical' || l.rel === 'update') || {};
     var total = link.length || 0;
-    var source = bufrSource(job.feature, props, job.topic);
+    var source = forecastSource(job.feature, job.topic);
+    // Shown in the sidebar while it's read (renderActivity)
+    var file = decodeURIComponent((link.href || '').split(/[?#]/)[0].split('/').pop()) || 'GRIB file';
+    var progress = { file, centre: job.topic.split('/a/wis2/')[1].split('/', 1)[0], fields: 0, offset: 0, total };
+    reading.add(progress);
+    showActivity();
     try {
         var { bytes, url } = await fetchHead(source);
         // The later fields come from the copy that answered
@@ -182,13 +200,52 @@ async function readFile(job) {
             var header = parseGribHeader(bytes);
             if (!deps.enabled()) return;
             if (header.grid && header.grid.outline) addField(job, header, url, n ? pinned : source, offset);
+            progress.fields = n + 1;
+            showActivity();
             if (!header.length || (total && offset + header.length >= total)) break;
             offset += header.length;
+            progress.offset = offset;
             ({ bytes } = await fetchHead(pinned, FIELD_HEAD_BYTES, offset));
         }
     } catch (err) {
         if (!offset) console.debug(`Could not read the GRIB header of ${job.href}: ${err.message}`);
+    } finally {
+        reading.delete(progress);
+        showActivity();
     }
+}
+
+// ---------- What's being read now, at the top of the sidebar's product list: a spinner and
+// each file in progress (its fields read, and how far into it), and how many are waiting
+
+const reading = new Set();  // { file, centre, fields, offset, total } of each file being read
+let activityTimer = null;
+
+function showActivity() {
+    if (FORECAST_PAGE && !activityTimer) activityTimer = setTimeout(renderActivity, 300);
+}
+
+const size = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} KB`);
+
+function renderActivity() {
+    activityTimer = null;
+    var section = document.querySelector('.legend-section-forecast');
+    if (!section) return;
+    var box = section.querySelector('.forecast-activity');
+    if (!box) {
+        box = document.createElement('div');
+        box.className = 'forecast-activity';
+        box.setAttribute('role', 'status');
+        section.insertBefore(box, section.querySelector('.forecast-products'));
+    }
+    var busy = reading.size > 0;
+    box.classList.toggle('busy', busy);
+    var lines = [...reading].map((r) => `<li title="${esc(r.file)}"><strong>${esc(r.centre)}</strong> ${esc(r.file)}`
+        + `<small>${r.fields} field${r.fields === 1 ? '' : 's'} read${r.total > FIELD_HEAD_BYTES * 2 ? ` · ${size(r.offset)} of ${size(r.total)}` : ''}</small></li>`);
+    box.innerHTML = busy
+        ? `<div class="forecast-activity-head"><span class="forecast-spinner" aria-hidden="true"></span>Reading ${reading.size} file${reading.size === 1 ? '' : 's'}`
+            + `${waiting.size ? ` · ${waiting.size} waiting` : ''}</div><ul>${lines.join('')}</ul>`
+        : `<div class="forecast-activity-head">${waiting.size ? `${waiting.size} file${waiting.size === 1 ? '' : 's'} waiting` : 'Waiting for forecast files'}</div>`;
 }
 
 // One field of a GRIB file, as a file of its product (offset: where it starts in the file)
@@ -224,7 +281,7 @@ export function addNotificationArea(topic, feature) {
         group: `${info.run}|${info.hours}`, tile: areaKey(g), summary: info.summary, run: info.run, leadHours: info.hours, href: info.href,
         valid: info.valid, length: info.length,
         // NetCDF (the Met Office's) is drawn by the decoder's netcdf_field, if it isn't too big
-        netcdf: format === 'hdf' && /\.nc$/i.test(info.file), source: bufrSource(feature, feature.properties || {}, topic) });
+        netcdf: format === 'hdf' && /\.nc$/i.test(info.file), source: forecastSource(feature, topic) });
     return true;
 }
 
@@ -259,7 +316,7 @@ export function addGeojsonFile(topic, feature) {
     addFile(topic, null, `Stations (GeoJSON)${info.model ? ` · ${info.model}` : ''}`, info.name, 'json', {
         group: `${info.run}|${info.hours}`, tile: '', summary: info.summary, run: info.run, leadHours: info.hours,
         valid: info.valid, href: info.href, length: info.length, geojson: true, variable: info.variable,
-        source: bufrSource(feature, feature.properties || {}, topic) });
+        source: forecastSource(feature, topic) });
     return true;
 }
 
@@ -314,6 +371,37 @@ function addFile(topic, outline, grid, name, format, file) {
     redraw();
     deps.plotted();
     deps.changed();
+    if (drawable(product)) drawFirstForecast();
+}
+
+// ---------- A forecast drawn by itself as the page opens, so the legend shows one rather
+// than a note: once something can be drawn, after a moment for more to arrive, the most
+// telling product there is. Only once, and not after one has been picked or cleared
+
+let firstDrawn = false;
+let firstTimer = null;
+
+function drawFirstForecast() {
+    if (!FORECAST_PAGE || firstDrawn || firstTimer || fieldShown || fieldProduct) return;
+    firstTimer = setTimeout(() => {
+        firstTimer = null;
+        if (firstDrawn || fieldShown || fieldProduct) return;
+        var p = defaultProduct();
+        if (!p) return;
+        firstDrawn = true;
+        showGribArea(outlinesOf(p), false);
+        drawProduct(p);
+    }, 3000);
+}
+
+// 2 m temperature, else sea-level pressure, else any temperature, else the first by name;
+// GRIB before NetCDF and GeoJSON (NetCDF waits for Python to load)
+function defaultProduct() {
+    var list = [...products.values()].filter(drawable).sort((a, b) => a.name.localeCompare(b.name));
+    var grib = list.filter((p) => p.format === 'grib');
+    var pool = grib.length ? grib : list;
+    return [/^Temperature, 2 m above ground$/, /^Pressure reduced to MSL/, /^Temperature/]
+        .map((re) => pool.find((p) => re.test(p.name))).find(Boolean) || pool[0];
 }
 
 function redraw() {
@@ -388,13 +476,24 @@ function defaultLevel(groups) {
 // The lead times a product's files cover, its tiles, and its latest run
 function coverage(product) {
     var files = [...product.files.values()];
-    var leads = files.map((f) => f.leadHours).filter((h) => h != null);
-    var runs = files.map((f) => f.run).filter(Boolean).sort();
-    var span = !leads.length ? '' : Math.min(...leads) === Math.max(...leads) ? `+${leads[0]} h` : `+${Math.min(...leads)} to +${Math.max(...leads)} h`;
     var n = forecastCount(product);
     var levels = new Set(files.map((f) => f.level).filter(Boolean)).size;
-    return [`${n} forecast${n === 1 ? '' : 's'}`, levels > 1 && `${levels} levels`, product.tiles.size > 1 && `${product.tiles.size} tiles`, span,
-        runs.length && `run ${runs[runs.length - 1]}`].filter(Boolean).join(' · ');
+    return [`${n} forecast${n === 1 ? '' : 's'}`, levels > 1 && `${levels} levels`, product.tiles.size > 1 && `${product.tiles.size} tiles`,
+        validSpan(files)].filter(Boolean).join(' · ');
+}
+
+// How far from now a forecast is for, in hours: "in 6 h", "3 h ago", "now"
+function fromNow(valid) {
+    var h = Math.round((Date.parse(valid) - Date.now()) / 3600e3);
+    return h > 0 ? `in ${h} h` : h < 0 ? `${-h} h ago` : 'now';
+}
+
+// When its forecasts are valid, in UTC, rather than their lead from a run: "valid 11/24 03Z–12/05 06Z"
+function validSpan(files) {
+    var times = files.map((f) => Date.parse(f.valid)).filter((t) => !isNaN(t));
+    if (!times.length) return '';
+    var first = new Date(Math.min(...times)).toISOString(), last = new Date(Math.max(...times)).toISOString();
+    return first === last ? `valid ${hour(first)}` : `valid ${hour(first)}–${hour(last)}`;
 }
 
 // The products under a click, each with what its files cover and its latest file
@@ -413,9 +512,7 @@ function showProducts(list, lngLat) {
     var row = (p) => {
         var latest = [...p.files.values()].pop();
         var files = [...p.files.values()];
-        var leads = files.map((f) => f.leadHours).filter((h) => h != null);
-        var span = !leads.length ? '' : Math.min(...leads) === Math.max(...leads) ? `+${leads[0]} h` : `+${Math.min(...leads)}–${Math.max(...leads)} h`;
-        var run = files.map((f) => f.run).filter(Boolean).sort().pop() || '';
+        var span = validSpan(files).replace(/^valid /, '');
         var active = fieldShown && fieldShown.product === p.key;
         // Nothing where it can't be drawn; its link says why
         var style = drawable(p)
@@ -425,7 +522,7 @@ function showProducts(list, lngLat) {
         var n = forecastCount(p);
         return `<tr><td>${style}</td>`
             + `<td><a href="${esc(latest.href || '')}" target="_blank" rel="noopener" title="The latest file: ${esc(latest.summary)}.${esc(why)}">${esc(p.name)}</a></td>`
-            + `<td>${esc(span)}<small>${n} forecast${n === 1 ? '' : 's'}${p.tiles.size > 1 ? ` · ${p.tiles.size} tiles` : ''}</small></td><td>${esc(run)}</td></tr>`;
+            + `<td>${esc(span)}<small>${n} forecast${n === 1 ? '' : 's'}${p.tiles.size > 1 ? ` · ${p.tiles.size} tiles` : ''}</small></td></tr>`;
     };
     // A heading row for each model, its products under it
     var byModel = new Map();
@@ -433,13 +530,13 @@ function showProducts(list, lngLat) {
         if (!byModel.has(p.model)) byModel.set(p.model, []);
         byModel.get(p.model).push(p);
     });
-    var rows = [...byModel].map(([model, ps]) => `<tr class="grib-model-row"><th colspan="4">${modelLabel(model)}</th></tr>`
+    var rows = [...byModel].map(([model, ps]) => `<tr class="grib-model-row"><th colspan="3">${modelLabel(model)}</th></tr>`
         + ps.sort((a, b) => a.name.localeCompare(b.name)).map(row).join('')).join('');
     if (popup) popup.remove();
     popup = new maplibregl.Popup({ maxWidth: '520px', className: 'grib-popup' })
         .setLngLat(lngLat)
         .setHTML(`<div class="grib-topic">${list.length} forecast product${list.length === 1 ? '' : 's'} here: Style draws one</div>`
-            + `<table class="grib-products"><thead><tr><th></th><th>Product</th><th>Lead times</th><th>Run</th></tr></thead><tbody>${rows}</tbody></table>`
+            + `<table class="grib-products"><thead><tr><th></th><th>Product</th><th>Valid</th></tr></thead><tbody>${rows}</tbody></table>`
             + (list.length > LIST_MAX ? `<small>and ${list.length - LIST_MAX} more</small>` : ''))
         .addTo(map);
     popup.getElement().addEventListener('click', (e) => {
@@ -580,7 +677,11 @@ function drawableFiles(p) {
 
 // One tile's values: { header, field }
 async function readTile(file) {
-    var { bytes } = await fetchHead(file.source, file.length || 50e6, file.offset || 0);
+    // A GRIB field from the copy its header was read from, where its offset is known to be
+    // right: another copy under the same data_id can hold its fields in another order (or be
+    // another version), and the bytes there are another field
+    var source = file.header && file.href ? { urls: [file.href], dataId: null, topic: null } : file.source;
+    var { bytes } = await fetchHead(source, file.length || 50e6, file.offset || 0, !!file.length);
     if (file.netcdf) {
         var read = JSON.parse(await callDecoder('netcdf_field', bytes, 1280));
         if (read.error) throw new Error(read.error);
@@ -747,7 +848,7 @@ function renderFieldPanel(p, files, key, status, failed) {
     var levels = levelList.length ? `<select class="form-select form-select-sm forecast-level" aria-label="Level">${levelList.map((h) =>
         `<option value="${h}"${h === picked.hPa ? ' selected' : ''}>${esc(fmt(h))} hPa</option>`).join('')}</select>` : '';
     var options = files.filter(([, f]) => f.hPa === (picked.hPa ?? null)).map(([k, f]) => `<option value="${esc(k)}"${k === key ? ' selected' : ''}>`
-        + `${esc(f.leadHours != null ? `+${f.leadHours} h` : '')} · valid ${esc(hour(f.valid))}${f.ensemble ? ` · ${esc(f.ensemble)}` : ''}</option>`).join('');
+        + `${esc(f.valid ? `${fromNow(f.valid)} · ${hour(f.valid)}` : '')}${f.ensemble ? ` · ${esc(f.ensemble)}` : ''}</option>`).join('');
     var siblings = [...products.values()].filter((o) => o.model === p.model && drawable(o)).sort((a, b) => a.name.localeCompare(b.name));
     var variables = siblings.map((o) => `<option value="${esc(o.key)}"${o.key === p.key ? ' selected' : ''}>${esc(o.name)}</option>`).join('');
     var bar = scale ? `<div class="forecast-scale"><span>${esc(fmt(scale.low))}</span><i style="background: linear-gradient(90deg, ${

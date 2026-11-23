@@ -77,8 +77,11 @@ export const DECODE_LAYERS = {
     // share a data_id, see addPoint). Only from servers that let browsers download
     'origin-files': (topic, feature) => topic.startsWith('origin/') && !GATEWAY_TOPIC.test(topic) && !isSpaceBased(topic)
         && decodableFile(topic, feature),
-    // GRIB files, outlined by the grid their headers give (see grib.js)
-    grib: (topic, feature) => topic.startsWith('cache/') && !GATEWAY_TOPIC.test(topic) && formatOf(feature, topic) === 'grib',
+    // GRIB files, outlined by the grid their headers give (see grib.js): the cache's copy, or
+    // the origin's where the notification says the caches won't copy it ("cache": false:
+    // ECMWF's open data, up to 16 GB a file, read from data.ecmwf.int by range)
+    grib: (topic, feature) => (topic.startsWith('cache/') || (topic.startsWith('origin/') && (feature.properties || {}).cache === false))
+        && !GATEWAY_TOPIC.test(topic) && formatOf(feature, topic) === 'grib',
 };
 
 export function decodableFile(topic, feature) {

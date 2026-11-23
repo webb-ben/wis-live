@@ -57,14 +57,17 @@ export function rememberLinks(dataId, links) {
 // content, the links, and what the guesses need
 export function bufrSource(feature, props, topic) {
     var content = props.content && props.content.encoding === 'base64' ? props.content.value : null;
-    // Any canonical link may hold BUFR or text; fetchData checks the content
+    var format = formatOf(feature, topic || props.topic);
+    // Any canonical link may hold BUFR or text; fetchData checks the content. Files over 5 MB
+    // are left out, as they'd be downloaded whole, but for GRIB (only its headers are read,
+    // by range) and HDF/NetCDF (only its notification is shown)
+    var whole = format !== 'grib' && format !== 'hdf';
     var urls = (feature.links || [])
-        .filter((l) => isDataLink(l) && !(l.length > 5e6))
+        .filter((l) => isDataLink(l) && !(whole && l.length > 5e6))
         .map((l) => l.href);
     if (!content && !urls.length) return null;
     return { content: content, dataId: props.data_id, urls: urls, cap: props.cap_info || null,
-        topic: topic || props.topic || null, pubtime: props.pubtime || null,
-        format: formatOf(feature, topic || props.topic), feature };
+        topic: topic || props.topic || null, pubtime: props.pubtime || null, format, feature };
 }
 
 // ---------- Copies no cache announced. Each global cache keeps a file at an address
@@ -162,11 +165,14 @@ export async function fetchData(source) {
 // whole file anyway. For GRIB, whose headers say what the file holds (see grib.js).
 // From `start` if given (a later field of a GRIB file): then only a server that sends
 // just the range asked for (206) will do
-export async function fetchHead(source, length = 16384, start = 0) {
+// whole: all `length` bytes are needed (a field to draw): a copy that sends fewer (a server
+// that caps a range, a download cut off) doesn't count, and the next is tried
+export async function fetchHead(source, length = 16384, start = 0, whole = false) {
     var known = [...source.urls, ...(dataLinks.get(source.dataId) || [])];
     var guessed = guessedCopies(source, known).filter((url) => url.startsWith(`https://${MAIN_CACHE_HOST}/`));
     var urls = downloadOrder(known);
     urls = [...urls, ...downloadOrder(guessed).filter((url) => !urls.includes(url))];
+    var short = null;  // The most a copy sent, when none sent it all
     for (var url of urls) {
         try {
             var response = await fetchTracked(url, { headers: { Range: `bytes=${start}-${start + length - 1}` } });
@@ -180,6 +186,11 @@ export async function fetchHead(source, length = 16384, start = 0) {
                 got += value.length;
             }
             reader.cancel().catch(() => {});
+            if (whole && got < length) {
+                short = Math.max(short || 0, got);
+                console.debug(`${url} sent ${got} of the ${length} bytes asked for`);
+                continue;
+            }
             var bytes = new Uint8Array(Math.min(got, length));
             var at = 0;
             for (var part of parts) {
@@ -192,6 +203,7 @@ export async function fetchHead(source, length = 16384, start = 0) {
             console.debug(`Could not fetch the start of ${url}`);
         }
     }
+    if (short != null) throw new Error(`the download stopped short: ${short.toLocaleString()} of ${length.toLocaleString()} bytes`);
     throw new Error(urls.length ? 'no copy could be downloaded' : 'every copy known is on a server that blocks browser downloads');
 }
 

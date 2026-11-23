@@ -476,6 +476,54 @@
   margin-top: 8px;
   font-size: 12px;
 }
+/* What's being read now (grib.js renderActivity): a spinner while busy, each file's progress */
+.forecast-activity {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #f8f9fa;
+  color: #868e96;
+  font-size: 12px;
+}
+.forecast-activity.busy {
+  background: #f3f0ff;
+  color: #5f3dc4;
+}
+.forecast-activity-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+.forecast-activity ul {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.forecast-activity li {
+  overflow: hidden;
+  color: #495057;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.forecast-activity li small {
+  display: block;
+  color: #868e96;
+}
+.forecast-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #d0bfff;
+  border-top-color: #5f3dc4;
+  border-radius: 50%;
+  animation: forecast-spin 0.8s linear infinite;
+}
+@keyframes forecast-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .forecast-spinner { animation-duration: 3s; }
+}
 /* The forecast products under a click (grib.js): a table, each row with a Style button */
 .grib-products {
   width: 100%;
