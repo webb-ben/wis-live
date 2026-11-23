@@ -10,7 +10,9 @@ import { isGateway, layerOf, setFeatureProperties, byDataId, observedAt, records
 import { timeAgo, formatLabel, formatBytes, stationName, formatValue, titleCase, highlightJson } from '../format.js';
 import { datasetId, showDatasetInPopup } from '../../data/catalogue.js';
 import { showForecast } from '../../plots/forecast.js';
-import { bufrSource, fetchData, isUtf8 } from '../../data/download.js';
+import { bufrSource, fetchData, fetchHead, isUtf8 } from '../../data/download.js';
+import { parseGribHeader, gribRows } from '../../data/grib/gribHeader.js';
+import { showGribArea, fileDetails } from '../../data/grib/grib.js';
 import { metricValues } from '../../data/metrics.js';
 import { attachSpectrum } from '../../data/stationDecode.js';
 import { decoderReady, callDecoder } from '../../data/decoder.js';
@@ -247,6 +249,18 @@ export function showDecodeError(out, err, retry, source) {
 // bulletin) is returned as-is
 // index picks one report in a file of many, such as a satellite swath
 export async function decodeSource(source, wsi, out, index) {
+    // GRIB (gridded model output): only its headers are read, from the start of the file,
+    // for what it holds and the grid it covers (gribHeader.js); its values aren't decoded
+    if (source.format === 'grib' && !source.content) {
+        out.innerHTML = '<div class="pp-status">Reading the GRIB headers…</div>';
+        var head = await fetchHead(source);
+        return { grib: parseGribHeader(head.bytes), href: head.url };
+    }
+    // HDF and NetCDF (the Met Office's forecasts run to 146 MB) aren't decoded either, so
+    // they aren't downloaded: what they hold and where, from the notification
+    if (source.format === 'hdf' && !source.content && source.feature) {
+        return { fileInfo: fileDetails(source.feature, source.topic || ''), geometry: source.feature.geometry };
+    }
     out.innerHTML = '<div class="pp-status">Downloading data…</div>';
     try {
         var data = await fetchData(source);
@@ -272,7 +286,25 @@ export async function decodeSource(source, wsi, out, index) {
 }
 
 export function showDecoded(out, title, decoded) {
-    if (decoded.cap !== undefined) {
+    if (decoded.grib) {
+        // What the file holds, and its grid outlined on the map
+        out.innerHTML = `<table class="pp-table grib-table">${gribRows(decoded.grib).map(([k, v]) =>
+            `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join('')}</table>`
+            + '<div class="pp-status">From the headers of the file’s first field; its values aren’t drawn.'
+            + (decoded.href ? ` <a href="${esc(decoded.href)}" target="_blank" rel="noopener">Download the file</a>` : '') + '</div>';
+        if (decoded.grib.grid && decoded.grib.grid.outline) showGribArea(decoded.grib.grid.outline);
+    } else if (decoded.fileInfo) {
+        var f = decoded.fileInfo;
+        var mb = f.length ? `${(f.length / 1e6).toFixed(f.length < 1e7 ? 1 : 0)} MB` : null;
+        var rows = [['Holds', f.summary], ['File', f.file], ['Run', f.run], ['Lead time', f.hours !== null ? `${f.hours} h` : null],
+            ['Format', 'HDF / NetCDF'], ['Size', mb]].filter(([, v]) => v);
+        out.innerHTML = `<table class="pp-table grib-table">${rows.map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join('')}</table>`
+            + '<div class="pp-status">From the notification: HDF and NetCDF files aren’t downloaded or decoded here.'
+            + (f.href ? ` <a href="${esc(f.href)}" target="_blank" rel="noopener">Download the file</a>` : '') + '</div>';
+        var g = decoded.geometry;
+        var ring = g && g.type === 'Polygon' ? g.coordinates[0] : g && g.type === 'MultiPolygon' ? g.coordinates[0][0] : null;
+        if (ring) showGribArea(ring.map((p) => p.slice(0, 2)));
+    } else if (decoded.cap !== undefined) {
         renderCap(out, title, decoded, showAlertArea);
     } else if (decoded.xml !== undefined) {
         renderXml(out, title, decoded);

@@ -3,7 +3,7 @@ import { noteCacheLinks } from '../data/caches.js';
 import { noteDataset } from '../data/catalogue.js';
 import { revealGatewayRows, DECODE_LAYERS, decodeEnabled, queueDecode } from '../data/decodeQueue.js';
 import { pointFor, stationId, disciplineOf, formatOf, isUpdate, topicClass, isSpaceBased, GATEWAY_TOPIC } from './messages.js';
-import { SATELLITE_PAGE, SATELLITES_ON_PAGE, GTS_PAGE, RADAR_PAGE, PAGE_CLASSES } from '../page.js';
+import { SATELLITE_PAGE, SATELLITES_ON_PAGE, GTS_PAGE, RADAR_PAGE, PAGE_CLASSES, FORECAST_PAGE, FORECAST_TOPIC } from '../page.js';
 
 // GTS upper-wind bulletins (IUP…): wind profilers', radars' and PILOT balloons'
 const RADAR_WIND_BULLETIN = /-gts-to-wis2\/data\/core\/I\/U\/P\//;
@@ -11,6 +11,7 @@ import { latestByStation, records, observedAt, removePoint, newId, addPoint } fr
 import { COLORS, OBS_CLASSES } from '../config.js';
 import { shipTrackKey } from '../data/reports.js';
 import { queueStationDecode } from '../data/stationDecode.js';
+import { addNotificationArea, addGeojsonFile } from '../data/grib/grib.js';
 
 
 export const ignoredTopics = [
@@ -28,6 +29,8 @@ export const ignoredTopics = [
 // doesn't say ('other') is taken, and only the page's kinds of report in its file drawn
 // (see addPoint)
 export function topicOnPage(topic, feature) {
+    // Forecast products only on the forecasts page, which has nothing else
+    if (FORECAST_TOPIC.test(topic) ? !FORECAST_PAGE : FORECAST_PAGE) return false;
     if (isSpaceBased(topic) ? !SATELLITES_ON_PAGE : SATELLITE_PAGE) return false;
     if (GTS_PAGE && !GATEWAY_TOPIC.test(topic)) return false;
     // Radar volumes are filed under surface observations, and the GTS's radar and
@@ -57,6 +60,12 @@ export function onMessage(topic, feature, replay) {
         if (SATELLITE_PAGE) return null;
     }
 
+    // On the forecasts page, a file that gives its area (the Met Office's NetCDF) is
+    // outlined from its notification, without downloading it (GRIB is read)
+    if (FORECAST_PAGE && feature.geometry && feature.geometry.type !== 'Point' && kind !== 'grib'
+        && addNotificationArea(topic, feature)) return null;
+    // And a GeoJSON forecast (ECCC's station forecasts) is listed, to download when drawn
+    if (FORECAST_PAGE && formatOf(feature, topic) === 'json' && addGeojsonFile(topic, feature)) return null;
     if (ignoredTopics.some((t) => topic.includes(t))) {
         return; // Ignore this topic
     }
@@ -97,7 +106,7 @@ export function onMessage(topic, feature, replay) {
         props: props,
         links: links,
         wsi: stationId(props),
-        format: formatOf(feature),
+        format: formatOf(feature, topic),
         color: COLORS.origin,
         source: webcam ? null : bufrSource(feature, props, topic),
         update: isUpdate(feature),
@@ -107,7 +116,8 @@ export function onMessage(topic, feature, replay) {
         // Replayed points fade by when they were published
         born: replay ? Math.min(Date.parse(props.pubtime) || Date.now(), Date.now()) : Date.now(),
     };
-    if (channel === 'cache' || replay) record.color = OBS_CLASSES[topicClass(record)].color;
+    // In the colour of its kind, origin copies too (as rings, in Origin's row for the kind)
+    record.color = OBS_CLASSES[topicClass(record)].color;
     if (replay) record.subLayer = `replay-${topicClass(record)}`;
     if (topicClass(record) === 'ship') record.track = shipTrackKey(record.wsi);
     var added = addPoint(record);

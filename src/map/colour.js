@@ -1,10 +1,9 @@
 // Which points the style colours: the layers a measure colours (stations, ships
 // and buoys, or satellites), as a map expression (isColourTarget) and for a record
 // (isColourable)
-import { SATELLITE_LAYERS, COLOURABLE, SATELLITE_STYLE, METRICS, ORIGIN_COLOURABLE, WAVE_STYLE, NO_VALUE_COLOR } from '../config.js';
+import { SATELLITE_LAYERS, COLOURABLE, SATELLITE_STYLE, METRICS, WAVE_STYLE, NO_VALUE_COLOR } from '../config.js';
 import { state, setState } from '../state.js';
 import { layerOf, records } from './points.js';
-import { topicClass } from '../messages/messages.js';
 import { map } from './map.js';
 import { swathOpacity, swathOpacityKey, syncOpacitySlider, swathPointsShown, swathFiles, syncSwathGrid, relayerFiles } from '../data/satellite/coverage.js';
 import { darken } from '../lib/util.js';
@@ -34,14 +33,14 @@ export function isColourTarget() {
     var target = ['in', ['get', 'layer'], ['literal', colourTargets(m)]];
     if (state.colourBy === SATELLITE_STYLE) return ['in', ['get', 'layer'], ['literal', SATELLITE_LAYERS]];
     if (m && m.targets === 'satellite') return target;
-    return ['any', target, ['all', ['==', ['get', 'layer'], 'origin'], ['in', ['get', 'kind'], ['literal', ORIGIN_COLOURABLE]]]];
+    return target;
 }
 
 // A record a measure colours, as isColourTarget decides for points on the map
 export function isColourable(record, m) {
     var layer = layerOf(record);
     if (m && m.targets === 'satellite') return SATELLITE_LAYERS.includes(layer);
-    return COLOURABLE.includes(layer) || (layer === 'origin' && ORIGIN_COLOURABLE.includes(topicClass(record)));
+    return COLOURABLE.includes(layer);
 }
 
 export const IS_AIRCRAFT = ['in', ['get', 'layer'], ['literal', ['cache-aircraft', 'gts-aircraft', 'replay-aircraft']]];

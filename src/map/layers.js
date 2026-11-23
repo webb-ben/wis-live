@@ -3,7 +3,7 @@
 // off, or under one that is)
 import { state } from '../state.js';
 import { COLORS, OBS_CLASSES, SATELLITE_LAYERS } from '../config.js';
-import { SATELLITE_PAGE, GTS_PAGE, RADAR_PAGE, PAGE_CLASSES, classOnPage } from '../page.js';
+import { SATELLITE_PAGE, GTS_PAGE, RADAR_PAGE, FORECAST_PAGE, PAGE_CLASSES, classOnPage } from '../page.js';
 
 // GTS sublayers that start off. Their bulletins aren't downloaded until they're
 // switched on, so their rows appear when the first such notification arrives
@@ -20,7 +20,11 @@ export const OWN_SECTION = ['satellite'];
 // Each page lists its own (LAYER_GROUPS, below)
 const ALL_LAYER_GROUPS = [
     { key: 'wis2', label: 'WIS2', subtitle: 'Live from the WIS2 Global Brokers', layers: [
-        { key: 'origin', label: 'Origin', color: COLORS.origin, ring: true },
+        // Origin copies sorted into the same kinds as the cache's, by their topic (rings on
+        // the map). ECCC's SWOB station reports join Origin's weather stations (see swob.js)
+        { key: 'origin', label: 'Origin', color: COLORS.origin, ring: true, optIn: true },  // Always listed
+        ...Object.entries(OBS_CLASSES).filter(([key]) => !OWN_SECTION.includes(key)).map(([key, c]) => (
+            { key: `origin-${key}`, parent: 'origin', label: c.label, color: c.color, ring: true, title: c.title })),
         { key: 'obs', label: 'Cache', color: OBS_CLASSES.station.color, optIn: true },  // Always listed
         // Sublayers sit under their parent and are off whenever it is off
         ...Object.entries(OBS_CLASSES).filter(([key]) => !OWN_SECTION.includes(key)).flatMap(([key, c]) => [
@@ -29,6 +33,9 @@ const ALL_LAYER_GROUPS = [
         { key: 'radar', parent: 'obs', label: 'Weather radar', color: COLORS.radar,
             title: 'Reflectivity from the lowest scan of each radar volume (ODIM HDF5) in the cache (e.g. RMI, Belgium), drawn around the radar; downloaded only while this is on' },
     ] },
+    // The forecasts page's only group (see page.js)
+    // No rows: its forecast products are listed under it, to pick one to draw (grib.js)
+    { key: 'forecast', label: 'Forecasts', subtitle: 'Model output and forecast products', layers: [] },
     { key: 'gts', label: 'GTS gateways', subtitle: 'Bulletins relayed with the GTS', layers: [
         { key: 'gts', label: 'GTS-to-WIS2', color: COLORS.gts, optIn: true,
             title: 'Download and decode the BUFR bulletins republished from the GTS into WIS2 (centres ending -gts-to-wis2), and plot the reports inside' },
@@ -69,19 +76,23 @@ const ALL_LAYER_GROUPS = [
 // or aircraft tracks, or radar but on the radar page (see page.js)
 const KINDS_LEFT_OUT = [...(RADAR_PAGE ? [] : ['radar']), 'airports', 'wis2gts'];
 const rowOfKinds = (l) => {
-    var match = /^(?:cache|gts|replay)-(.+)$/.exec(l.key);
+    var match = /^(?:origin|cache|gts|replay)-(.+)$/.exec(l.key);
     return match ? classOnPage(match[1]) : !KINDS_LEFT_OUT.includes(l.key);
 };
-export const LAYER_GROUPS = SATELLITE_PAGE
-    ? ALL_LAYER_GROUPS.filter((g) => g.key === 'space' || g.key === 'other').map((g) => g.key === 'space' ? g
-        : { ...g, subtitle: 'Past satellite notifications', layers: g.layers.filter((l) => l.key === 'replay') })
-    // No Global Replay on the GTS page: gateway bulletins have no location, so the
-    // replay's search of the view never finds them, and they'd need decoding besides
-    : GTS_PAGE
-        ? ALL_LAYER_GROUPS.filter((g) => g.key === 'gts')
-        : PAGE_CLASSES
-            ? ALL_LAYER_GROUPS.filter((g) => g.key !== 'space').map((g) => ({ ...g, layers: g.layers.filter(rowOfKinds) }))
-            : ALL_LAYER_GROUPS;
+// The forecasts page has only the Forecasts group, which no other page has
+const OBSERVATION_GROUPS = ALL_LAYER_GROUPS.filter((g) => g.key !== 'forecast');
+export const LAYER_GROUPS = FORECAST_PAGE
+    ? ALL_LAYER_GROUPS.filter((g) => g.key === 'forecast')
+    : SATELLITE_PAGE
+        ? OBSERVATION_GROUPS.filter((g) => g.key === 'space' || g.key === 'other').map((g) => g.key === 'space' ? g
+            : { ...g, subtitle: 'Past satellite notifications', layers: g.layers.filter((l) => l.key === 'replay') })
+        // No Global Replay on the GTS page: gateway bulletins have no location, so the
+        // replay's search of the view never finds them, and they'd need decoding besides
+        : GTS_PAGE
+            ? OBSERVATION_GROUPS.filter((g) => g.key === 'gts')
+            : PAGE_CLASSES
+                ? OBSERVATION_GROUPS.filter((g) => g.key !== 'space').map((g) => ({ ...g, layers: g.layers.filter(rowOfKinds) }))
+                : OBSERVATION_GROUPS;
 
 // Layer switches that are off, and which start off: kept in state.js
 export const hiddenLayers = state.hiddenLayers;
@@ -92,6 +103,10 @@ export const LAYER_PARENTS = Object.fromEntries([
     ...SATELLITE_LAYERS.map((k) => [k, 'satellite']),
     // Files without a location are always decoded while Cache is on; the reports inside join its groups
     ['files', 'obs'],
+    // Origin copies without a location too, while Origin is on; their reports join its groups
+    ['origin-files', 'origin'],
+    // ECCC's SWOB station reports are downloaded while Origin's weather stations are on
+    ['swob', 'origin-station'],
     // Text SYNOPs join GTS-to-WIS2's groups, so they're decoded while it is on
     ['gts-text', 'gts'],
     // The replay window and coverage opacity sliders are greyed out with their rows

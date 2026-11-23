@@ -4,7 +4,7 @@ import { decoderReady, decoderGaveUp } from '../data/decoder.js';
 import { map } from '../map/map.js';
 import { disciplineOf, formatOf } from './messages.js';
 import { writeFiltersToUrl } from '../lib/url.js';
-import { filterModes, filters, passesFilterChips } from '../lib/filters.js';
+import { filterModes, filters, passesFilterChips, topicTerms } from '../lib/filters.js';
 import { onMessage } from './handle.js';
 import { REPLAY_START_MINUTES } from '../page.js';
 import { state, setState } from '../state.js';
@@ -119,7 +119,7 @@ export function viewBbox() {
 }
 
 // The replay follows the filters. What the service can narrow down itself (its topic=
-// matches whole leading segments of a topic) it is asked for: the topic text up to its
+// matches whole leading segments of a topic) it is asked for: each topic term up to its
 // last /, or one request per centre while only a few are shown. Every notification
 // is then checked against all the filters (replayMatches), so ones they'd hide don't
 // use up REPLAY_MAX
@@ -128,9 +128,12 @@ export const REPLAY_TOPIC_PREFIX = 'cache/a/wis2/';
 export const REPLAY_CENTRES_MAX = 5;  // Shown centres beyond this are fetched together and sorted out here
 
 export function replayTopics() {
-    var text = filterModes.text !== 'hide' && filters.text.startsWith(REPLAY_TOPIC_PREFIX)
-        ? filters.text.slice(0, filters.text.lastIndexOf('/')) : '';
-    if (text.length > REPLAY_TOPIC_PREFIX.length) return [text];
+    // Each topic term, if every one is a cache topic deep enough to narrow it down
+    var terms = filterModes.text !== 'hide' ? topicTerms() : [];
+    var prefixes = terms.map((term) => (term.startsWith(REPLAY_TOPIC_PREFIX) ? term.slice(0, term.lastIndexOf('/')) : ''));
+    if (terms.length && terms.length <= REPLAY_CENTRES_MAX && prefixes.every((p) => p.length > REPLAY_TOPIC_PREFIX.length)) {
+        return [...new Set(prefixes)];
+    }
     if (filters.centres.size && filterModes.centres !== 'hide' && filters.centres.size <= REPLAY_CENTRES_MAX) {
         return [...filters.centres].map((centre) => `${REPLAY_TOPIC_PREFIX}${centre}`);
     }
@@ -139,7 +142,7 @@ export function replayTopics() {
 
 export function replayMatches(topic, feature) {
     var [channel, t] = topic.split('/a/wis2/');
-    return passesFilterChips({ topic, channel, centre: t.split('/', 1)[0], discipline: disciplineOf(t), format: formatOf(feature) });
+    return passesFilterChips({ topic, channel, centre: t.split('/', 1)[0], discipline: disciplineOf(t), format: formatOf(feature, topic) });
 }
 
 export const REPLAY_HOST = new URL(REPLAY_API).host;
@@ -161,7 +164,7 @@ export async function loadReplay() {
     var bbox = viewBbox();
     var since = new Date(Date.now() - replayWindowMs).toISOString().replace(/\.\d+Z$/, 'Z');
     var topics = replayTopics();
-    var filtersKey = JSON.stringify([filters.text, [...filters.centres].sort(), filters.format, [...filters.disciplines].sort(), filterModes]);
+    var filtersKey = JSON.stringify([topicTerms(), [...filters.centres].sort(), [...filters.format].sort(),[...filters.disciplines].sort(), [...filters.policy].sort(), filterModes]);
     // The same view and filters within ten minutes aren't fetched again
     var view = `${bbox.join(',')}|${since.slice(0, 15)}|${filtersKey}`;
     if (view === replayedView) return;

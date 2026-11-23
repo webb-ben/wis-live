@@ -1,10 +1,12 @@
-import { GATEWAY_SATELLITE, isDataLink, formatOf, GATEWAY_TOPIC, isSpaceBased, pointFor, GATEWAY_AIRCRAFT, GATEWAY_UPPER_AIR, topicClass, disciplineOf, isUpdate } from '../messages/messages.js';
+import { GATEWAY_SATELLITE, isDataLink, formatOf, GATEWAY_TOPIC, isSpaceBased, pointFor, GATEWAY_AIRCRAFT, GATEWAY_UPPER_AIR, topicClass, disciplineOf, isUpdate, FORMATS, noteSniffedFormat } from '../messages/messages.js';
 import { SYNOP_TOPIC, plotSynopBulletin } from './gts/synop.js';
 import { radarNoReflectivity, radarHeading, RADAR_FILE_MAX_BYTES, radarThrottled, plotRadar } from './radar/radar.js';
 import { seenLayers, effectiveHidden } from '../map/layers.js';
 import { decodeKey } from '../lib/ui/queue.js';
-import { decodeHref, DATA_LINKS_MAX, fetchTracked, bufrPart } from './download.js';
+import { decodeHref, DATA_LINKS_MAX, fetchTracked, bufrPart, sniffFormat } from './download.js';
 import { plotCitypage } from './alerts/citypage.js';
+import { queueSwob, clearSwob, parseSwob } from './swob/swob.js';
+import { queueGrib, clearGrib } from './grib/grib.js';
 import { plotLightningText, seenFlash, flashTime } from './lightning/lightning.js';
 import { callDecoder } from './decoder.js';
 import { SWATH_MIN_REPORTS, addSwathFile } from './satellite/coverage.js';
@@ -52,27 +54,37 @@ export const DECODE_LAYERS = {
     'gts-text': (topic, feature) => topic.startsWith('cache/') && SYNOP_TOPIC.test(topic)
         && !(feature.links || []).some((l) => isDataLink(l) && l.length > DECODE_FILE_MAX_BYTES),
     'gts-satellite': (topic, feature) => topic.startsWith('cache/') && GTS_TOPIC.test(topic) && GATEWAY_SATELLITE.test(topic),
-    wis2gts: (topic, feature) => topic.startsWith('cache/') && WIS2_GTS_TOPIC.test(topic) && !NOT_BUFR.includes(formatOf(feature))
+    wis2gts: (topic, feature) => topic.startsWith('cache/') && WIS2_GTS_TOPIC.test(topic) && !NOT_BUFR.includes(formatOf(feature, topic))
         && !(feature.links || []).some((l) => isDataLink(l) && l.length > DECODE_FILE_MAX_BYTES),
     // Gateway centres belong to their own layers above
     files: (topic, feature) => topic.startsWith('cache/') && !GATEWAY_TOPIC.test(topic) && !isSpaceBased(topic) && decodableFile(topic, feature),
     // ODIM HDF5 radar volumes. Velocity-only files are skipped by name, or by their
     // GTS heading once a file under it has turned out to hold no reflectivity
-    radar: (topic, feature) => topic.startsWith('cache/') && /radar/i.test(topic) && formatOf(feature) === 'hdf'
+    radar: (topic, feature) => topic.startsWith('cache/') && /radar/i.test(topic) && formatOf(feature, topic) === 'hdf'
         && !radarNoReflectivity.has(radarHeading(feature))
         && !(feature.links || []).some((l) => isDataLink(l) && (l.length > RADAR_FILE_MAX_BYTES || /vrad/i.test(l.href))),
     // Any space-based file not drawn from its notification: no geometry, or a swath too
     // large to plot. On the satellite page, where everything is coverage, every one
     // (its notification isn't drawn as a point then, see onMessage)
     'cache-satellite': (topic, feature) => topic.startsWith('cache/') && !GATEWAY_TOPIC.test(topic) && isSpaceBased(topic)
-        && (SATELLITE_PAGE || !(feature.geometry && feature.geometry.type && pointFor(feature.geometry))) && !NOT_BUFR.includes(formatOf(feature))
+        && (SATELLITE_PAGE || !(feature.geometry && feature.geometry.type && pointFor(feature.geometry))) && !NOT_BUFR.includes(formatOf(feature, topic))
         && !(feature.links || []).some((l) => isDataLink(l) && l.length > SATELLITE_FILE_MAX_BYTES),
+    // ECCC SWOB-ML station reports, which are only on the origin channel (see swob.js)
+    swob: (topic, feature) => topic.startsWith('origin/') && /surface-based-observations/.test(topic)
+        && (feature.links || []).some((l) => isDataLink(l) && /-swob\.xml$/i.test((l.href || '').split(/[?#]/)[0])),
+    // Origin copies of files without a location, decoded like the cache's ('files') and
+    // drawn as origin points until the cache's copy, decoded, replaces each report (they
+    // share a data_id, see addPoint). Only from servers that let browsers download
+    'origin-files': (topic, feature) => topic.startsWith('origin/') && !GATEWAY_TOPIC.test(topic) && !isSpaceBased(topic)
+        && decodableFile(topic, feature),
+    // GRIB files, outlined by the grid their headers give (see grib.js)
+    grib: (topic, feature) => topic.startsWith('cache/') && !GATEWAY_TOPIC.test(topic) && formatOf(feature, topic) === 'grib',
 };
 
 export function decodableFile(topic, feature) {
     return !feature.geometry
-        && (!NOT_BUFR.includes(formatOf(feature)) || (formatOf(feature) === 'xml' && /citypage/i.test(topic + JSON.stringify(feature.links || [])))
-            || (formatOf(feature) === 'text' && /lightning/i.test(topic)))
+        && (!NOT_BUFR.includes(formatOf(feature, topic)) || (formatOf(feature, topic) === 'xml' && /citypage/i.test(topic + JSON.stringify(feature.links || [])))
+            || (formatOf(feature, topic) === 'text' && /lightning/i.test(topic)))
         && (feature.links || []).some((l) => isDataLink(l) && l.length > 0 && l.length <= DECODE_FILE_MAX_BYTES);
 }
 
@@ -80,7 +92,7 @@ export const DECODE_FETCH_TIMEOUT_MS = 20000;
 
 export const decodeEnabled = new Set();
 
-export const decodePlotted = { gts: 0, 'gts-satellite': 0, 'gts-text': 0, wis2gts: 0, files: 0, 'cache-satellite': 0, radar: 0 };
+export const decodePlotted = { gts: 0, 'gts-satellite': 0, 'gts-text': 0, wis2gts: 0, files: 0, 'cache-satellite': 0, radar: 0, swob: 0, grib: 0, 'origin-files': 0 };
 
 // Two queues, so satellite files (large, and many at once after each pass) don't hold
 // up stations, ships and aircraft, nor the other way round. Each has its own downloads
@@ -176,14 +188,30 @@ export function satelliteSkipped(kind, topic) {
 
 export function queueDecode(kind, topic, feature) {
     var key = decodeKey(topic, feature);
+    // An origin copy is a file of its own to decode: the cache's copy is decoded again
+    // when it comes, to replace its reports
+    if (kind === 'origin-files' && key) key = `origin:${key}`;
     var href = decodeHref(feature);
-    if (!href || !key || decodeSeen.has(key)) return;
+    // GRIB headers also try the main cache's likely copy (fetchHead),
+    // so they go ahead when every copy announced is on a server that blocks browsers
+    if ((!href && kind !== 'grib') || !key || decodeSeen.has(key)) return;
     if (satelliteSkipped(kind, topic)) return;
     if (kind === 'radar' && radarThrottled(feature)) return;
     decodeSeen.add(key);
     if (decodeSeen.size > DATA_LINKS_MAX) decodeSeen.delete(decodeSeen.values().next().value);
+    // SWOB too, each station at most every few minutes (see swob.js). One not taken
+    // now may be announced again later
+    if (kind === 'swob') {
+        if (!queueSwob({ kind, key, topic, feature, href }, fetchSwob)) decodeSeen.delete(key);
+        return;
+    }
+    // GRIB only has its headers read, the newest file of each product (see grib.js)
+    if (kind === 'grib') {
+        if (!queueGrib({ kind, key, topic, feature, href })) decodeSeen.delete(key);
+        return;
+    }
     // XML needs no decoder, so it skips the queue rather than waiting behind BUFR
-    if (formatOf(feature) === 'xml') {
+    if (formatOf(feature, topic) === 'xml') {
         fetchTracked(href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) })
             .then((response) => (response.ok ? response.text() : null))
             .then((xml) => xml && decodeEnabled.has(kind) && plotCitypage({ kind, key, topic, feature, href }, xml))
@@ -199,7 +227,7 @@ export function queueDecode(kind, topic, feature) {
         return;
     }
     // And text lightning reports, which are a short CSV
-    if (formatOf(feature) === 'text') {
+    if (formatOf(feature, topic) === 'text') {
         fetchTracked(href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) })
             .then((response) => (response.ok ? response.text() : null))
             .then((text) => text && decodeEnabled.has(kind) && plotLightningText({ kind, key, topic, feature, href }, text))
@@ -242,8 +270,7 @@ export async function fetchForDecode(q, job) {
         var response = await fetchTracked(job.href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS * (job.kind === 'radar' ? 4 : 1)) });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         var raw = new Uint8Array(await response.arrayBuffer());
-        var bytes = job.kind === 'radar' ? raw : bufrPart(raw);
-        if (bytes) q.ready.push({ job, bytes });
+        routeFile(q, job, raw);
     } catch (err) {
         decodeSeen.delete(job.key);  // Let another cache's copy try
         console.debug(`Could not fetch ${job.href}: ${err.message}`);
@@ -251,6 +278,43 @@ export async function fetchForDecode(q, job) {
     q.fetching--;
     decodeNext();
     pumpDecode();
+}
+
+// Where a downloaded file goes, by what its first bytes say it is rather than what
+// its notification said: BUFR to pybufrkit, ODIM HDF5 (radar) to its reader, Environment
+// Canada XML, text SYNOPs and lightning to their parsers here. Anything else (GRIB
+// filed without a type, say) is noted as what it is, for the message list and the file
+// type filter, and not decoded
+function routeFile(q, job, raw) {
+    var format = sniffFormat(raw);
+    noteSniffedFormat(job.feature, format);
+    var text = () => new TextDecoder().decode(raw);
+    if (job.kind === 'radar' ? format === 'hdf' : format === 'bufr') {
+        q.ready.push({ job, bytes: job.kind === 'radar' ? raw : bufrPart(raw) });
+    } else if (format === 'xml' && /citypage/i.test(job.topic + JSON.stringify(job.feature.links || []))) {
+        plotCitypage(job, text());
+    } else if (format === 'text' && SYNOP_TOPIC.test(job.topic)) {
+        plotSynopBulletin(job, text());
+    } else if (format === 'text' && /lightning/i.test(job.topic)) {
+        plotLightningText(job, text());
+    } else {
+        console.debug(`Not decoded: ${job.href} is ${FORMATS[format]}`);
+    }
+}
+
+// Downloads a SWOB-ML file and plots its station like a decoded BUFR report
+async function fetchSwob(job) {
+    try {
+        var href = decodeHref(job.feature);
+        if (!href) throw new Error('no copy on a host that allows browser downloads');
+        var response = await fetchTracked(href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS) });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        var swob = parseSwob(await response.text());
+        if (swob && decodeEnabled.has('swob')) plotDecodedReport({ ...job, wsi: swob.wsi }, swob.rows, null, 0, 0, null);
+    } catch (err) {
+        decodeSeen.delete(job.key);
+        console.debug(`Could not fetch ${job.href}: ${err.message}`);
+    }
 }
 
 export async function decodeNext() {
@@ -307,7 +371,10 @@ export function plotDecodedReport(job, rows, profile, index, fileIndex, swath) {
         var fromTopic = topicClass({ topic: job.topic, webcam: false, props });
         if (fromTopic !== 'other' && (lightning || !OBS_CLASSES[fromTopic].cacheOnly)) cls = fromTopic;
     }
-    var subLayer = job.kind === 'gts' || job.kind === 'gts-satellite' ? `gts-${cls}` : job.kind === 'files' || job.kind === 'cache-satellite' ? `cache-${cls}` : null;
+    var subLayer = job.kind === 'gts' || job.kind === 'gts-satellite' ? `gts-${cls}` : ['files', 'cache-satellite'].includes(job.kind) ? `cache-${cls}` : null;
+    // Origin copies' reports and ECCC's SWOB stations (from its own servers) are origin
+    // points: rings, in Origin's row for their kind (satellites have none: plain Origin)
+    if (job.kind === 'swob' || job.kind === 'origin-files') subLayer = cls === 'satellite' ? 'origin' : `origin-${cls}`;
     if (lightning && seenFlash(flashTime(values), lat, lon)) return;
     if (subLayer && subLayer.endsWith('-satellite') && effectiveHidden().includes(subLayer)) return;
     var kept = subLayer && subLayer.endsWith('-satellite') ? trimRows(rows) : rows;
@@ -332,8 +399,8 @@ export function plotDecodedReport(job, rows, profile, index, fileIndex, swath) {
         },
         links: job.feature.links || [],
         notification: job.feature,
-        wsi: reportId(values),
-        format: 'bufr',
+        wsi: job.wsi || reportId(values),
+        format: job.kind === 'swob' ? 'xml' : 'bufr',
         color: subLayer ? OBS_CLASSES[cls].color : COLORS[job.kind],
         source: null,
         decoded: { subsets: 1, index: 0, rows: kept, profile: profile, trimmed: kept !== rows },
@@ -357,7 +424,8 @@ export function plotRecord(job, record) {
     // The first report with a location stands for the file; report 0 may have none
     if (!job.linked) {
         job.linked = true;
-        linkDecoded(job.key, record);
+        // An origin copy links its message rows (keyed without origin:) as the cache's would
+        linkDecoded(job.key.replace(/^origin:/, ''), record);
     }
 }
 
@@ -377,6 +445,8 @@ export function trimRows(rows) {
 
 export function setDecodeEnabled(kind, enabled) {
     enabled ? decodeEnabled.add(kind) : decodeEnabled.delete(kind);
+    if (!enabled && kind === 'swob') clearSwob();
+    if (!enabled && kind === 'grib') clearGrib();
     if (!enabled) {
         queueFor(kind).queue = queueFor(kind).queue.filter((job) => job.kind !== kind);
         for (var [product, job] of satelliteWaiting) {

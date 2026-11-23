@@ -26,12 +26,12 @@ export const DISCIPLINES = {
 export const FORMATS = {
     'bufr': 'BUFR',
     'grib': 'GRIB',
-    'xml': 'XML / CAP',
+    'xml': 'XML/CAP',
     'csv': 'CSV',
     'json': 'JSON',
     'text': 'Text',
     'image': 'Image',
-    'hdf': 'HDF / NetCDF',
+    'hdf': 'HDF/NetCDF',
     'other': 'Other',
 };
 
@@ -47,12 +47,33 @@ export function isUpdate(feature) {
 
 // File type of a notification's data, from the canonical link's media type,
 // falling back to the file extension for generic types
-export function formatOf(feature) {
+// File types learnt from a downloaded file's first bytes (see sniffFormat), by data_id:
+// these beat what the notification says
+export const sniffedFormats = new Map();
+
+const SNIFFED_MAX = 5000;
+
+export function noteSniffedFormat(feature, format) {
+    var dataId = feature && feature.properties && feature.properties.data_id;
+    if (!dataId || !format) return;
+    sniffedFormats.set(dataId, format);
+    if (sniffedFormats.size > SNIFFED_MAX) sniffedFormats.delete(sniffedFormats.keys().next().value);
+}
+
+// What a notification's file is: its own bytes if they've been seen, else its link's
+// media type or extension, else where the name or topic gives it away, else a GTS
+// bulletin's heading. topic, where known, settles files of numerical predictions
+// (…/data/core/weather/prediction/…), which say nothing else, as GRIB
+export function formatOf(feature, topic) {
+    var props = feature.properties || {};
+    if (sniffedFormats.has(props.data_id)) return sniffedFormats.get(props.data_id);
     var link = (feature.links || []).find((l) => isDataLink(l));
     if (!link) return 'other';
     var type = (link.type || '').toLowerCase();
     var ext = ((link.href || '').split(/[?#]/)[0].match(/\.([a-z0-9]+)$/i) || [])[1] || '';
     ext = ext.toLowerCase();
+    // A .json name beats the type: ECCC announces its GeoJSON (…_HighLowPressure_MSL_…json) as application/grib
+    if (/^(geo)?json$/.test(ext)) return 'json';
     if (/bufr/.test(type) || /^bufr\d?$/.test(ext)) return 'bufr';
     if (/grib/.test(type) || /^(grib2?|grb2?)$/.test(ext)) return 'grib';
     if (/xml|cap/.test(type) || ext === 'xml') return 'xml';
@@ -61,6 +82,9 @@ export function formatOf(feature) {
     if (/^image\//.test(type) || /^(jpe?g|png|gif|webp)$/.test(ext)) return 'image';
     if (/hdf|netcdf/.test(type) || /^(h5|hdf5?|nc)$/.test(ext)) return 'hdf';
     if (/^text\//.test(type) || ext === 'txt') return 'text';
+    // A name with .grib2 in it before a version suffix (the Met Office's …grib2/20261123T163116Z.1276.805)
+    if (/\.(grib2?|grb2?)(?:[/.?#]|$)/i.test(link.href || '')) return 'grib';
+    if (/\/data\/core\/weather\/prediction\//.test(topic || props.topic || '')) return 'grib';
     // GTS bulletins often come with a generic type and no extension (DWD's relays, NCM's
     // numbered copies), but the heading's T1 says what they are (WMO-No. 386, table A)
     var t1 = (gtsHeading(feature) || '')[0];
@@ -84,7 +108,9 @@ export const GATEWAY_CENTRE = /-(gts-to-wis2|wis2-to-gts)$/;
 
 export const GATEWAY_TOPIC = /\/a\/wis2\/[^/]+-(gts-to-wis2|wis2-to-gts)\//;
 
-export const GATEWAY_SATELLITE = /-(gts-to-wis2|wis2-to-gts)\/data\/core\/I\/[NE]\//;
+// GTS satellite bulletins: those headed IN and IE, and EUMETSAT's ISXX bulletins from
+// EUSR, satellite products filed under surface data
+export const GATEWAY_SATELLITE = /-(gts-to-wis2|wis2-to-gts)\/data\/core\/(I\/[NE]\/|I\/S\/X\/X\/\d+\/EUSR(\/|$))/;
 
 // Aircraft bulletins (T1T2A1 = IUA: AMDAR and similar)
 export const GATEWAY_AIRCRAFT = /-gts-to-wis2\/data\/core\/I\/U\/A\//;

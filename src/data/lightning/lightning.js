@@ -54,7 +54,7 @@ export function plotLightningText(job, text) {
             discipline: disciplineOf(t),
             webcam: false,
             decodedLayer: job.kind,
-            subLayer: 'cache-warning',
+            subLayer: channel === 'cache' ? 'cache-warning' : 'origin-warning',  // An origin copy's are origin points
             observed: time,
             props: { data_id: `${props.data_id}#${i}`, pubtime: props.pubtime, datetime: new Date(time).toISOString() },
             links: job.feature.links || [],

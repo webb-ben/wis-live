@@ -1,5 +1,5 @@
 // The layer switches and filters as the map's layer filters (applyMapFilter)
-import { filterModes, filters } from '../lib/filters.js';
+import { filterModes, filters, topicTerms } from '../lib/filters.js';
 import { hiddenLayers, effectiveHidden } from './layers.js';
 import { map } from './map.js';
 import { state } from '../state.js';
@@ -8,6 +8,7 @@ import { isColourTarget, windArrows, isArrow } from './colour.js';
 import { syncSwathPoints, refreshSatelliteOutline } from '../data/satellite/coverage.js';
 import { TWIN_LAYERS } from './twins.js';
 import { radars } from '../data/radar/radar.js';
+import { filterGrib } from '../data/grib/grib.js';
 import { DECODE_LAYERS } from '../data/decodeQueue.js';
 import { updateMapKey } from '../lib/ui/legend.js';
 
@@ -15,10 +16,13 @@ export function applyMapFilter() {
     var expr = ['all'];
     var add = (key, condition) => expr.push(filterModes[key] === 'hide' ? ['!', condition] : condition);
     if (filters.centres.size) add('centres', ['in', ['get', 'centre'], ['literal', [...filters.centres]]]);
-    if (filters.format) add('format', ['==', ['get', 'format'], filters.format]);
+    if (filters.format.size) add('format', ['in', ['get', 'format'], ['literal', [...filters.format]]]);
     if (filters.disciplines.size) add('disciplines', ['any', ['in', ['get', 'discipline'], ['literal', [...filters.disciplines]]],
         filters.disciplines.has('space-weather') && ['==', ['get', 'space'], true]]);
-    if (filters.text) add('text', ['in', filters.text, ['get', 'topic']]);
+    // Data policy, from the topic (…/data/core/…)
+    if (filters.policy.size) add('policy', ['any', ...[...filters.policy].map((p) => ['in', `/data/${p}/`, ['get', 'topic']])]);
+    var terms = topicTerms();
+    if (terms.length) add('text', ['any', ...terms.map((term) => ['in', term, ['get', 'topic']])]);
     if (hiddenLayers.size) {
         var hidden = effectiveHidden();
         expr.push(['!', ['in', ['get', 'layer'], ['literal', hidden]]]);
@@ -31,6 +35,7 @@ export function applyMapFilter() {
     }
     if (effectiveHidden().includes('replay')) expr.push(['!=', ['get', 'replay'], true]);
     if (!map.getLayer('points')) return;
+    filterGrib(expr);
     var tracksOn = !effectiveHidden().includes('gts-tracks');
     // With aircraft tracks on, tracked aircraft are drawn in the air instead of on the ground
     // Optionally only the points coloured by the selected measure

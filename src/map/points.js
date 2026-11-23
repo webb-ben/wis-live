@@ -14,6 +14,10 @@ import { metricValues } from '../data/metrics.js';
 import { indexTwin, unindexTwin } from './twins.js';
 import { showLegendRow } from '../lib/ui/legend.js';
 import { PAGE_CLASSES, classOnPage, SATELLITE_PAGE } from '../page.js';
+import { OBS_CLASSES } from '../config.js';
+
+// The kinds Origin has a row for (all but satellites, which have their own section: OWN_SECTION in layers.js)
+const ORIGIN_KINDS = new Set(Object.keys(OBS_CLASSES).filter((k) => k !== 'satellite'));
 
 export const records = new Map();  // id -> record for every point on the map
 export const byDataId = new Map();  // data_id -> record, so each observation is drawn once
@@ -95,14 +99,15 @@ export function isSpaceRecord(record) {
 export function recordClass(record) {
     var layer = layerOf(record);
     if (layer === 'origin') return topicClass(record);
-    var match = /^(?:cache|gts|replay)-(.+)$/.exec(layer);
+    var match = /^(?:origin|cache|gts|replay)-(.+)$/.exec(layer);
     return match ? match[1] : layer;
 }
 
 export function layerOf(record) {
     if (record.subLayer) return record.subLayer;
     if (record.decodedLayer) return record.decodedLayer;
-    if (record.channel !== 'cache') return 'origin';
+    // Origin copies by kind, like the cache's; satellites, which have their own section, stay plain origin
+    if (record.channel !== 'cache') return ORIGIN_KINDS.has(topicClass(record)) ? `origin-${topicClass(record)}` : 'origin';
     return `cache-${topicClass(record)}`;
 }
 
@@ -139,7 +144,6 @@ export function addPoint(record) {
             born: record.born,
             order: record.id,
             layer: layerOf(record),
-            kind: layerOf(record) === 'origin' ? topicClass(record) : '',  // So origin stations can be coloured
             format: record.format,
             channel: record.channel,
             centre: record.centre,

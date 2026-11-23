@@ -7,7 +7,7 @@ export const COLORS = {
     wis2gts: '#c2255c',
     files: '#83C95D',
     radar: '#0ca678',
-    'cache-satellite': '#9c36b5',  // OBS_CLASSES.satellite
+    grib: '#7048e8',    'cache-satellite': '#9c36b5',  // OBS_CLASSES.satellite
     'gts-satellite': '#9c36b5',
     'gts-text': '#9b6cd1',  // COLORS.gts
     replay: '#4c6ef5',
@@ -144,16 +144,14 @@ export const METRICS = {
             [60, '#a1a1a1'], [70, '#bdbdbd'], [80, '#d0d0d0'], [90, '#ebebeb'], [100, '#fefefe']] },
 };
 
-// Surface observations that can be coloured by a measure: stations, ships and buoys, cache and GTS
-export const COLOURABLE = [...['station', 'ship', 'buoy'].flatMap((k) => [`cache-${k}`, `gts-${k}`, `replay-${k}`]), 'airports'];
+// Surface observations that can be coloured by a measure: stations, ships and buoys from
+// the origin, the cache, the GTS and the replay
+export const COLOURABLE = [...['station', 'ship', 'buoy'].flatMap((k) => [`origin-${k}`, `cache-${k}`, `gts-${k}`, `replay-${k}`]), 'airports'];
 export const SATELLITE_LAYERS = ['cache-satellite', 'gts-satellite', 'replay-satellite'];
 
 // The satellite measures in Style by, most often seen first (cloud-top pressure is rare)
 export const SATELLITE_METRIC_ORDER = ['brightness', 'cloudAmount', 'satWind', 'skinTemp', 'vapour', 'seaWind',
     'satWaves', 'seaLevel', 'ozone', 'cloudTop'];
-
-// Origin copies are one layer; the kinds of them coloured like the stations above
-export const ORIGIN_COLOURABLE = ['station', 'ship', 'buoy'];
 
 export const NO_VALUE_COLOR = '#ced4da';
 

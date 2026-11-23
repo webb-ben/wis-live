@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<!-- The forecasts page: the same app as index.html, showing only forecast products
+     (…/prediction/… topics), drawn from their GRIB files (data-page, read
+     by src/page.js) -->
+<html data-page="forecasts">
+
+<head>
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-E3PSJTKDWV"></script>
+    <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'G-E3PSJTKDWV');
+    </script>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>WIS 2.0 Live: Forecasts</title>
+    <link rel="canonical" href="https://benwebb.com/wis-live/forecasts.html"/>
+    <meta property="og:title" content="WIS 2.0 Live: Forecasts"/>
+    <meta property="og:image" content="https://benwebb.com/assets/images/wis.png"/>
+    <meta property="og:url" content="https://benwebb.com/wis-live/forecasts.html"/>
+    <meta property="og:site_name" content="WIS 2.0 Live"/>
+    <meta property="og:description"
+        content="Model output and forecast products, drawn from their files as they are published through the WMO Information System. This page is not affiliated with WMO." />
+    <meta property="og:type" content="website"/>
+    <meta name="twitter:card" content="summary_large_image"/>
+    <meta name="twitter:title" content="WIS 2.0 Live: Forecasts"/>
+    <meta name="twitter:image" content="https://benwebb.com/assets/images/wis.png"/>
+
+    <!-- In public/; Vite adds the site's base (/wis-live/) to these paths -->
+    <link rel="shortcut icon" href="/assets/images/favicon-wis.ico" type="image/x-icon">
+    <link rel="icon" type="image/svg+xml" href="/assets/images/favicon-wis.svg">
+    <link rel="icon" type="image/png" sizes="32x32" href="/assets/images/favicon-wis-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/assets/images/favicon-wis-16x16.png">
+    <!-- Saved to the home screen on iPhone and iPad: square and opaque, iOS rounds the corners -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/assets/images/apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-title" content="WIS Forecasts">
+
+    <!-- The app, an ES module, shared with index.html -->
+    <script type="module" src="/src/main.js"></script>
+</head>
+
+<body class="body">
+    <div id="map" class="center"></div>
+
+    <!-- 100% privacy-first analytics -->
+    <script async src="https://scripts.simpleanalyticscdn.com/latest.js"></script>
+    <noscript><img src="https://queue.simpleanalyticscdn.com/noscript.gif" alt="" referrerpolicy="no-referrer-when-downgrade"/></noscript>
+</body>
+
+</html>

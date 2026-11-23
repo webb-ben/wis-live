@@ -2,7 +2,7 @@
 // the layer switches. Read it from `state`; change it with setState (or, for the
 // Sets and objects changed in place, change them and call notify), and anything
 // subscribed hears which keys changed. Mirrored in the URL by the main page.
-import { SATELLITE_PAGE, GTS_PAGE, RADAR_PAGE, REPLAY_START_MINUTES } from './page.js';
+import { SATELLITE_PAGE, GTS_PAGE, RADAR_PAGE, FORECAST_PAGE, REPLAY_START_MINUTES } from './page.js';
 
 export const state = {
     // Style by: 'kind' (observation type), 'satellite' (a colour each, where the
@@ -13,16 +13,17 @@ export const state = {
     colouredOnly: SATELLITE_PAGE,
     modelFieldOn: false,  // ECCC model field for the measure, under the points
     // Filters shared by the map, the message list and the dataset list
-    filters: { text: '', centres: new Set(), format: '', disciplines: new Set() },
+    filters: { text: '', centres: new Set(), format: new Set(), disciplines: new Set(), policy: new Set() },
     // Each filter either keeps only what matches ('only') or hides what matches ('hide')
-    filterModes: { text: 'only', centres: 'only', format: 'only', disciplines: 'only' },
-    // Layer switches that are off. Off at first: radar, the Global Replay, METAR,
-    // WIS2-to-GTS, aircraft and ground-based GNSS (cache, GTS and replay), aircraft
+    filterModes: { text: 'only', centres: 'only', format: 'only', disciplines: 'only', policy: 'only' },
+    // Layer switches that are off. Off at first: radar, GRIB (but on the
+    // forecasts page, their only page), the Global Replay, METAR,
+    // WIS2-to-GTS, aircraft and ground-based GNSS (origin, cache, GTS and replay), aircraft
     // tracks. Satellites are only on the satellite page, where they start on
     // The GTS page starts with both its gateways on (WIS2-to-GTS too), the GBON page
     // with the Global Replay on (see REPLAY_START_MINUTES), the radar page with radar on
-    hiddenLayers: new Set([...(RADAR_PAGE ? [] : ['radar']), ...(REPLAY_START_MINUTES ? [] : ['replay']), 'cache-gnss', 'gts-gnss', 'replay-gnss', 'airports',
-        'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks', ...(SATELLITE_PAGE ? [] : ['satellite']),
+    hiddenLayers: new Set([...(RADAR_PAGE ? [] : ['radar']), ...(REPLAY_START_MINUTES ? [] : ['replay']), ...(FORECAST_PAGE ? [] : ['grib']), 'origin-gnss', 'cache-gnss', 'gts-gnss', 'replay-gnss', 'airports',
+        'origin-aircraft', 'cache-aircraft', 'gts-aircraft', 'replay-aircraft', 'gts-tracks', ...(SATELLITE_PAGE ? [] : ['satellite']),
         ...(GTS_PAGE ? [] : ['wis2gts'])]),
     // The services in use, fastest first: { name, ms } of the Global Discovery
     // Catalogue, and { host, id, name, ms } of the global cache downloads try first

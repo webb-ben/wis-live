@@ -1,7 +1,7 @@
 import maplibregl from 'maplibre-gl';
 import { gdcSearched, searchCatalogue, sortDatasetRows, shownDataset, setShownDataset, filterDatasetRows, initCatalogue } from '../../data/catalogue.js';
-import { filterModes, filters, filtersActive, matchesFilters } from '../filters.js';
-import { FORMATS, DISCIPLINES, disciplineOf, topicClass, formatOf, wis2boxVersion, isSpaceBased, stationId, GATEWAY_TOPIC, isUpdate } from '../../messages/messages.js';
+import { filterModes, filters, filtersActive, matchesFilters, topicTerms, POLICY_LABELS } from '../filters.js';
+import { FORMATS, DISCIPLINES, disciplineOf, topicClass, formatOf, wis2boxVersion, isSpaceBased, stationId, GATEWAY_TOPIC, isUpdate, parseMessage, pointFor } from '../../messages/messages.js';
 import { notify } from '../../state.js';
 import { applyMapFilter } from '../../map/filter.js';
 import { writeFiltersToUrl } from '../url.js';
@@ -10,11 +10,16 @@ import { records, isGateway, byDataId } from '../../map/points.js';
 import { map } from '../../map/map.js';
 import { onMap } from '../../data/satellite/coverage.js';
 import { bufrSource } from '../../data/download.js';
+import { viaProxy } from '../../data/caches.js';
 import { COLORS, OBS_CLASSES } from '../../config.js';
 import { darken, TOUCH } from '../util.js';
 import { DECODE_LAYERS, decodeEnabled, satelliteSkipped } from '../../data/decodeQueue.js';
 import { wis2boxByCentre } from '../../messages/wis2box.js';
 import { showDecoded, decodeSource, showDecodeError, openPopup } from './popup.js';
+import { FORECAST_PAGE } from '../../page.js';
+
+// The file types forecast products come in: the forecasts page's only type filters
+const FORECAST_FORMATS = ['grib', 'hdf', 'json'];
 // The sidebar: the message list (newest first, grouped, filtered), the centre picker
 // and filter chips, and the Datasets tab beside it (src/data/catalogue.js)
 
@@ -76,8 +81,13 @@ export function filterChips() {
             setShownDataset(null);
             clearTopic();
         } });
-    } else if (filters.text) {
-        chips.push({ label: `${not('text')}topic “${filters.text}”`, clear: clearTopic });
+    } else {
+        // One per term, each taking only itself out of the topic box
+        var terms = topicTerms();
+        terms.forEach((term) => chips.push({ label: `${not('text')}topic “${term}”`, clear: terms.length === 1 ? clearTopic : () => {
+            filters.text = topicTerms().filter((t) => t !== term).join(', ');
+            queueFilter.value = filters.text;
+        } }));
     }
     [...filters.centres].sort().forEach((centre) => chips.push({ label: `${not('centres')}${centre}`, clear: () => {
         filters.centres.delete(centre);
@@ -85,13 +95,17 @@ export function filterChips() {
         if (item) item.querySelector('input').checked = false;
         showSelectedCentres();
     } }));
-    if (filters.format) chips.push({ label: `${not('format')}${FORMATS[filters.format]}`, clear: () => {
-        filters.format = '';
-        document.querySelector('.queue-format').value = '';
-    } });
+    filters.format.forEach((f) => chips.push({ label: `${not('format')}${FORMATS[f]}`, clear: () => {
+        filters.format.delete(f);
+        document.querySelector(`.queue-chip[data-format="${f}"]`)?.setAttribute('aria-pressed', 'false');
+    } }));
     filters.disciplines.forEach((d) => chips.push({ label: `${not('disciplines')}${DISCIPLINES[d]}`, clear: () => {
         filters.disciplines.delete(d);
-        document.querySelector(`.queue-chip[data-discipline="${d}"]`).setAttribute('aria-pressed', 'false');
+        document.querySelector(`.queue-chip[data-discipline="${d}"]`)?.setAttribute('aria-pressed', 'false');
+    } }));
+    filters.policy.forEach((p) => chips.push({ label: `${not('policy')}${POLICY_LABELS[p]}`, clear: () => {
+        filters.policy.delete(p);
+        document.querySelector(`.queue-chip[data-policy="${p}"]`)?.setAttribute('aria-pressed', 'false');
     } }));
     return chips;
 }
@@ -195,20 +209,26 @@ export function showSelectedCentres() {
 }
 
 // The picker lists every centre in the WMO register; centres seen in messages
-// but not registered are still added as they arrive. The register's CORS
-// headers are unreliable, so fall back to a bundled snapshot.
+// but not registered are still added as they arrive. A browser can't rely on the
+// register: codes.wmo.int answers every page with the Access-Control-Allow-Origin of
+// whichever page asked before (checked 2026-11-23), so most requests are blocked. The
+// site uses a bundled snapshot of it; the local dev and preview servers fetch the live
+// register through their proxy (localProxyHosts.js), and the snapshot if that fails
 export const CENTRE_REGISTER = 'https://codes.wmo.int/wis/topic-hierarchy/centre-id?_format=jsonld';
 
 export const CENTRE_SNAPSHOT = 'assets/data/centre-id.json';
 
 export async function loadCentres() {
-    var list;
-    try {
-        list = parseCentreRegister(await fetchJson(CENTRE_REGISTER));
-    } catch (err) {
-        console.debug('Could not load the centre-id register, using the snapshot');
-        list = await fetchJson(CENTRE_SNAPSHOT).catch(() => []);
+    var list = null;
+    var proxied = viaProxy(CENTRE_REGISTER);
+    if (proxied !== CENTRE_REGISTER) {
+        try {
+            list = parseCentreRegister(await fetchJson(proxied));
+        } catch (err) {
+            console.debug('Could not load the centre-id register, using the snapshot');
+        }
     }
+    if (!list) list = await fetchJson(CENTRE_SNAPSHOT).catch(() => []);
     list.forEach(([centre, name]) => addCentreOption(centre, name));
 }
 
@@ -243,7 +263,7 @@ export class QueueControl {
                     <button type="button" class="btn btn-sm btn-outline-danger queue-reset" hidden title="Remove every filter">Clear filters</button>
                     <button type="button" class="btn btn-sm btn-link queue-share" hidden title="Copy a link that opens the map with these filters">Copy link</button>
                 </div>
-                <div class="filter-row">${filterModeButton('text')}<input type="search" class="form-control form-control-sm" placeholder="Filter topics"></div>
+                <div class="filter-row">${filterModeButton('text')}<input type="search" class="form-control form-control-sm" placeholder="Filter topics (commas for more)" aria-label="Filter topics, separated by commas"></div>
                 <div class="queue-selects">
                     <div class="filter-row">${filterModeButton('centres')}<div class="centre-picker">
                         <button type="button" class="form-select form-select-sm centre-toggle" aria-label="Centres" aria-expanded="false">All centres</button>
@@ -253,16 +273,25 @@ export class QueueControl {
                         </div>
                     </div></div>
                     <div class="queue-chips centre-chips" aria-label="Selected centres"></div>
-                    <div class="filter-row">${filterModeButton('format')}<select class="form-select form-select-sm queue-format" aria-label="File type">
-                        <option value="">All file types</option>
-                        ${Object.entries(FORMATS).map(([key, label]) => `<option value="${key}">${label}</option>`).join('')}
-                    </select></div>
                 </div>
+                <div class="queue-chips" role="group" aria-label="File type">
+                    ${filterModeButton('format')}
+                    ${Object.entries(FORMATS).filter(([key]) => !FORECAST_PAGE || FORECAST_FORMATS.includes(key)).map(([key, label]) =>
+                        `<button type="button" class="queue-chip" data-format="${key}" aria-pressed="false">${label}</button>`).join('')}
+                </div>
+                ${FORECAST_PAGE ? '' : `
                 <div class="queue-chips" role="group" aria-label="Earth system discipline">
                     ${filterModeButton('disciplines')}
                     ${Object.entries(DISCIPLINES).map(([key, label]) =>
                         `<button type="button" class="queue-chip" data-discipline="${key}" aria-pressed="false">${label}</button>`).join('')}
                 </div>
+                <div class="queue-chips" role="group" aria-label="Data policy">
+                    ${filterModeButton('policy')}
+                    ${Object.entries(POLICY_LABELS).map(([key, label]) =>
+                        `<button type="button" class="queue-chip" data-policy="${key}" aria-pressed="false" title="${key === 'core'
+                            ? 'Core data: free and unrestricted, and copied by the global caches'
+                            : 'Recommended data: shared by choice, possibly with conditions of use, and only from its origin'}">${label}</button>`).join('')}
+                </div>`}
             </div>
             <div class="queue-tabs" role="tablist">
                 <button type="button" role="tab" data-tab="layers" aria-selected="true">Layers</button>
@@ -319,12 +348,20 @@ export class QueueControl {
         centreChips = sidebar.querySelector('.centre-chips');
         var centreMenu = sidebar.querySelector('.centre-menu');
         loadCentres();
-        var queueFormat = sidebar.querySelector('.queue-format');
-        queueFormat.addEventListener('change', function(){
-            filters.format = queueFormat.value;
-            applyFilters();
-        });
-        var chips = [...sidebar.querySelectorAll('.queue-chip')];
+        // File types, disciplines and data policies: each chip toggles its own, and any number can be on
+        var toggleChips = (attr, set) => {
+            var list = [...sidebar.querySelectorAll(`.queue-chip[data-${attr}]`)];
+            list.forEach((chip) => chip.addEventListener('click', function(){
+                var key = chip.dataset[attr];
+                set.has(key) ? set.delete(key) : set.add(key);
+                chip.setAttribute('aria-pressed', set.has(key));
+                applyFilters();
+            }));
+            return list;
+        };
+        var formatChips = toggleChips('format', filters.format);
+        var policyChips = toggleChips('policy', filters.policy);
+        var chips = [...sidebar.querySelectorAll('.queue-chip[data-discipline]')];
 
         queueFilter.addEventListener('input', function(){
             filters.text = queueFilter.value.trim().toLowerCase();
@@ -379,11 +416,13 @@ export class QueueControl {
         sidebar.querySelector('.queue-reset').addEventListener('click', function(){
             Object.keys(filterModes).forEach((key) => { filterModes[key] = 'only'; });
             sidebar.querySelectorAll('.filter-mode').forEach(paintFilterMode);
-            filters.text = filters.format = '';
+            filters.text = '';
+            filters.format.clear();
             filters.disciplines.clear();
+            filters.policy.clear();
             filters.centres.clear();
-            queueFilter.value = queueFormat.value = centreSearch.value = '';
-            chips.forEach((chip) => chip.setAttribute('aria-pressed', 'false'));
+            queueFilter.value = centreSearch.value = '';
+            [...chips, ...formatChips, ...policyChips].forEach((chip) => chip.setAttribute('aria-pressed', 'false'));
             centreList.querySelectorAll('input').forEach((input) => { input.checked = false; });
             searchCentres();
             showSelectedCentres();
@@ -391,8 +430,9 @@ export class QueueControl {
         });
         // Filters given in the link this page was opened with
         queueFilter.value = filters.text;
-        queueFormat.value = filters.format;
-        chips.forEach((chip) => chip.dataset.discipline && chip.setAttribute('aria-pressed', filters.disciplines.has(chip.dataset.discipline)));
+        formatChips.forEach((chip) => chip.setAttribute('aria-pressed', filters.format.has(chip.dataset.format)));
+        policyChips.forEach((chip) => chip.setAttribute('aria-pressed', filters.policy.has(chip.dataset.policy)));
+        chips.forEach((chip) => chip.setAttribute('aria-pressed', filters.disciplines.has(chip.dataset.discipline)));
         sidebar.querySelectorAll('.filter-mode').forEach(paintFilterMode);
         showSelectedCentres();
         // The map's filter needs the rest of the script, so apply once it has run
@@ -445,7 +485,7 @@ export function queueMessage(topic, message, record, feature) {
         discipline: disciplineOf(t),
         // What the topic says it holds, for messages that aren't on the map
         kind: topicClass({ topic, webcam: false, props: (feature && feature.properties) || {} }),
-        format: feature ? formatOf(feature) : 'other',
+        format: feature ? formatOf(feature, topic) : 'other',
         dataId: feature && feature.properties ? feature.properties.data_id : null,
         decodeKey: feature ? decodeKey(topic, feature) : null,
         // The decode layer this message goes to, when that layer is on. Origin copies
@@ -753,5 +793,22 @@ export function renderQueueRow(entry) {
         queuePaused = true;
         flushQueue();
     });
+    // A double click centres the map on the message: on its report, or where its
+    // notification says, even if the report is filtered out or not drawn. Its two
+    // clicks open and close the same thing, so they leave the row as it was
+    // (and don't select its text, which a single drag still can)
+    row.addEventListener('mousedown', (e) => { if (e.detail > 1) e.preventDefault(); });
+    row.addEventListener('dblclick', function(){
+        var coords = messageCoords(entry);
+        if (coords) map.easeTo({ center: coords, zoom: Math.max(map.getZoom(), 5) });
+    });
     return row;
+}
+
+// Where a message is: its report on the map, the report it was, or its notification's geometry
+export function messageCoords(entry) {
+    var record = currentRecord(entry) || entry.record;
+    if (record && record.coords) return record.coords;
+    var feature = parseMessage(entry.topic, entry.message);
+    return (feature && feature.geometry && pointFor(feature.geometry)) || null;
 }

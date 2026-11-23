@@ -251,6 +251,54 @@ def _gamic_scan(f, np, base64):
         'data': base64.b64encode(out.tobytes()).decode(),
     })
 
+# A NetCDF-4 forecast field on a regular latitude/longitude grid (the Met Office's):
+# its main variable (the largest on the grid), the first of any levels, thinned to at
+# most max_side points a side, as float32 (NaN where missing), with the grid's spacing
+def netcdf_field(data, max_side=1280):
+    import io, base64, math
+    import h5py
+    import numpy as np
+    f = h5py.File(io.BytesIO(bytes(data.to_py())), 'r')
+    def coord(names):
+        for n in names:
+            if n in f and f[n].ndim == 1:
+                return f[n][()].astype('float64')
+        return None
+    lat, lon = coord(('latitude', 'lat', 'grid_latitude')), coord(('longitude', 'lon', 'grid_longitude'))
+    if lat is None or lon is None or len(lat) < 2 or len(lon) < 2:
+        return json.dumps({'error': 'no regular latitude and longitude in the file'})
+    best = None
+    for name, ds in f.items():
+        if isinstance(ds, h5py.Dataset) and ds.ndim >= 2 and ds.shape[-2:] == (len(lat), len(lon)):
+            if best is None or ds.size > best.size:
+                best = ds
+    if best is None:
+        return json.dumps({'error': 'no variable on the latitude/longitude grid'})
+    level = None
+    if best.ndim > 2:
+        # The first of each leading dimension; named by a coordinate of that length if there is one
+        for name, ds in f.items():
+            if isinstance(ds, h5py.Dataset) and ds.ndim == 1 and ds.shape[0] == best.shape[0] and name not in ('latitude', 'longitude'):
+                units = ds.attrs.get('units', b'')
+                level = f"{name} {float(ds[0]):g} {units.decode() if isinstance(units, bytes) else units}".strip()
+                break
+    step = max(1, math.ceil(max(len(lat), len(lon)) / max_side))
+    v = best[(0,) * (best.ndim - 2) + (slice(None, None, step), slice(None, None, step))].astype('float64')
+    fill = best.attrs.get('_FillValue')
+    if fill is not None:
+        v[v == np.asarray(fill).ravel()[0]] = np.nan
+    v = v * float(np.asarray(best.attrs.get('scale_factor', 1.0)).ravel()[0]) + float(np.asarray(best.attrs.get('add_offset', 0.0)).ravel()[0])
+    lat, lon = lat[::step], lon[::step]
+    text = lambda k: (lambda a: a.decode() if isinstance(a, bytes) else (str(a) if a is not None else ''))(best.attrs.get(k))
+    finite = v[np.isfinite(v)]
+    return json.dumps({
+        'name': best.name.strip('/'), 'standard_name': text('standard_name'), 'units': text('units'), 'level': level,
+        'lat0': float(lat[0]), 'dlat': float(lat[1] - lat[0]), 'nlat': int(len(lat)),
+        'lon0': float(lon[0]), 'dlon': float(lon[1] - lon[0]), 'nlon': int(len(lon)),
+        'min': float(finite.min()) if finite.size else None, 'max': float(finite.max()) if finite.size else None,
+        'data': base64.b64encode(v.astype('<f4').tobytes()).decode(),
+    })
+
 def radar_scan(data):
     import io, base64
     import h5py
@@ -339,7 +387,7 @@ def decode_bufr(data, wsi, key, index=-1):
 const DECODER_WORKER = `
 importScripts('${PYODIDE_URL}pyodide.js');
 let ready = null;
-let h5py = null;  // Loaded on the first radar file
+let h5py = null;  // Loaded on the first radar or NetCDF file
 
 async function init(wheelUrls) {
     const py = await loadPyodide({ indexURL: '${PYODIDE_URL}' });
@@ -374,10 +422,10 @@ onmessage = async (e) => {
         return;
     }
     try {
-        if (fn === 'radar_scan') await (h5py = h5py || py.loadPackage('h5py'));
+        if (fn === 'radar_scan' || fn === 'netcdf_field') await (h5py = h5py || py.loadPackage('h5py'));
         postMessage({ id, result: py.globals.get(fn)(...args) });
     } catch (err) {
-        if (fn === 'radar_scan' && !py.loadedPackages.h5py) h5py = null;  // h5py failed to load: try again next time
+        if ((fn === 'radar_scan' || fn === 'netcdf_field') && !py.loadedPackages.h5py) h5py = null;  // h5py failed to load: try again next time
         postMessage({ id, error: err.message });
     }
 };
@@ -412,7 +460,7 @@ function roomyForTwoDecoders() {
 }
 
 function decoderLane(fn) {
-    return (fn === 'decode_subsets' || fn === 'radar_scan') && filesDecoderReady ? 'files' : 'main';
+    return (fn === 'decode_subsets' || fn === 'radar_scan' || fn === 'netcdf_field') && filesDecoderReady ? 'files' : 'main';
 }
 
 function startFilesDecoder() {

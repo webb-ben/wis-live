@@ -8,9 +8,15 @@
 //  - radar (radar.html): weather radar volumes, and winds measured from the ground by
 //    radars and wind profilers
 //  - satellites (satellites.html): only satellites, drawn as coverage
+//  - forecasts (forecasts.html): only forecast products (…/prediction/… topics): the
+//    areas GRIB files cover, each drawable. The other pages leave them out
 // No imports, so anything (state.js included) can use it
 export const PAGE = document.documentElement.dataset.page || 'home';
 export const SATELLITE_PAGE = PAGE === 'satellites';
+export const FORECAST_PAGE = PAGE === 'forecasts';
+
+// Forecast products: WIS2 topics under …/data/<policy>/<discipline>/prediction/
+export const FORECAST_TOPIC = /\/data\/[^/]+\/[^/]+\/prediction\//;
 export const GBON_PAGE = PAGE === 'gbon';
 export const METOCEAN_PAGE = PAGE === 'metocean';
 export const GTS_PAGE = PAGE === 'gts';
@@ -35,6 +41,8 @@ export const PAGES = [
         about: 'Bulletins sent to the Global Telecommunication System gateways and WIS2' },
     { key: 'satellites', href: 'satellites.html', label: 'Satellites',
         about: 'Space-based observations, drawn as areas of coverage' },
+    { key: 'forecasts', href: 'forecasts.html', label: 'Forecasts',
+        about: 'Model output and forecast products: the areas they cover, and their values drawn' },
 ];
 export const OTHER_PAGES = PAGES.filter((p) => p.key !== PAGE);
 
@@ -64,18 +72,22 @@ export const GATEWAY_CENTRES = ['de-dwd-gts-to-wis2', 'jp-jma-gts-to-wis2', 'cn-
 // The Global Broker topics the page subscribes to (MQTT filters: + one level, # the
 // rest). The satellite page takes only satellites': WIS2's space-based observations,
 // under any centre, data policy and discipline, and the GTS gateways' satellite
-// bulletins, headed IN and IE (as isSpaceBased). The others take everything, and
+// bulletins, headed IN and IE, and ISXX from EUSR (as isSpaceBased). The others take everything, and
 // leave out what isn't theirs (see topicOnPage). The GTS page takes the gateway
-// centres by name, as MQTT can't match the end of one (-gts-to-wis2)
+// centres by name, as MQTT can't match the end of one (-gts-to-wis2). The forecasts page
+// takes only forecast products, under any centre, data policy and discipline
 export const PAGE_TOPICS = SATELLITE_PAGE
     ? ['origin', 'cache'].flatMap((channel) => [
         `${channel}/a/wis2/+/data/+/+/space-based-observations/#`,
         `${channel}/a/wis2/+/data/core/I/N/#`,
         `${channel}/a/wis2/+/data/core/I/E/#`,
+        `${channel}/a/wis2/+/data/core/I/S/X/X/+/EUSR`,
     ])
     : GTS_PAGE
         ? ['origin', 'cache'].flatMap((channel) => GATEWAY_CENTRES.map((centre) => `${channel}/a/wis2/${centre}/#`))
-        : ['origin/a/wis2/#', 'cache/a/wis2/#'];
+        : FORECAST_PAGE
+            ? ['origin', 'cache'].map((channel) => `${channel}/a/wis2/+/data/+/+/prediction/#`)
+            : ['origin/a/wis2/#', 'cache/a/wis2/#'];
 
 // The links to the other pages, as HTML
 export function otherPageLinks() {

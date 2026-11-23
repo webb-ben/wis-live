@@ -25,7 +25,7 @@ import { satelliteColours, satelliteLabel } from '../../data/satellite/rows.js';
 import { radars, RADAR_COLORS } from '../../data/radar/radar.js';
 import { brokerState } from '../../messages/mqtt.js';
 import { SHED_LAYERS } from '../../messages/network.js';
-import { SATELLITE_PAGE, METOCEAN_PAGE, metricOnPage, otherPageLinks } from '../../page.js';
+import { SATELLITE_PAGE, METOCEAN_PAGE, FORECAST_PAGE, metricOnPage, otherPageLinks } from '../../page.js';
 import { flowShown } from '../../map/windFlow.js';
 // The panels on the map: the layers in the sidebar (LegendControl), the key of what
 // is drawn with Style by (StyleControl, top right), and the world map with the
@@ -48,7 +48,7 @@ export class LegendControl {
             ${LAYER_GROUPS.map((g) => `
             <section class="legend-section legend-section-${g.key}">
             <div class="legend-group">${g.label}<small>${g.subtitle}</small></div>
-            <div class="legend-style"><span class="legend-dot legend-sample"></span>${g.key === 'gts' ? 'Diamonds on the map' : g.key === 'other' ? 'Squares on the map' : g.key === 'space' ? 'Hexagons of coverage on the map; single reports as circles from WIS2, diamonds from the GTS' : 'Circles on the map'}</div>
+            <div class="legend-style"><span class="legend-dot legend-sample"></span>${g.key === 'gts' ? 'Diamonds on the map' : g.key === 'forecast' ? 'Outlines of the areas forecast products cover; pick one below to draw it' : g.key === 'other' ? 'Squares on the map' : g.key === 'space' ? 'Hexagons of coverage on the map; single reports as circles from WIS2, diamonds from the GTS' : 'Circles on the map'}</div>
             ${g.layers.map((l) => `
             ${l.option ? `
             <label class="legend-toggle legend-option form-switch" data-layer="${l.key}"${l.title ? ` title="${l.title}"` : ''}>
@@ -200,7 +200,17 @@ export class StyleControl {
         container.className = 'maplibregl-ctrl map-key map-style';
         var heading = container.appendChild(document.createElement('div'));
         heading.className = 'map-key-heading';
-        heading.textContent = 'Legend';
+        heading.textContent = FORECAST_PAGE ? 'Forecast' : 'Legend';
+        // The forecasts page's legend is the forecast drawn, and nothing else: its model,
+        // variable, lead time and colour scale (grib.js). No key rows or Style by there
+        if (FORECAST_PAGE) {
+            var field = container.appendChild(document.createElement('div'));
+            field.className = 'forecast-field';
+            field.innerHTML = '<div class="legend-note">Pick a forecast product from the list in the sidebar, or click the map and Style one.</div>';
+            mapKeyBody = document.createElement('div');  // Kept off the page: updateMapKey still fills it
+            container.classList.add('map-key-forecast');
+            return container;
+        }
         mapKeyBody = container.appendChild(document.createElement('div'));
         mapKeyBody.className = 'map-key-main';
         container.append(buildStylePanel());
@@ -445,11 +455,11 @@ export function updateMapKey() {
         if (!state.colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}Other</div>`);
     } else {
         for (var [key, c] of Object.entries(OBS_CLASSES)) {
-            var shapes = [drawn(`cache-${key}`) && 'circle', drawn(`gts-${key}`) && 'diamond', drawn(`replay-${key}`) && 'square'].filter(Boolean);
+            var shapes = [drawn(`cache-${key}`) && 'circle', drawn(`origin-${key}`) && 'ring', drawn(`gts-${key}`) && 'diamond', drawn(`replay-${key}`) && 'square'].filter(Boolean);
             // Satellites' points and their coverage on one line
             var extra = key === 'satellite' && coverage ? swatch : '';
             if (shapes.length || extra) {
-                rows.push(toggle(`class:${key}`, [`cache-${key}`, `gts-${key}`, `replay-${key}`, ...(key === 'satellite' ? SATELLITE_LAYERS : [])],
+                rows.push(toggle(`class:${key}`, [`origin-${key}`, `cache-${key}`, `gts-${key}`, `replay-${key}`, ...(key === 'satellite' ? SATELLITE_LAYERS : [])],
                     c.label.toLowerCase(), `${shapes.map((shape) => symbol(shape, c.color)).join('')}${extra}${esc(c.label)}`));
             }
         }
@@ -484,7 +494,7 @@ export function updateMapKey() {
     // Other sources are squares: the Global Replay (its rows are replay-station and so on) and airports
     // The satellite page says each satellite's source on its row instead (see above)
     var shapes = SATELLITE_PAGE ? [] : [drawnAny('cache-') && shape('source:obs', 'obs', 'circle', '#adb5bd', 'WIS2'),
-        drawn('origin') && shape('source:origin', 'origin', 'ring', COLORS.origin, 'WIS2 origin'),
+        (drawn('origin') || drawnAny('origin-')) && shape('source:origin', 'origin', 'ring', '#adb5bd', 'WIS2 origin'),
         drawnAny('gts-') && shape('source:gts', 'gts', 'diamond', '#adb5bd', 'GTS'),
         drawnAny('replay-') && shape('source:replay', 'replay', 'square', '#adb5bd', 'Replay'),
         drawn('airports') && shape('source:airports', 'airports', 'square', '#adb5bd', 'METAR')].filter(Boolean);

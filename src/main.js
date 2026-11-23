@@ -8,7 +8,7 @@ import './style.css';
 import { state, setState, notify, subscribe } from './state.js';
 import { noteCacheLinks } from './data/caches.js';
 import { DATA_LINKS_MAX, linksSeen, decodeHref, fetchTracked, rememberLinks, bufrSource, fetchData, bufrPart, isUtf8 } from './data/download.js';
-import { COLORS, OBS_CLASSES, METRICS, COLOURABLE, SATELLITE_LAYERS, ORIGIN_COLOURABLE, NO_VALUE_COLOR, SOURCE_COLORS, SATELLITE_STYLE, WAVE_STYLE, WAVE_CLASSES } from './config.js';
+import { COLORS, OBS_CLASSES, METRICS, COLOURABLE, SATELLITE_LAYERS, NO_VALUE_COLOR, SOURCE_COLORS, SATELLITE_STYLE, WAVE_STYLE, WAVE_CLASSES } from './config.js';
 import { parseMessage, DISCIPLINES, FORMATS, isDataLink, isUpdate, formatOf, GATEWAY_TOPIC, GATEWAY_SATELLITE, GATEWAY_AIRCRAFT,
     GATEWAY_UPPER_AIR, isSpaceBased, disciplineOf, topicClass, stationId, pointFor, wis2boxVersion } from './messages/messages.js';
 import { esc, darken, svgEl, knots, PHONE, TOUCH } from './lib/util.js';
@@ -29,6 +29,7 @@ import { renderCap } from './data/alerts/cap.js';
 import { SYNOP_TOPIC, plotSynopBulletin, rememberStation } from './data/gts/synop.js';
 import { seenFlash, flashTime, plotLightningText } from './data/lightning/lightning.js';
 import { plotCitypage } from './data/alerts/citypage.js';
+import { initGrib, addGribLayers, GRIB_LAYERS } from './data/grib/grib.js';
 import { initRadar, RADAR_COLORS, RADAR_FILE_MAX_BYTES, radars, plotRadar, radarHeading, radarNoReflectivity, radarThrottled } from './data/radar/radar.js';
 import { DIAMOND_HALF, arrowSdf, squareSdf, diamondSdf } from './map/symbols.js';
 import { map, centreOnVisitor } from './map/map.js';
@@ -100,6 +101,15 @@ initRadar({
     shown: () => !effectiveHidden().includes('radar'),
     plotted: () => decodePlotted.radar++,
     changed: () => updateMapKey(),
+});
+
+// GRIB files' grids (src/data/grib/grib.js), outlined while that row is on
+initGrib({
+    map,
+    enabled: () => decodeEnabled.has('grib'),
+    plotted: () => decodePlotted.grib++,
+    changed: () => updateMapKey(),
+    pointAt: (point) => nearestPoint(point),
 });
 
 // Layers that draw observation points: WIS2 circles and GTS diamonds
@@ -297,6 +307,8 @@ map.on('load', () => {
             'icon-pitch-alignment': 'map',
         },
     }, 'points');
+    // Forecast products' outlines and drawn fields, under the tracks and points (src/data/grib/grib.js)
+    addGribLayers('tracks');
     paintAge();
     setInterval(paintAge, 30 * 1000);
     // Styled by wind, streaks flow the way it blows (src/map/windFlow.js)
@@ -320,7 +332,7 @@ map.on('load', () => {
         var near = nearestPoint(e.point);
         if (near) { openPopup(records.get(near.id)); return; }
         // A click on empty map closes the info panel
-        var hit = map.queryRenderedFeatures(e.point, { layers: ['tracks', 'track-ribbons', 'swaths-fill'].filter((id) => map.getLayer(id)) });
+        var hit = map.queryRenderedFeatures(e.point, { layers: ['tracks', 'track-ribbons', 'swaths-fill', ...GRIB_LAYERS].filter((id) => map.getLayer(id)) });
         if (!hit.length && document.body.classList.contains('info-open')) closeInfo();
     });
     map.on('click', 'tracks', (e) => {

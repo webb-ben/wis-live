@@ -2,7 +2,7 @@
 // notifications seen for it), fastest cache first (caches.js), then the copies
 // caches that didn't announce it are likely to have (guessedCopies); and what came
 // back: BUFR (bufrPart) or text (isText)
-import { isDataLink } from '../messages/messages.js';
+import { isDataLink, FORMATS, noteSniffedFormat, formatOf } from '../messages/messages.js';
 import { canDownload, noteTrying, noteLatency, noteFailed, downloadOrder, viaProxy } from './caches.js';
 
 export const DATA_LINKS_MAX = 20000;
@@ -63,7 +63,8 @@ export function bufrSource(feature, props, topic) {
         .map((l) => l.href);
     if (!content && !urls.length) return null;
     return { content: content, dataId: props.data_id, urls: urls, cap: props.cap_info || null,
-        topic: topic || props.topic || null, pubtime: props.pubtime || null };
+        topic: topic || props.topic || null, pubtime: props.pubtime || null,
+        format: formatOf(feature, topic || props.topic), feature };
 }
 
 // ---------- Copies no cache announced. Each global cache keeps a file at an address
@@ -120,6 +121,7 @@ export async function fetchData(source) {
     guessed = downloadOrder(guessed);
     urls = [...urls, ...guessed.filter((url) => !urls.includes(url))];
     var answered = 0;
+    var found = null;  // What the copies were instead, when not BUFR or text
     for (var url of urls) {
         if (guessed.includes(url) && url.startsWith(`https://${MAIN_CACHE_HOST}/`)) {
             mainCacheTried.add(url);
@@ -132,6 +134,10 @@ export async function fetchData(source) {
             var bytes = new Uint8Array(await response.arrayBuffer());
             if (bufrPart(bytes)) return { bytes: bufrPart(bytes), bufr: true, url: url };
             if (!text && isText(bytes)) text = { bytes: bytes, bufr: false, url: url };
+            else if (!isText(bytes)) {
+                found = sniffFormat(bytes);
+                noteSniffedFormat({ properties: { data_id: source.dataId } }, found);
+            }
         } catch (err) {
             // Thrown before any answer could be read: blocked by CORS, or unreachable
             console.debug(`Could not fetch ${url}`);
@@ -139,12 +145,54 @@ export async function fetchData(source) {
     }
     if (text) return text;
     // Retry looks again: other caches' copies arrive in their own notifications
+    if (answered && found && found !== 'other') {
+        throw new Error(`the file is ${FORMATS[found]}, which isn't decoded here (only BUFR and text are)`);
+    }
     if (answered) throw new Error(`the ${answered === 1 ? 'copy' : `${answered} copies`} downloaded ${answered === 1 ? 'is' : 'are'} neither BUFR nor text`);
     var next = source.guess ? 'Retry tries any other caches\' copies seen since'
         : 'Retry also asks the caches that haven\'t announced it';
     throw new Error(urls.length
         ? `none of the ${urls.length} ${urls.length === 1 ? 'copy' : 'copies'} ${guessed.length ? 'known or likely' : 'known'} could be downloaded; ${next}`
         : `every copy known is on a server that blocks browser downloads; ${next}`);
+}
+
+// The first `length` bytes of a file, from the first copy that answers (the copies
+// fetchData would try, the main cache's likely one included): { bytes, url }. Asks for
+// just that much (Range), and stops reading once it has it from a server that sends the
+// whole file anyway. For GRIB, whose headers say what the file holds (see grib.js).
+// From `start` if given (a later field of a GRIB file): then only a server that sends
+// just the range asked for (206) will do
+export async function fetchHead(source, length = 16384, start = 0) {
+    var known = [...source.urls, ...(dataLinks.get(source.dataId) || [])];
+    var guessed = guessedCopies(source, known).filter((url) => url.startsWith(`https://${MAIN_CACHE_HOST}/`));
+    var urls = downloadOrder(known);
+    urls = [...urls, ...downloadOrder(guessed).filter((url) => !urls.includes(url))];
+    for (var url of urls) {
+        try {
+            var response = await fetchTracked(url, { headers: { Range: `bytes=${start}-${start + length - 1}` } });
+            if (!response.ok || (start > 0 && response.status !== 206)) continue;
+            var reader = response.body.getReader();
+            var parts = [], got = 0;
+            while (got < length) {
+                var { done, value } = await reader.read();
+                if (done) break;
+                parts.push(value);
+                got += value.length;
+            }
+            reader.cancel().catch(() => {});
+            var bytes = new Uint8Array(Math.min(got, length));
+            var at = 0;
+            for (var part of parts) {
+                bytes.set(part.subarray(0, bytes.length - at), at);
+                at += Math.min(part.length, bytes.length - at);
+                if (at >= bytes.length) break;
+            }
+            return { bytes, url };
+        } catch (err) {
+            console.debug(`Could not fetch the start of ${url}`);
+        }
+    }
+    throw new Error(urls.length ? 'no copy could be downloaded' : 'every copy known is on a server that blocks browser downloads');
 }
 
 // Text in any language: control characters other than tabs and line breaks are rare,
@@ -167,6 +215,20 @@ function utf8Boundary(bytes) {
 
 // GTS bulletins put an abbreviated heading (e.g. "IUAG04 VHHH 141200") before
 // the BUFR message, so look a little way in; returns the BUFR bytes or null
+// What a file is, from its first bytes: a FORMATS key. BUFR and GRIB may follow a GTS
+// heading, so whichever starts first in the first 256 bytes counts
+export function sniffFormat(bytes) {
+    var head = String.fromCharCode(...bytes.subarray(0, 256));
+    var bufr = head.indexOf('BUFR'), grib = head.indexOf('GRIB');
+    if (bufr >= 0 && (grib < 0 || bufr < grib)) return 'bufr';
+    if (grib >= 0) return 'grib';
+    if (head.startsWith('\x89HDF') || /^CDF[\x01\x02\x05]/.test(head)) return 'hdf';
+    if (head.startsWith('\x89PNG') || head.startsWith('GIF8') || (bytes[0] === 0xff && bytes[1] === 0xd8)) return 'image';
+    if (/^(﻿|\xef\xbb\xbf)?\s*</.test(head)) return 'xml';
+    if (/^(﻿|\xef\xbb\xbf)?\s*[{[]/.test(head)) return 'json';
+    return isText(bytes) ? 'text' : 'other';
+}
+
 export function bufrPart(bytes) {
     var head = String.fromCharCode(...bytes.subarray(0, 256));
     var start = head.indexOf('BUFR');

@@ -5,6 +5,7 @@
 import { setState } from '../state.js';
 import { isDataLink } from '../messages/messages.js';
 import { registerService, servicePick } from '../lib/services.js';
+import { LOCAL_PROXY_HOSTS } from './localProxyHosts.js';
 
 const CACHES_MAX = 50;  // Hosts kept (there are a handful of global caches)
 const PROBE_MS = 8000;
@@ -33,9 +34,19 @@ function proxied(host) {
     return !!CORS_PROXY && PROXY_HOSTS.includes(host) && (NO_CORS_HOSTS.includes(host) || blockedHosts.has(host));
 }
 
-// The address to download url from: through the proxy for a cache that needs it
+// Servers without CORS headers that the local dev and preview servers pass through
+// (localProxyHosts.js). Only on localhost: the site itself can't
+const LOCAL = typeof location !== 'undefined' && ['localhost', '127.0.0.1'].includes(location.hostname);
+
+// The address to download url from: through the proxy for a cache that needs it, or
+// through the local server for one it passes through
 export function viaProxy(url) {
-    return proxied(hostOf(url)) ? `${CORS_PROXY}?url=${encodeURIComponent(url)}` : url;
+    var host = hostOf(url);
+    if (LOCAL && LOCAL_PROXY_HOSTS.includes(host)) {
+        var u = new URL(url);
+        return `${import.meta.env.BASE_URL}proxy/${host}${u.pathname}${u.search}`;
+    }
+    return proxied(host) ? `${CORS_PROXY}?url=${encodeURIComponent(url)}` : url;
 }
 
 function hostOf(url) {
@@ -48,7 +59,7 @@ function hostOf(url) {
 
 export function corsFriendly(url) {
     var host = hostOf(url);
-    return host.endsWith('.amazonaws.com') || CORS_HOSTS.includes(host) || proxied(host);
+    return host.endsWith('.amazonaws.com') || CORS_HOSTS.includes(host) || proxied(host) || (LOCAL && LOCAL_PROXY_HOSTS.includes(host));
 }
 
 // "data-metoffice-noaa-global-cache" -> "Met Office / NOAA"

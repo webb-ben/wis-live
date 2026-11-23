@@ -1,19 +1,20 @@
-import { filters, filterModes } from './filters.js';
+import { filters, filterModes, topicTerms, POLICY_LABELS } from './filters.js';
 import { FORMATS, DISCIPLINES } from '../messages/messages.js';
 import { SATELLITE_STYLE, WAVE_STYLE, METRICS } from '../config.js';
 import { hiddenLayers } from '../map/layers.js';
-import { SATELLITE_PAGE, GBON_PAGE, GTS_PAGE, REPLAY_START_MINUTES, metricOnPage } from '../page.js';
+import { SATELLITE_PAGE, GBON_PAGE, GTS_PAGE, FORECAST_PAGE, REPLAY_START_MINUTES, metricOnPage } from '../page.js';
 import { setState, state } from '../state.js';
 import { setStartDataset, shownDataset, startDataset, setShownDataset } from '../data/catalogue.js';
 import { setReplayWindowMs, REPLAY_RANGE_MINUTES, replayWindowMs } from '../messages/replay.js';
 
 
 // Filters and point styling in the address bar, so a view can be shared:
-// ?topic=synop&centre=de-dwd,jp-jma&format=bufr&discipline=ocean&hide=centres
+// ?topic=synop,temp&centre=de-dwd,jp-jma&format=bufr,csv&discipline=ocean&policy=core&hide=centres
+// (a list keeps what matches any of it)
 // (hide lists the filters set to Hide rather than Only), and style=temp&require=1&base=1
 // (the measure points are coloured by, Require value, the model base layer; style is
 // left out for the default, observation type). Other parameters are kept.
-export const FILTER_PARAMS = { text: 'topic', centres: 'centre', format: 'format', disciplines: 'discipline' };
+export const FILTER_PARAMS = { text: 'topic', centres: 'centre', format: 'format', disciplines: 'discipline', policy: 'policy' };
 
 export const DEFAULT_COLOUR = SATELLITE_PAGE ? SATELLITE_STYLE : 'kind';
 
@@ -24,8 +25,9 @@ export function readFiltersFromUrl() {
     var list = (name) => (params.get(name) || '').split(',').map((s) => s.trim()).filter(Boolean);
     filters.text = (params.get(FILTER_PARAMS.text) || '').trim().toLowerCase();
     list(FILTER_PARAMS.centres).forEach((c) => filters.centres.add(c));
-    filters.format = FORMATS.hasOwnProperty(params.get(FILTER_PARAMS.format)) ? params.get(FILTER_PARAMS.format) : '';
-    list(FILTER_PARAMS.disciplines).filter((d) => DISCIPLINES.hasOwnProperty(d)).forEach((d) => filters.disciplines.add(d));
+    list(FILTER_PARAMS.format).filter((f) => FORMATS.hasOwnProperty(f) && (!FORECAST_PAGE || ['grib', 'hdf', 'json'].includes(f))).forEach((f) => filters.format.add(f));
+    list(FILTER_PARAMS.disciplines).filter((d) => DISCIPLINES.hasOwnProperty(d) && !FORECAST_PAGE).forEach((d) => filters.disciplines.add(d));
+    list(FILTER_PARAMS.policy).filter((p) => POLICY_LABELS.hasOwnProperty(p) && !FORECAST_PAGE).forEach((p) => filters.policy.add(p));
     list('hide').filter((key) => filterModes.hasOwnProperty(key)).forEach((key) => { filterModes[key] = 'hide'; });
     // Only the styles this page offers (see page.js); another page's are ignored. Wave
     // spectra are ships' and buoys', which the GBON page doesn't show (the metocean and
@@ -74,11 +76,12 @@ export function writeFiltersToUrl() {
     if (shownDataset && !startDataset && filters.text !== shownDataset.topic) setShownDataset(null);
     set(FILTER_PARAMS.text, shownDataset && filters.text === shownDataset.topic ? '' : filters.text);
     set(FILTER_PARAMS.centres, [...filters.centres].sort().join(','));
-    set(FILTER_PARAMS.format, filters.format);
+    set(FILTER_PARAMS.format, [...filters.format].sort().join(','));
     set(FILTER_PARAMS.disciplines, [...filters.disciplines].join(','));
+    set(FILTER_PARAMS.policy, [...filters.policy].sort().join(','));
     // A mode only matters while its filter is set
-    set('hide', Object.keys(filterModes).filter((key) => filterModes[key] === 'hide' && (key === 'text' ? filters.text
-        : key === 'format' ? filters.format : filters[key].size)).join(','));
+    set('hide', Object.keys(filterModes).filter((key) => filterModes[key] === 'hide'
+        && (key === 'text' ? topicTerms().length : filters[key].size)).join(','));
     // The options only count while colouring by a measure (and the base layer only for one with a model field)
     var m = METRICS[state.colourBy];
     set('style', state.colourBy !== DEFAULT_COLOUR ? state.colourBy : '');

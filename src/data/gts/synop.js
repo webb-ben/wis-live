@@ -2,14 +2,52 @@
 // in traditional alphanumeric code, read into BUFR-style rows so they're shown
 // and coloured like decoded BUFR, and put on the map. Ships carry their position;
 // a land station's comes from the same station already plotted from BUFR (WIS2 or
-// GTS), and until it has been, its latest report waits
+// GTS), and until it has been, its latest report waits. Also FM 62 TRACKOB (NNXX):
+// a ship's position and sea temperature minute by minute (see parseTrackob)
 import { OBS_CLASSES } from '../../config.js';
 import { disciplineOf } from '../../messages/messages.js';
 import { records, latestByStation, newId, observedAt, addPoint, linkDecoded, countPlotted, decoding } from '../../map/points.js';
 import { shipTrackKey } from '../reports.js';
 
-// Where they come: under S/M (main hours), S/N (other hours) and S/I (intermediate hours)
-export const SYNOP_TOPIC = /\/a\/wis2\/[^/]+-gts-to-wis2\/data\/core\/S\/[MNI]\//;
+// Where they come: under S/M (main hours), S/N (other hours) and S/I (intermediate
+// hours); TRACKOB under S/O (oceanographic, e.g. SOVE02 AMMC)
+export const SYNOP_TOPIC = /\/a\/wis2\/[^/]+-gts-to-wis2\/data\/core\/S\/[MNIO]\//;
+
+// A TRACKOB's reports drawn: one every this many minutes, and the latest
+const TRACKOB_STEP_MINUTES = 10;
+
+// FM 62 TRACKOB: NNXX YYMMJ, then for each time GGgg/ QcLaLaLaLa LoLoLoLoLo and optional
+// groups (6snTwTwTw: sea temperature, tenths °C), and the ship's call sign last. Positions
+// are degrees and minutes; Qc 1 north-east, 3 south-east, 5 south-west, 7 north-west
+export function parseTrackob(groups, pubtime) {
+    var date = /^(\d{2})(\d{2})(\d)$/.exec(groups[1] || '');
+    if (!date) return [];
+    var callSign = [...groups].reverse().find((g) => /^[A-Z][A-Z0-9]{2,}$/.test(g)) || null;
+    var pub = new Date(Date.parse(pubtime) || Date.now());
+    var year = pub.getUTCFullYear() - ((pub.getUTCFullYear() % 10) - Number(date[3]) + 10) % 10;
+    var reports = [];
+    for (var i = 2; i < groups.length; i++) {
+        var time = /^(\d{2})(\d{2})\/$/.exec(groups[i]);
+        var la = groups[i + 1], lo = groups[i + 2];
+        if (!time || !/^[1357]\d{4}$/.test(la || '') || !/^\d{5}$/.test(lo || '')) continue;
+        var q = la[0];
+        var lat = (Number(la.slice(1, 3)) + Number(la.slice(3)) / 60) * (/[35]/.test(q) ? -1 : 1);
+        var lon = (Number(lo.slice(0, 3)) + Number(lo.slice(3)) / 60) * (/[57]/.test(q) ? -1 : 1);
+        var rows = [];
+        for (var j = i + 3; j < groups.length && !/^\d{4}\/$/.test(groups[j]); j++) {
+            var sst = /^6([01])(\d{3})$/.exec(groups[j]);
+            if (sst) rows.push([22043, 'Sea surface temperature', Math.round(((sst[1] === '1' ? -1 : 1) * Number(sst[2]) / 10 + 273.15) * 100) / 100, 'K']);
+        }
+        var when = Date.UTC(year, Number(date[2]) - 1, Number(date[1]), Number(time[1]), Number(time[2]));
+        if (Math.abs(lat) <= 90 && lon <= 180 && isFinite(when)) {
+            reports.push({ kind: 'ship', callSign, coords: [Math.round(lon * 1e4) / 1e4, Math.round(lat * 1e4) / 1e4], time: when, rows,
+                text: `NNXX ${groups[1]}\n${groups.slice(i, j).join(' ')}${callSign ? `\n${callSign}` : ''}=` });
+        }
+        i = j - 1;
+    }
+    // Minute by minute is far more than the map needs: every few minutes, and the latest
+    return reports.filter((r, k) => k === reports.length - 1 || new Date(r.time).getUTCMinutes() % TRACKOB_STEP_MINUTES === 0);
+}
 
 // Present weather, code table 4677 (manned stations)
 export function presentWeather(ww) {
@@ -123,6 +161,7 @@ export function parseSynopBulletin(text, pubtime) {
     var reports = [], kind = null, header = null;
     for (var chunk of lines.slice(heading + 1).join(' ').split('=')) {
         var groups = chunk.trim().split(/\s+/).filter(Boolean);
+        if (groups[0] === 'NNXX') { reports.push(...parseTrackob(groups, pubtime)); kind = null; continue; }
         if (groups[0] === 'AAXX') { kind = 'land'; header = groups[1] || ''; groups = groups.slice(2); }
         else if (groups[0] === 'BBXX') { kind = 'ship'; groups = groups.slice(1); }
         if (!kind || groups.length < 3 || groups.includes('NIL')) continue;
@@ -175,7 +214,7 @@ function plotSynop(job, report, coords) {
             ? [[1001, 'WMO block number', Number(report.station.slice(0, 2)), 'Numeric'], [1002, 'WMO station number', Number(report.station.slice(2)), 'Numeric']]
             : [[1011, 'Ship or mobile land station identifier', report.callSign, 'CCITT IA5']]),
         [4001, 'Year', date.getUTCFullYear(), 'a'], [4002, 'Month', date.getUTCMonth() + 1, 'mon'], [4003, 'Day', date.getUTCDate(), 'd'],
-        [4004, 'Hour', date.getUTCHours(), 'h'], [4005, 'Minute', 0, 'min'],
+        [4004, 'Hour', date.getUTCHours(), 'h'], [4005, 'Minute', date.getUTCMinutes(), 'min'],
         [5001, 'Latitude', coords[1], 'deg'], [6001, 'Longitude', coords[0], 'deg'],
         ...report.rows,
     ];

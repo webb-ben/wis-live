@@ -36,7 +36,8 @@ export function plotCitypage(job, xml) {
         discipline: disciplineOf(t),
         webcam: false,
         decodedLayer: job.kind,
-        subLayer: 'cache-warning',  // Forecasts carry the warnings in effect for the site
+        // Forecasts carry the warnings in effect for the site; an origin copy's are origin points
+        subLayer: channel === 'cache' ? 'cache-warning' : 'origin-warning',
         props: { data_id: key, pubtime: props.pubtime, metadata_id: site.textContent.trim() },
         links: job.feature.links || [],
         notification: job.feature,

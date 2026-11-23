@@ -22,8 +22,12 @@ metocean.html              The metocean page: the same app, <html data-page="met
 radar.html                 The radar page: the same app, <html data-page="radar">
 gts.html                   The GTS gateways page: the same app, <html data-page="gts">
 satellites.html            The satellite page: the same app, <html data-page="satellites">
+forecasts.html             The forecasts page: the same app, <html data-page="forecasts">
 src/page.js                Which page this is (PAGE): index.html (home) takes every
-                           notification, satellites a layer that starts off
+                           notification but forecast products (…/prediction/…, FORECAST_TOPIC),
+                           which only forecasts.html takes: GRIB grids outlined from their
+                           headers and drawn (src/data/grib/), and areas from notifications
+                           (NetCDF). Satellites a layer that starts off
                            (SATELLITES_ON_PAGE), satellites.html only space-based ones;
                            gbon.html only surface stations and upper-air soundings, and
                            metocean.html only ships and buoys (PAGE_CLASSES: by topic in

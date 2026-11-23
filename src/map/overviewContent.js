@@ -6,11 +6,14 @@ import { passesFilters } from '../lib/filters.js';
 import { satelliteColours } from '../data/satellite/rows.js';
 import { records } from './points.js';
 import { isColourable } from './colour.js';
+import { overviewForecast } from '../data/grib/grib.js';
 
 
 // What the world overview (src/lib/ui/overview.js) shows of the map: points
 // that pass the layer switches and filters, coloured as on the map, and satellite coverage
 export function drawOverviewContent(ctx, projection, d3, width) {
+    // The forecasts page's field, points and outlines first, under everything (grib.js)
+    overviewForecast(ctx, projection, d3, width);
     var radius = width > 400 ? 1.6 : 1.1;  // Points, smaller on a small map
     var hidden = new Set(effectiveHidden());
     var m = METRICS[state.colourBy];

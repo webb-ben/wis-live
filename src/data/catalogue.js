@@ -4,7 +4,7 @@ import { records } from '../map/points.js';
 import { map } from '../map/map.js';
 import { timeAgo } from '../lib/format.js';
 import { REPLAY_CACHE, REPLAY_API } from '../messages/replay.js';
-import { filters, filterModes, matchesDiscipline } from '../lib/filters.js';
+import { filters, filterModes, matchesDiscipline, topicTerms, matchesTopic, policyOf } from '../lib/filters.js';
 import { paintFilterMode, applyFilters, selectQueueTab, queueFilter } from '../lib/ui/queue.js';
 import { writeFiltersToUrl } from '../lib/url.js';
 import { PHONE } from '../lib/util.js';
@@ -380,7 +380,8 @@ export function datasetMatchesFilters(d) {
     var item = { topic, discipline: disciplineOf(d.channel.split('/a/wis2/')[1] || '') };
     return test('centres', filters.centres.size, filters.centres.has(d.centre))
         && test('disciplines', filters.disciplines.size, matchesDiscipline(item))
-        && test('text', filters.text, topic.includes(filters.text));
+        && test('policy', filters.policy.size, filters.policy.has(policyOf(topic)))
+        && test('text', topicTerms().length, matchesTopic(topic));
 }
 
 // Hides the rows the filters leave out (rather than rebuilding the list, so notes stay)
