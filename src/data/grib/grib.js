@@ -581,12 +581,20 @@ function defaultLevel(groups) {
 }
 
 // The lead times a product's files cover, its tiles, and its latest run
+// As HTML: the counts, then when it's valid on a line of its own
 function coverage(product) {
-    var files = [...product.files.values()];
-    var n = forecastCount(product);
-    var levels = new Set(files.map((f) => f.level).filter(Boolean)).size;
-    return [`${n} forecast${n === 1 ? '' : 's'}`, levels > 1 && `${levels} levels`, product.tiles.size > 1 && `${product.tiles.size} tiles`,
-        validSpan(files)].filter(Boolean).join(' · ');
+    var span = validSpan([...product.files.values()]);
+    return `<small>${esc(counts(product))}</small>${span ? `<small>${esc(span)}</small>` : ''}`;
+}
+
+// How many forecasts a product has, of how many levels (its name no longer says "pressure
+// levels", label), and tiles: "4 forecasts · 8 levels · 2 tiles"
+function counts(p) {
+    var n = forecastCount(p);
+    var levels = new Set([...p.files.values()].map((f) => f.level).filter(Boolean)).size;
+    var layers = / pressure layers/.test(p.name);
+    return [`${n} forecast${n === 1 ? '' : 's'}`, levels > 1 && `${levels} ${layers ? 'layers' : 'levels'}`,
+        p.tiles.size > 1 && `${p.tiles.size} tiles`].filter(Boolean).join(' · ');
 }
 
 // When its forecasts are valid, in UTC, rather than their lead from a run: "valid 11/24 03Z–12/05 06Z"
@@ -602,12 +610,16 @@ function validSpan(files) {
 // legend) or a code number for a variable with no name ("Sub-surface (parameter 7)"). The
 // full name stays its key, so two such variables are still two products
 function label(p) {
-    var short = (name) => name.replace(/, Ensemble members \(\d+\)/, '').replace(/ \((local )?parameter \d+\)/, '');
+    // Pressure levels and layers aren't named: how many there are follows the count of forecasts (counts)
+    var plain = (name) => name.replace(/, Ensemble members \(\d+\)/, '').replace(/, pressure (levels|layers)/, '');
+    var short = (name) => plain(name).replace(/ \((?:[^()]* )?parameter \d+\)/, '');
     var name = short(p.name);
     // Two of a model that would read the same (two moisture variables WMO's table doesn't
-    // name) keep their number, shortly: "Moisture (#47), Surface"
+    // name, or a variable's levels and its layers) keep what tells them apart
     var twin = [...products.values()].some((o) => o !== p && o.model === p.model && short(o.name) === name);
-    return twin ? p.name.replace(/, Ensemble members \(\d+\)/, '').replace(/ \((local )?parameter (\d+)\)/, ' (#$2)') : name;
+    if (!twin) return name;
+    var numbered = plain(p.name).replace(/ \((?:[^()]* )?parameter (\d+)\)/, ' (#$1)');
+    return numbered !== name ? numbered : p.name.replace(/, Ensemble members \(\d+\)/, '');
 }
 
 // A model on two lines: its centre in bold (with the model's colour), the kind of forecast
@@ -627,14 +639,13 @@ function showProducts(list, lngLat) {
         var files = [...p.files.values()];
         var span = validSpan(files).replace(/^valid /, '');
         var active = fieldShown && fieldShown.product === p.key;
-        var n = forecastCount(p);
         // The row draws it (the one drawn highlighted); one that can't be drawn is greyed,
         // with why on hover. Its latest file opens from the small link under its forecasts
         var cls = drawable(p) ? `grib-pick${active ? ' active' : ''}` : 'grib-static';
         var title = drawable(p) ? (active ? 'Drawn on the map' : `Draw ${label(p)}`) : `${whyNot(p)}.`;
         return `<tr class="${cls}"${drawable(p) ? ` data-product="${esc(p.key)}"` : ''} title="${esc(title)}">`
             + `<td>${esc(label(p))}</td>`
-            + `<td>${esc(span)}<small>${n} forecast${n === 1 ? '' : 's'}${p.tiles.size > 1 ? ` · ${p.tiles.size} tiles` : ''}`
+            + `<td>${esc(span)}<small>${esc(counts(p))}`
             + ` <span class="grib-latest">· <a href="${esc(latest.href || '')}" target="_blank" rel="noopener" title="The latest file: ${esc(latest.summary)}">latest file</a></span></small></td></tr>`;
     };
     // A heading row for each model, its products under it
@@ -736,6 +747,10 @@ function renderProductList() {
                 e.stopPropagation();  // Not the legend's own tap (which opens it on phones)
                 if (e.target.closest('.forecast-field-clear')) clearField();
                 if (e.target.closest('.forecast-field-cancel')) cancelDraw();
+                if (e.target.closest('.forecast-play')) {
+                    if (loop) stopLoop(true);
+                    else playLoop();
+                }
             });
         }
     }
@@ -758,9 +773,9 @@ function renderProductList() {
             // One that can't be drawn is plain text, greyed, with why on hover
             (drawable(p)
                 ? `<li><button type="button" data-product="${esc(p.key)}"${fieldShown && fieldShown.product === p.key ? ' class="active"' : ''}`
-                    + ` title="${esc(p.grid)}: click to draw its values">${esc(label(p))} <span class="forecast-drawable">▦</span>`
-                    + `<small>${esc(coverage(p))}</small></button></li>`
-                : `<li><span class="forecast-static" title="${esc(whyNot(p))}">${esc(label(p))}<small>${esc(coverage(p))}</small></span></li>`)).join('')}</ul></details>`).join('')}</div>`).join('');
+                    + ` title="${esc(p.grid)}: click to draw its values">${esc(label(p))} ${scaleSwatch(p)}`
+                    + `${coverage(p)}</button></li>`
+                : `<li><span class="forecast-static" title="${esc(whyNot(p))}">${esc(label(p))}${coverage(p)}</span></li>`)).join('')}</ul></details>`).join('')}</div>`).join('');
     // Rebuilt only when it changed, keeping which kinds of forecast were folded
     if (html === box.dataset.html) return;
     var folded = new Set([...box.querySelectorAll('details.forecast-model:not([open])')].map((d) => d.dataset.model));
@@ -825,6 +840,7 @@ async function readTile(file, signal) {
 }
 
 async function drawProduct(p, fileKey) {
+    stopLoop();  // Any pick stops a loop (the frame showing stays until this one's drawn)
     var files = drawableFiles(p);
     if (!files.length) return;
     var now = Date.now();
@@ -857,7 +873,7 @@ async function drawProduct(p, fileKey) {
         if (mine !== fieldRequest) return URL.revokeObjectURL(image.url);
         showFieldImage(image);
         if (fieldShown && fieldShown.url) URL.revokeObjectURL(fieldShown.url);
-        fieldShown = { product: p.key, file: key, url: image.url, scale: image.scale, parts, id: ++fieldIds,  // parts: for the world overview
+        fieldShown = { product: p.key, file: key, url: image.url, coordinates: image.coordinates, scale: image.scale, parts, id: ++fieldIds,  // parts: for the world overview
             // Each tile's grid, to look up the value under the pointer (showValue)
             tiles: parts.map((part) => ({ locate: gridLocator(part.header.grid.geo), values: part.field.values })) };
         renderFieldPanel(p, files, key, null);
@@ -875,6 +891,7 @@ let fieldAbort = null;  // Cancels the download of the field being drawn
 // The legend's Cancel while a field downloads: the download stops, and the legend goes back
 // to the field already drawn (or to its note when none is)
 function cancelDraw() {
+    stopLoop();
     track('forecast_cancel', {});
     fieldRequest++;
     if (fieldAbort) fieldAbort.abort();
@@ -988,6 +1005,7 @@ async function drawGeojson(p, files, key, file, mine, signal) {
 }
 
 function clearField() {
+    stopLoop();
     fieldRequest++;
     if (fieldAbort) fieldAbort.abort();  // A download still going stops too
     fieldAbort = null;
@@ -1022,15 +1040,7 @@ function renderFieldPanel(p, files, key, status, failed, cancellable) {
     // Times, each once and in order: picking one keeps the member drawn where that time has it,
     // else its lowest-numbered member (each option is that forecast's key)
     var atLevel = files.filter(([, f]) => (f.level ?? null) === (picked.level ?? null));
-    var byTime = new Map();
-    for (var [k, f] of atLevel) {
-        var t = f.valid || '';
-        var best = byTime.get(t);
-        var better = !best || (f.member === picked.member && best[1].member !== picked.member)
-            || (best[1].member !== picked.member && (f.member ?? 0) < (best[1].member ?? 0));
-        if (better) byTime.set(t, [k, f]);
-    }
-    var times = [...byTime].sort(([a], [b]) => a.localeCompare(b));
+    var times = timeSteps(files, key);
     var options = times.map(([t, [k]]) => `<option value="${esc(k)}"${t === (picked.valid || '') ? ' selected' : ''}>`
         + `${esc(t ? t.replace(/\.000Z$/, 'Z') : '')}</option>`).join('');  // The valid time in full, ISO 8601: 2026-11-24T09:00:00Z
     // Members: those there are at the time and level picked
@@ -1039,15 +1049,149 @@ function renderFieldPanel(p, files, key, status, failed, cancellable) {
         `<option value="${esc(k)}"${k === key ? ' selected' : ''}>${esc(f.ensemble)}</option>`).join('')}</select>` : '';
     var siblings = [...products.values()].filter((o) => o.model === p.model && drawable(o)).sort((a, b) => label(a).localeCompare(label(b)));
     var variables = siblings.map((o) => `<option value="${esc(o.key)}"${o.key === p.key ? ' selected' : ''}>${esc(label(o))}</option>`).join('');
-    var bar = scale ? `<div class="forecast-scale"><span>${esc(fmt(scale.low))}</span><i style="background: linear-gradient(90deg, ${
-        scale.step ? scale.colours.flatMap((c, i, all) => [`${c} ${i / all.length * 100}%`, `${c} ${(i + 1) / all.length * 100}%`]).join(', ')
-            : scale.colours.join(', ')})"></i><span>${esc(fmt(scale.high))}${scale.unit ? ` ${esc(scale.unit)}` : ''}</span></div>` : '';
+    var bar = scale ? `<div class="forecast-scale"><span>${esc(fmt(scale.low))}</span><i style="background: ${scaleGradient(scale)}"></i>`
+        + `<span>${esc(fmt(scale.high))}${scale.unit ? ` ${esc(scale.unit)}` : ''}</span></div>` : '';
+    // Play loops the time steps (playLoop); while it plays the button pauses it
+    var playing = loop && loop.product === p.key;
+    var play = times.length > 1 && !status ? `<button type="button" class="btn btn-sm btn-outline-secondary forecast-play" aria-pressed="${playing}"`
+        + ` title="${playing ? 'Stop at the time step showing' : 'Loop through the time steps at this level'}">${playing ? '❚❚ Pause' : '▶ Play'}</button>` : '';
     panel.innerHTML = `<div class="forecast-field-head">${modelLabel(p.model)}`
         + `<button type="button" class="btn btn-sm btn-link forecast-field-clear">Clear</button></div>`
         + `<select class="form-select form-select-sm forecast-variable" aria-label="Variable">${variables}</select>${levels}`
-        + `<select class="form-select form-select-sm forecast-lead" aria-label="Lead time">${options}</select>${members}${bar}`
+        + `<div class="forecast-time"><select class="form-select form-select-sm forecast-lead" aria-label="Lead time">${options}</select>${play}</div>`
+        + `${members}${bar}<div class="legend-note forecast-loop-status"${playing ? '' : ' hidden'}></div>`
         + (status ? `<div class="legend-note forecast-status${failed ? ' pp-error' : ''}">${esc(status)}`
             + `${cancellable ? '<button type="button" class="btn btn-sm btn-link forecast-field-cancel">Cancel</button>' : ''}</div>` : '');
+}
+
+// A colour scale as a CSS gradient, left to right: the app's scales in steps, a ramp smoothly
+function scaleGradient(scale) {
+    return `linear-gradient(90deg, ${scale.step
+        ? scale.colours.flatMap((c, i, all) => [`${c} ${i / all.length * 100}%`, `${c} ${(i + 1) / all.length * 100}%`]).join(', ')
+        : scale.colours.join(', ')})`;
+}
+
+// A product's colour scale, small, by its name in the list: what its values will be drawn in
+// (its variable's scale, or the ramp for one without; a probability is drawn on the ramp)
+function scaleSwatch(p) {
+    var header = [...p.files.values()].map((f) => f.header).find(Boolean);
+    var parameter = header ? (header.probability ? null : header.parameter) : p.name;
+    return `<span class="forecast-drawable" style="background: ${scaleGradient(colourScale(parameter, 0, 1))}" aria-hidden="true"></span>`;
+}
+
+// The time steps at the level of the forecast key, each once, in order: [[valid, [key, forecast]]].
+// Where a time has several members, the one drawn, else its lowest-numbered
+function timeSteps(files, key) {
+    var picked = (files.find(([k]) => k === key) || [])[1] || {};
+    var byTime = new Map();
+    for (var [k, f] of files.filter(([, g]) => (g.level ?? null) === (picked.level ?? null))) {
+        var t = f.valid || '';
+        var best = byTime.get(t);
+        var better = !best || (f.member === picked.member && best[1].member !== picked.member)
+            || (best[1].member !== picked.member && (f.member ?? 0) < (best[1].member ?? 0));
+        if (better) byTime.set(t, [k, f]);
+    }
+    return [...byTime].sort(([a], [b]) => a.localeCompare(b));
+}
+
+// ---------- Looping the time steps (the legend's Play): each step at the level and member
+// shown is read and drawn in turn, all on the scale of the field showing when Play was
+// pressed, and the frames shown one after another as soon as two are ready. The legend's
+// time follows; the value under the pointer is the frame's. Pause, or any other pick, stops
+// it at the frame showing, which stays drawn
+
+const LOOP_FRAMES_MAX = 24;  // Frames kept: each holds its field's values, for the hover
+const LOOP_MS = 800;  // Each frame shown this long
+
+let loop = null;  // { product, keys, frames: Map key -> frame, index, timer, abort }
+
+function playLoop() {
+    var p = fieldShown && products.get(fieldShown.product);
+    if (!p || !fieldShown.parts) return;
+    var files = drawableFiles(p);
+    var steps = timeSteps(files, fieldShown.file).slice(0, LOOP_FRAMES_MAX);
+    if (steps.length < 2) return;
+    var keys = steps.map(([, [k]]) => k);
+    // Members are combined: each time step is the member drawn where it has that one, else its
+    // lowest-numbered (an ensemble's files often hold different members at different times)
+    loop = { product: p.key, keys, steps: new Map(steps.map(([, [k, f]]) => [k, f])), frames: new Map(),
+        index: Math.max(0, keys.indexOf(fieldShown.file)), timer: null, abort: new AbortController(), scale: fieldShown.scale };
+    loop.frames.set(fieldShown.file, fieldShown);  // The one showing is the first frame
+    renderFieldPanel(p, files, fieldShown.file, null);
+    loopStatus();
+    loadFrames(loop, p, files);
+    loop.timer = setInterval(nextFrame, LOOP_MS);
+}
+
+// Reads and draws the frames not yet ready, one at a time, from the one after that showing
+async function loadFrames(mine, p, files) {
+    var order = mine.keys.slice(mine.index + 1).concat(mine.keys.slice(0, mine.index));
+    for (var key of order) {
+        if (loop !== mine || mine.frames.has(key)) continue;
+        var forecast = (files.find(([k]) => k === key) || [])[1];
+        if (!forecast || forecast.files[0].geojson) continue;
+        try {
+            var parts = [];
+            for (var file of forecast.files) parts.push(await readTile(file, mine.abort.signal));
+            var image = await renderFields(parts, mine.scale);
+            if (loop !== mine) return URL.revokeObjectURL(image.url);
+            mine.frames.set(key, { product: p.key, file: key, url: image.url, coordinates: image.coordinates, scale: mine.scale, parts, id: ++fieldIds,
+                tiles: parts.map((part) => ({ locate: gridLocator(part.header.grid.geo), values: part.field.values })) });
+            loopStatus();
+        } catch (err) {
+            if (err.name === 'AbortError') return;
+            console.debug(`Could not read a time step to loop: ${err.message}`);
+        }
+    }
+}
+
+// The next frame that's ready, in time order, drawn
+function nextFrame() {
+    if (!loop) return;
+    for (var step = 1; step <= loop.keys.length; step++) {
+        var i = (loop.index + step) % loop.keys.length;
+        var frame = loop.frames.get(loop.keys[i]);
+        if (!frame) continue;
+        loop.index = i;
+        showFrame(frame);
+        return;
+    }
+}
+
+function showFrame(frame) {
+    showFieldImage(frame);
+    fieldShown = frame;
+    panelFile = frame.file;
+    var select = document.querySelector('.forecast-field .forecast-lead');
+    if (select) select.value = frame.file;
+    loopStatus();
+}
+
+function loopStatus() {
+    var el = document.querySelector('.forecast-field .forecast-loop-status');
+    if (!el || !loop) return;
+    var ready = loop.frames.size, all = loop.keys.length;
+    // The frame's valid time in full, its lead, and which member it is where members take turns
+    var f = loop.steps.get(loop.keys[loop.index]) || {};
+    var when = f.valid ? `${f.valid.replace(/\.000Z$/, 'Z')}${f.leadHours != null ? ` (+${f.leadHours} h)` : ''}` : '';
+    el.hidden = false;
+    el.innerHTML = `${when ? `<strong>${esc(when)}</strong>` : ''}<small>Step ${loop.index + 1} of ${all}${f.ensemble ? ` · ${esc(f.ensemble)}` : ''}`
+        + `${ready < all ? ` · reading ${ready} of ${all}` : ''}</small>`;
+}
+
+// Stops the loop at the frame showing (it stays drawn, the legend at its time); the other
+// frames' images go. redraw: put the legend back as a still field
+function stopLoop(redraw = false) {
+    if (!loop) return;
+    var stopped = loop;
+    loop = null;
+    clearInterval(stopped.timer);
+    stopped.abort.abort();
+    for (var frame of stopped.frames.values()) {
+        if (frame !== fieldShown && frame.url) URL.revokeObjectURL(frame.url);
+    }
+    var p = products.get(stopped.product);
+    if (redraw && p && fieldShown) renderFieldPanel(p, drawableFiles(p), fieldShown.file, null);
 }
 
 // A scale's end: whole above 100, a decimal above 1, and two significant figures below

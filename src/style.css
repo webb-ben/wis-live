@@ -644,8 +644,33 @@
   height: 10px;
   border-radius: 2px;
 }
+/* A product's colour scale, small, after its name (grib.js scaleSwatch) */
 .forecast-drawable {
-  color: #7048e8;
+  display: inline-block;
+  width: 22px;
+  height: 7px;
+  margin-left: 2px;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
+  vertical-align: middle;
+}
+/* The time picker with Play beside it (grib.js renderFieldPanel) */
+.forecast-time {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-top: 4px;
+}
+.forecast-field .forecast-time .form-select {
+  margin-top: 0;
+}
+.forecast-time .forecast-lead {
+  flex: 1;
+  min-width: 0;
+}
+.forecast-play {
+  flex: none;
+  white-space: nowrap;
 }
 .forecast-model li button.active {
   font-weight: 600;

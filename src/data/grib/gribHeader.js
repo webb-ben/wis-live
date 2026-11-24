@@ -4,6 +4,8 @@
 // the area the grid covers. Only the start of the file is needed (fetchHead). No
 // values are decoded. Plain functions, no browser APIs, so they can be tested in Node
 
+import { WMO_PARAMETERS, LOCAL_PARAMETERS, WMO_CATEGORIES, WMO_SURFACES } from './gribTables.js';
+
 // Centres (common code table C-11), the ones seen in WIS2
 const CENTRES = { 7: 'NCEP', 34: 'JMA', 38: 'CMA', 40: 'KMA', 54: 'ECCC (Montréal)', 74: 'Met Office', 78: 'DWD',
     80: 'Rome', 85: 'Météo-France', 98: 'ECMWF', 28: 'IMD', 46: 'INPE', 69: 'NIWA' };
@@ -43,7 +45,7 @@ const PARAMETERS = {
         6: { 0: 'Cloud ice', 1: 'Total cloud cover', 2: 'Convective cloud cover', 3: 'Low cloud cover', 4: 'Medium cloud cover',
             5: 'High cloud cover', 6: 'Cloud water', 7: 'Cloud amount', 8: 'Cloud type', 11: 'Cloud base', 12: 'Cloud top',
             13: 'Ceiling', 22: 'Cloud cover', 23: 'Cloud ice mixing ratio', 25: 'Fraction of cloud cover' },
-        7: { 6: 'CAPE', 7: 'Convective inhibition', 8: 'Storm relative helicity' },
+        7: { 6: 'Convective available potential energy (CAPE)', 7: 'Convective inhibition', 8: 'Storm relative helicity' },
         16: { 4: 'Radar reflectivity', 5: 'Composite reflectivity' },
         19: { 0: 'Visibility', 1: 'Albedo', 2: 'Thunderstorm probability' },
     },
@@ -135,8 +137,15 @@ function sections(bytes) {
 const level = (type, scale, value) => {
     if (type === 255) return null;
     var v = scale && scale !== 255 ? value / 10 ** scale : value;
-    var [name, show] = SURFACES[type] || [`Surface type ${type}`];
-    return show ? show(Math.round(v * 1000) / 1000) : name;
+    if (SURFACES[type]) {
+        var [name, show] = SURFACES[type];
+        return show ? show(Math.round(v * 1000) / 1000) : name;
+    }
+    // WMO's whole table (gribTables.js): its name, and the value where it has a unit
+    var wmo = WMO_SURFACES[type];
+    if (!wmo) return `Surface type ${type}`;
+    var given = wmo[1] && value !== 0xffffffff && value != null && scale !== 255;
+    return given ? `${wmo[0]} ${Math.round(v * 1000) / 1000} ${wmo[1]}` : wmo[0];
 };
 
 // The details of a GRIB file, from its first bytes (at least sections 0 to 4)
@@ -166,7 +175,7 @@ function parseGrib2(bytes, at) {
         out.run = new Date(Date.UTC(s1.u2(13), s1.u1(15) - 1, s1.u1(16), s1.u1(17), s1.u1(18), s1.u1(19))).toISOString();
     }
     if (at[3] !== undefined) out.grid = parseGrid(reader(bytes, at[3]));
-    if (at[4] !== undefined) Object.assign(out, parseProduct(reader(bytes, at[4]), discipline, out.run));
+    if (at[4] !== undefined) Object.assign(out, parseProduct(reader(bytes, at[4]), discipline, out.run, centre));
     out.length = at.length;
     // How the values are packed (code table 5.0): 0 simple, 2 and 3 complex, 40 JPEG 2000,
     // 41 PNG, 42 CCSDS (AEC). gribField.js draws 0 and 40
@@ -329,13 +338,18 @@ function parseGrid1(g) {
     return grid;
 }
 
-function parseProduct(s4, discipline, run) {
+// centre: the originating centre's number (section 1), whose local parameters (192 and up) it has
+function parseProduct(s4, discipline, run, centre) {
     var template = s4.u2(8);
     var out = { productTemplate: template };
     var category = s4.u1(10), number = s4.u1(11);
-    var group = (CATEGORIES[discipline] || {})[category];
+    var key = `${discipline}.${category}.${number}`;
+    var group = (CATEGORIES[discipline] || {})[category] || WMO_CATEGORIES[`${discipline}.${category}`];
+    // The names here first (the colour scales go by them), then the centre's own local table,
+    // then all of WMO's (gribTables.js, from ecCodes); a code only where none has it
     out.parameter = ((PARAMETERS[discipline] || {})[category] || {})[number]
-        || (group ? `${group} (${number >= 192 ? 'local ' : ''}parameter ${number})` : `Parameter ${discipline}.${category}.${number}`);
+        || (LOCAL_PARAMETERS[centre] || {})[key] || WMO_PARAMETERS[key]
+        || (group ? `${group} (${number >= 192 ? `${CENTRES[centre] || 'local'} ` : ''}parameter ${number})` : `Parameter ${key}`);
     // Templates 4.0 to 4.15 share these octets
     if (template > 15) return out;
     out.process = PROCESSES[s4.u1(12)] || null;

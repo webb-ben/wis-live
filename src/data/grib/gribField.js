@@ -257,7 +257,7 @@ const UNITS = [
     [/^(Pressure|Pressure reduced to MSL)$/, 'hPa', 0.01],
     [/^Geopotential height/, 'gpm', 1],
     [/^Geopotential$/, 'm²/s²', 1],
-    [/^(CAPE|Convective inhibition)/, 'J/kg', 1],
+    [/^(Convective available potential energy|CAPE|Convective inhibition)/, 'J/kg', 1],
     [/cloud cover/i, '%', 1],
     [/^Albedo/, '%', 1],
     [/^(Wind \(|Wind speed|Wind gust|Vertical wind shear)/, 'm/s', 1],
@@ -323,7 +323,9 @@ export function renderField(header, field) {
 
 // One field split into tiles (the Met Office's, side by side), drawn as one image over
 // all of them: each pixel from the first tile that has a value there
-export async function renderFields(parts) {
+// fixed: a scale to colour by instead of this field's own (a loop's frames share the first's,
+// so a colour means the same value in each)
+export async function renderFields(parts, fixed = null) {
     var header = parts[0].header;
     var points = parts.flatMap((p) => p.header.grid.outline);
     var lons = points.map((p) => p[0]), lats = points.map((p) => p[1]);
@@ -339,8 +341,8 @@ export async function renderFields(parts) {
     // A probability (CMA's precipitation above 1 mm…), or an ensemble's spread, isn't in the
     // variable's units: it's coloured over its own range, not on the variable's scale
     var derived = header.probability || /spread|deviation/i.test(header.ensemble || '');
-    var scale = colourScale(derived ? null : header.parameter, min, max);
-    if (header.probability) scale.unit = '%';
+    var scale = fixed || colourScale(derived ? null : header.parameter, min, max);
+    if (header.probability && !fixed) scale.unit = '%';
     var table = lookup(scale);
     var canvas = new OffscreenCanvas(width, height);
     var image = new ImageData(width, height);
