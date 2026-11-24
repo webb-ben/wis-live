@@ -10,6 +10,7 @@ import maplibregl from 'maplibre-gl';
 import { fetchHead, fetchData } from '../download.js';
 import { viaWorker } from '../caches.js';
 import { originCentre } from '../../messages/gtsOrigin.js';
+import { OPEN_MODELS, openModelSteps } from './openData.js';
 import { esc } from '../../lib/util.js';
 import { disciplineOf, formatOf, FORMATS, isDataLink } from '../../messages/messages.js';
 import { parseGribHeader, gribSummary, latLonOutline, gridLocator } from './gribHeader.js';
@@ -81,6 +82,11 @@ let listTimer = null;
 export function initGrib(options) {
     map = options.map;
     deps = options;
+    // The forecasts page also lists open model data (loadOpenModels), once the page has started
+    if (FORECAST_PAGE) {
+        setTimeout(loadOpenModels, 2500);
+        setInterval(loadOpenModels, OPEN_REFRESH_MS);
+    }
 }
 
 export function addGribLayers(before) {
@@ -216,6 +222,8 @@ export function forecastCentre(topic) {
 // Which model a topic is: …/prediction/forecast/medium-range/deterministic/global reads
 // "Medium-range deterministic, global"
 export function modelOf(topic) {
+    // Open model data (openData.js): its own name ("GFS 0.25°, global (NOAA open data)")
+    if (topic.startsWith('open/')) return (OPEN_MODELS[topic.split('/').pop()] || {}).label || 'Open model data';
     // A GTS GRIB bulletin: listed under the centre that made it (forecastCentre), as its GTS model
     if (GATEWAY_GRIB.test(topic)) return 'Forecasts from the GTS';
     var parts = (topic.split('/prediction/')[1] || '').split('/').filter((p) => p && p !== 'forecast');
@@ -260,6 +268,8 @@ async function readFile(job) {
         var pinned = { urls: [url], dataId: null, topic: null };
         var offset = 0;
         var most = viaWorker(url) ? FIELDS_VIA_WORKER_MAX : FIELDS_PER_FILE_MAX;
+        progress.most = most;  // Fields it reads at most, for the estimate (fieldsText)
+        progress.total = total;
         for (var n = 0; n < most; n++) {
             var header = parseGribHeader(bytes);
             if (!deps.enabled() || signal.aborted) return;
@@ -301,6 +311,18 @@ const reading = new Set();  // { id, file, centre, fields, offset, total, abort 
 let readingIds = 0;
 let activityTimer = null;
 
+// How many fields of a file are read, and roughly how many it has: its size over the average
+// size of the fields read so far (a file's fields are mostly alike in size: one grid, one
+// packing). "12 of ~140 fields read", and where it has more than are read, how many will be
+function fieldsText(r) {
+    var read = `${r.fields} field${r.fields === 1 ? '' : 's'}`;
+    if (!r.total || r.fields < 1 || !r.offset || r.offset >= r.total) return `${read} read`;
+    var estimate = Math.max(r.fields, Math.round(r.total / (r.offset / r.fields)));
+    if (estimate <= r.fields) return `${read} read`;
+    var cap = r.most && estimate > r.most ? ` (the first ${r.most} are read)` : '';
+    return `${r.fields} of ~${estimate.toLocaleString()} fields read${cap}`;
+}
+
 function showActivity() {
     if (FORECAST_PAGE && !activityTimer) activityTimer = setTimeout(renderActivity, 300);
 }
@@ -333,7 +355,7 @@ function renderActivity() {
     var busy = reading.size > 0;
     box.classList.toggle('busy', busy);
     var lines = [...reading].map((r) => `<li><span class="forecast-activity-file" title="${esc(r.file)}"><strong>${esc(r.centre)}</strong> ${esc(r.file)}`
-        + `<small>${r.fields} field${r.fields === 1 ? '' : 's'} read${r.total > FIELD_HEAD_BYTES * 2 ? ` · ${size(r.offset)} of ${size(r.total)}` : ''}</small></span>`
+        + `<small>${fieldsText(r)}${r.total > FIELD_HEAD_BYTES * 2 ? ` · ${size(r.offset)} of ${size(r.total)}` : ''}</small></span>`
         + `<button type="button" class="forecast-cancel" data-reading="${r.id}" title="Stop reading this file (what it has read stays)" aria-label="Stop reading ${esc(r.file)}">×</button></li>`);
     var waits = waitingCount(), gtsWaits = lanes.gts.waiting.size;
     // How many of those waiting are GTS bulletins, which have readers of their own
@@ -346,7 +368,8 @@ function renderActivity() {
 }
 
 // One field of a GRIB file, as a file of its product (offset: where it starts in the file)
-function addField(job, header, href, source, offset) {
+// extra: more for the file (an open model's step: resolve, which finds its bytes when drawn)
+function addField(job, header, href, source, offset, extra = null) {
     var g = header.grid;
     // Tiles of one field share a grid type and resolution, but not their size or place
     var grid = `${g.name}${g.resolution ? ` · ${g.resolution}` : ''}`;
@@ -369,7 +392,7 @@ function addField(job, header, href, source, offset) {
         run: header.run && `${header.run.slice(0, 13).replace('T', ' ')}Z`, leadHours: header.leadHours, href,
         valid: header.valid, ensemble: header.ensemble, length: header.length, offset,
         // Kept to draw its values (gribField.js), where its packing allows
-        header, source });
+        header, source, ...extra });
 }
 
 // A forecast notification that gives its area (the Met Office's NetCDF, a 146 MB file
@@ -475,10 +498,60 @@ function addFile(topic, outline, grid, name, format, file) {
     product.files.set(fileKey, { ...file, updated: Date.now() });
     if (product.files.size > FILES_PER_PRODUCT_MAX) product.files.delete(product.files.keys().next().value);
     while (products.size > PRODUCTS_MAX) products.delete(products.keys().next().value);
+    if (bulk) return;  // A model's whole run being listed: drawn once at the end (loadOpenModels)
     redraw();
     deps.plotted();
     deps.changed();
     if (drawable(product)) drawFirstForecast();
+}
+
+// ---------- Open model data (openData.js: NOAA's GFS and HRRR, ECMWF's IFS), listed with WIS2's
+// products under their centres. Each model's latest run as the page opens, and again every
+// half hour; a step's field is found in its file's index only when it's drawn (readTile)
+
+let bulk = false;
+const OPEN_REFRESH_MS = 30 * 60e3;
+const GLOBE_OUTLINE = latLonOutline(-90, -180, 90, 180, 1, 360);  // A global model's area
+
+export async function loadOpenModels() {
+    if (!FORECAST_PAGE) return;
+    for (var id of Object.keys(OPEN_MODELS)) {
+        try {
+            var steps = await openModelSteps(id);
+        } catch (err) {
+            console.debug(`Could not list ${id}: ${err.message}`);
+            continue;
+        }
+        if (!steps || !steps.length) continue;
+        // A topic of WIS2's shape, so it's listed and filtered like WIS2's own (modelOf names it)
+        var topic = `open/a/wis2/${OPEN_MODELS[id].centre}/data/core/weather/prediction/${id}`;
+        bulk = true;
+        try {
+            for (var s of steps) {
+                var run = s.run.toISOString();
+                // A NetCDF file (the Met Office's): drawn whole by the decoder's reader, its size asked
+                // for first (a placeholder until then, so it's listed as drawable)
+                if (s.netcdf) {
+                    addFile(topic, GLOBE_OUTLINE, 'Latitude/longitude · 10 km', s.name, 'hdf', {
+                        group: `${run}|${s.step}`, tile: '', summary: `${s.name} · +${s.step} h`,
+                        run: `${run.slice(0, 13).replace('T', ' ')}Z`, leadHours: s.step, href: s.url,
+                        valid: new Date(s.run.getTime() + s.step * 3600e3).toISOString(), length: 1,
+                        netcdf: true, source: { urls: [s.url], dataId: null, topic: null }, resolve: s.resolve });
+                    continue;
+                }
+                var header = { ...s.header, run, leadHours: s.step, valid: new Date(s.run.getTime() + s.step * 3600e3).toISOString(), length: undefined };
+                var source = { urls: [s.url], dataId: null, topic: null };
+                // One field: found when drawn; wind speed: its two components, read and combined
+                addField({ topic, feature: {} }, header, s.url, source, undefined,
+                    s.parts.length === 1 ? { resolve: s.parts[0].resolve, factor: s.factor } : { combine: s.parts });
+            }
+        } finally {
+            bulk = false;
+        }
+        redraw();
+        deps.changed();
+        drawFirstForecast();
+    }
 }
 
 // ---------- A forecast drawn by itself as the page opens, so the legend shows one rather
@@ -626,8 +699,11 @@ function label(p) {
 // under it ("Medium-range deterministic, global"), and a count after the centre if given
 function modelLabel(model, count) {
     var [centre, ...kind] = model.split(' · ');
+    // Where it came from, at a glance: WIS2, or open data read from outside it (openData.js)
+    var tag = openModel(model) ? '<span class="grib-source-tag open" title="Read straight from the model’s open data server, not through WIS2">open data</span>'
+        : '<span class="grib-source-tag" title="Announced through WIS2">WIS2</span>';
     return `<span class="grib-model"><span class="grib-model-centre"><span class="grib-swatch" style="--color: ${modelColour(model)}"></span>`
-        + `<strong>${esc(centre)}</strong>${count != null ? `<small class="grib-model-count">${count}</small>` : ''}</span>`
+        + `<strong>${esc(centre)}</strong>${tag}${count != null ? `<small class="grib-model-count">${count}</small>` : ''}</span>`
         + `<span class="grib-model-kind">${esc(kind.join(' · '))}</span></span>`;
 }
 
@@ -754,20 +830,43 @@ function renderProductList() {
             });
         }
     }
+    // WIS2's products, then the open model data read from outside it (openData.js), apart and titled
+    var all = [...products.values()];
+    var wis2 = all.filter((p) => !isOpen(p)), open = all.filter(isOpen);
+    var section = (title, note, list) => (list.length ? `<div class="forecast-source"><div class="forecast-source-title">${title}</div>`
+        + `${note ? `<div class="legend-note forecast-source-note">${note}</div>` : ''}${productListHtml(list)}</div>` : '');
+    var html = section('From WIS2', '', wis2)
+        + section('Open model data, outside WIS2', 'Read straight from NOAA’s, ECMWF’s and the Met Office’s open data servers, not through WIS2', open);
+    // Rebuilt only when it changed, keeping which kinds of forecast were folded
+    if (html === box.dataset.html) return;
+    var folded = new Set([...box.querySelectorAll('details.forecast-model:not([open])')].map((d) => d.dataset.model));
+    box.innerHTML = box.dataset.html = html || '<p class="legend-note">Forecast products appear here as their files arrive.</p>';
+    box.querySelectorAll('details.forecast-model').forEach((d) => { if (folded.has(d.dataset.model)) d.open = false; });
+}
+
+// Whether a product (or a model's name) is open model data rather than WIS2's
+function isOpen(p) {
+    return (typeof p === 'string' ? p : p.topic || '').startsWith('open/') || (typeof p === 'string' && openModel(p));
+}
+function openModel(model) {
+    return Object.values(OPEN_MODELS).some((m) => model.endsWith(` · ${m.label}`));
+}
+
+// A list of products, as HTML: each centre once, in bold, and under it each of its kinds of
+// forecast, folded and unfolded on its own line ("Medium-range deterministic, limited area  37")
+function productListHtml(list) {
     var byModel = new Map();
-    [...products.values()].sort((a, b) => label(a).localeCompare(label(b))).forEach((p) => {
+    list.sort((a, b) => label(a).localeCompare(label(b))).forEach((p) => {
         if (!byModel.has(p.model)) byModel.set(p.model, []);
         byModel.get(p.model).push(p);
     });
-    // Each centre once, in bold, and under it each of its kinds of forecast, folded and
-    // unfolded on its own line ("Medium-range deterministic, limited area  37")
     var byCentre = new Map();
-    [...byModel].sort(([a], [b]) => a.localeCompare(b)).forEach(([model, list]) => {
+    [...byModel].sort(([a], [b]) => a.localeCompare(b)).forEach(([model, ps]) => {
         var [centre, ...kind] = model.split(' · ');
         if (!byCentre.has(centre)) byCentre.set(centre, []);
-        byCentre.get(centre).push([model, kind.join(' · '), list]);
+        byCentre.get(centre).push([model, kind.join(' · '), ps]);
     });
-    var html = [...byCentre].map(([centre, models]) => `<div class="forecast-centre"><strong>${esc(centre)}</strong>${models.map(([model, kind, list]) =>
+    return [...byCentre].map(([centre, models]) => `<div class="forecast-centre"><strong>${esc(centre)}</strong>${models.map(([model, kind, list]) =>
         `<details class="forecast-model" data-model="${esc(model)}" open><summary><span class="grib-swatch" style="--color: ${modelColour(model)}"></span>`
         + `${esc(kind)}<small class="grib-model-count">${list.length}</small></summary><ul>${list.map((p) =>
             // One that can't be drawn is plain text, greyed, with why on hover
@@ -776,11 +875,6 @@ function renderProductList() {
                     + ` title="${esc(p.grid)}: click to draw its values">${esc(label(p))} ${scaleSwatch(p)}`
                     + `${coverage(p)}</button></li>`
                 : `<li><span class="forecast-static" title="${esc(whyNot(p))}">${esc(label(p))}${coverage(p)}</span></li>`)).join('')}</ul></details>`).join('')}</div>`).join('');
-    // Rebuilt only when it changed, keeping which kinds of forecast were folded
-    if (html === box.dataset.html) return;
-    var folded = new Set([...box.querySelectorAll('details.forecast-model:not([open])')].map((d) => d.dataset.model));
-    box.innerHTML = box.dataset.html = html || '<p class="legend-note">Forecast products appear here as their files arrive.</p>';
-    box.querySelectorAll('details.forecast-model').forEach((d) => { if (folded.has(d.dataset.model)) d.open = false; });
 }
 
 // ---------- A product's values, drawn (gribField.js): one field at a time, the file
@@ -826,6 +920,30 @@ function drawableFiles(p) {
 
 // One tile's values: { header, field }
 async function readTile(file, signal) {
+    // Wind speed from an open model's two components (openData.js), read side by side
+    if (file.combine) {
+        var [u, v] = await Promise.all(file.combine.map((part) => readTile(part, signal)));
+        var values = new Float32Array(u.field.values.length), min = Infinity, max = -Infinity;
+        for (var i = 0; i < values.length; i++) {
+            var s = Math.hypot(u.field.values[i], v.field.values[i]);
+            values[i] = s;
+            if (s < min) min = s;
+            if (s > max) max = s;
+        }
+        return { header: file.header, field: { values, min, max } };
+    }
+    // An open model's step: where its field is in the file, from the file's index, the first time
+    if (file.resolve && !file.resolved) {
+        Object.assign(file, await file.resolve(signal));
+        file.resolved = true;
+        if (file.netcdf && file.length > NETCDF_MAX_BYTES) throw new Error(`its file is ${(file.length / 1e6).toFixed(0)} MB, more than is drawn here`);
+    }
+    // Values in other units than the scale's (ECMWF's precipitation in metres, made mm)
+    if (file.factor) {
+        var plain = await readTile({ ...file, factor: null }, signal);
+        var scaled = plain.field.values.map((x) => x * file.factor);
+        return { header: plain.header, field: { values: scaled, min: plain.field.min * file.factor, max: plain.field.max * file.factor } };
+    }
     // A GRIB field from the copy its header was read from, where its offset is known to be
     // right: another copy under the same data_id can hold its fields in another order (or be
     // another version), and the bytes there are another field

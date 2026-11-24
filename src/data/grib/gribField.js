@@ -1,16 +1,17 @@
 // A GRIB2 field's values, decoded and drawn on the map as a coloured image. Reads the
 // first message of a file (data representation, bitmap and data sections), unpacking
-// simple packing (template 5.0) and CCSDS (5.42, ECMWF's; aec.js) here, and JPEG 2000
-// (5.40, ECCC's) with OpenJPEG (@cornerstonejs/codec-openjpeg, WebAssembly, loaded the
-// first time it's needed). PNG (5.41) and complex packing (5.2, 5.3) aren't drawn.
+// simple packing (template 5.0), complex packing (5.2, 5.3: NOAA's; complexPack.js) and CCSDS
+// (5.42, ECMWF's; aec.js) here, and JPEG 2000 (5.40, ECCC's) with OpenJPEG
+// (@cornerstonejs/codec-openjpeg, WebAssembly, loaded the first time it's needed). PNG (5.41) isn't drawn.
 // The image is the field reprojected onto the map's Mercator grid, nearest value per
 // pixel, through the grid's own geometry (gridLocator: lat/lon, rotated, Lambert, polar)
 import openjpegUrl from '@cornerstonejs/codec-openjpeg/decodewasm?url';
 import { gridLocator, reader1, thinnedRows } from './gribHeader.js';
 import { aecDecode } from './aec.js';
+import { complexUnpack } from './complexPack.js';
 import { METRICS } from '../../config.js';
 
-export const DRAWN_PACKINGS = { 0: 'simple', 40: 'JPEG 2000', 42: 'CCSDS (AEC)' };
+export const DRAWN_PACKINGS = { 0: 'simple', 2: 'complex', 3: 'complex with spatial differencing', 40: 'JPEG 2000', 42: 'CCSDS (AEC)' };
 
 // The widest JPEG 2000 values the decoder reads (see decodeField)
 export const JPEG_MAX_BITS = 16;
@@ -20,7 +21,7 @@ export const JPEG_MAX_BITS = 16;
 export function fieldDrawable(header) {
     return !!header && DRAWN_PACKINGS[header.packing] !== undefined && !(header.packing === 40 && header.bits > JPEG_MAX_BITS);
 }
-const PACKING_NAMES = { 2: 'complex', 3: 'complex with spatial differencing', 41: 'PNG', 50: 'spectral', 51: 'spherical harmonics' };
+const PACKING_NAMES = { 41: 'PNG', 50: 'spectral', 51: 'spherical harmonics' };
 
 export function packingName(n) {
     return DRAWN_PACKINGS[n] || PACKING_NAMES[n] || `template 5.${n}`;
@@ -71,7 +72,11 @@ export async function decodeField(bytes, points) {
     var R = view.getFloat32(s5 + 11), E = signed16(view, s5 + 15), D = signed16(view, s5 + 17), bits = bytes[s5 + 19];
     var scale = 2 ** E / 10 ** D, offset = R / 10 ** D;
     var packed;
-    if (bits === 0) {
+    if (template === 2 || template === 3) {
+        // Complex packing, with spatial differencing for 5.3 (NOAA's: complexPack.js). Its
+        // octet 20 is the groups' reference width, not the values', so it's first
+        packed = complexUnpack(bytes, s5, found[7].at);
+    } else if (bits === 0) {
         packed = new Float32Array(count).fill(offset);
     } else if (template === 0) {
         packed = unpackBits(bytes, found[7].at + 5, count, bits, scale, offset);

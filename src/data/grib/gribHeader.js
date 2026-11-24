@@ -338,6 +338,12 @@ function parseGrid1(g) {
     return grid;
 }
 
+// NCEP's local parameters (centre 7) that its models on the open data buckets use (HRRR, GFS),
+// which ecCodes keeps elsewhere than its local tables
+const NCEP_LOCAL = { '0.16.195': 'Reflectivity', '0.16.196': 'Composite reflectivity', '0.16.197': 'Echo top',
+    '0.1.192': 'Categorical rain', '0.1.193': 'Categorical freezing rain', '0.1.194': 'Categorical ice pellets',
+    '0.1.195': 'Categorical snow', '0.7.193': 'Best (4-layer) lifted index', '0.19.234': 'Icing severity' };
+
 // centre: the originating centre's number (section 1), whose local parameters (192 and up) it has
 function parseProduct(s4, discipline, run, centre) {
     var template = s4.u2(8);
@@ -348,7 +354,7 @@ function parseProduct(s4, discipline, run, centre) {
     // The names here first (the colour scales go by them), then the centre's own local table,
     // then all of WMO's (gribTables.js, from ecCodes); a code only where none has it
     out.parameter = ((PARAMETERS[discipline] || {})[category] || {})[number]
-        || (LOCAL_PARAMETERS[centre] || {})[key] || WMO_PARAMETERS[key]
+        || (LOCAL_PARAMETERS[centre] || {})[key] || (centre === 7 ? NCEP_LOCAL[key] : null) || WMO_PARAMETERS[key]
         || (group ? `${group} (${number >= 192 ? `${CENTRES[centre] || 'local'} ` : ''}parameter ${number})` : `Parameter ${key}`);
     // Templates 4.0 to 4.15 share these octets
     if (template > 15) return out;
@@ -509,7 +515,11 @@ function lambert(p) {
     var rho = (f) => EARTH_RADIUS * F / t(f) ** n;
     return {
         forward(lat, lon) {
-            var r = rho(lat * rad), a = n * (lon * rad - l0);
+            // The longitude from the central meridian, within ±180°: a grid can give its LoV in
+            // 0-360° (HRRR's 262.5°) while the map asks in ±180° (-97.5°); as n is under 1 the
+            // angle isn't periodic, so a whole turn's difference would put the point elsewhere
+            var dlon = ((lon * rad - l0) % (2 * Math.PI) + 3 * Math.PI) % (2 * Math.PI) - Math.PI;
+            var r = rho(lat * rad), a = n * dlon;
             return [r * Math.sin(a), -r * Math.cos(a)];
         },
         inverse(x, y) {
@@ -549,7 +559,12 @@ function projectedOutline(proj, p) {
     for (i = 0; i < steps; i++) ring.push(at(nx * (1 - i / steps), ny));
     for (i = 0; i < steps; i++) ring.push(at(0, ny * (1 - i / steps)));
     ring.push(ring[0].slice());
-    return unwrap(ring).map(([x, y]) => [round(x), round(y)]);
+    ring = unwrap(ring);
+    // Longitudes within the map's ±180° where the whole ring lies past them (a grid given in
+    // 0-360°: HRRR's 226° to 299°, which is -134° to -61°)
+    var lons = ring.map((pt) => pt[0]);
+    var shift = Math.min(...lons) >= 180 ? -360 : Math.max(...lons) <= -180 ? 360 : 0;
+    return ring.map(([x, y]) => [round(x + shift), round(y)]);
 }
 
 // Geographic latitude/longitude to a rotated grid's, given its south pole (unrotate's inverse)

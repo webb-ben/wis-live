@@ -3482,3 +3482,35 @@
   padding: 2px 0 2px 3px;
   margin: -2px 0 -2px -3px;
 }
+
+/* The forecast list's two sources: WIS2's products, then open model data from outside it (grib.js) */
+.forecast-source + .forecast-source {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #dee2e6;
+}
+.forecast-source-title {
+  margin-bottom: 2px;
+  color: #495057;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.forecast-source-note {
+  margin-bottom: 6px;
+}
+/* WIS2 or open data, by a model's name */
+.grib-source-tag {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: #e7f5ff;
+  color: #1864ab;
+  font-size: 10px;
+  font-weight: 600;
+}
+.grib-source-tag.open {
+  background: #fff4e6;
+  color: #d9480f;
+}
