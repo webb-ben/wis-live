@@ -7,18 +7,19 @@ import { darken, PHONE, esc } from '../util.js';
 import { replayPosition, replayWindowMs, REPLAY_TICKS, replayMinutesAt, replayWindowLabel, setReplayWindow, scheduleReplay, REPLAY_HOST } from '../../messages/replay.js';
 import { setOpacitySlider, syncOpacitySlider, swathOpacity, swathOpacityKey, hoveredCell, swathFiles, swathCells } from '../../data/satellite/coverage.js';
 import { paintAge, setColourBy, showColourStatus, isColourable, windArrows } from '../../map/colour.js';
-import { notify, setState, state } from '../../state.js';
+import { notify, setState, state, subscribe } from '../../state.js';
 import { applyMapFilter } from '../../map/filter.js';
 import { rebuildQueue } from './queue.js';
 import { queueAirports } from '../../data/aviation/airports.js';
-import { writeFiltersToUrl } from '../url.js';
+import { writeFiltersToUrl, DEFAULT_COLOUR } from '../url.js';
 import { DECODE_LAYERS, decodeEnabled, setDecodeEnabled } from '../../data/decodeQueue.js';
 import { createOverview } from './overview.js';
 import { map } from '../../map/map.js';
 import { drawOverviewContent } from '../../map/overviewContent.js';
 import { makeMinimizable, bindKeyToggles, startKeyToggles, keyToggle, hiddenKeyRows } from './panels.js';
 import { TRACK_REBUILD_MS, shipTrackLayers } from '../../map/tracks.js';
-import { SATELLITE_STYLE, METRICS, SATELLITE_LAYERS, NO_VALUE_COLOR, WAVE_STYLE, OBS_CLASSES, COLORS, SATELLITE_METRIC_ORDER } from '../../config.js';
+import { SATELLITE_STYLE, METRICS, SATELLITE_LAYERS, NO_VALUE_COLOR, WAVE_STYLE, OBS_CLASSES, COLORS, SATELLITE_METRIC_ORDER, CENTRE_STYLE } from '../../config.js';
+import { centresOnMap, centreColour } from '../../map/centreColours.js';
 import { updateModelField } from '../../map/modelFields.js';
 import { passesFilters } from '../filters.js';
 import { records } from '../../map/points.js';
@@ -29,6 +30,7 @@ import { SHED_LAYERS } from '../../messages/network.js';
 import { SATELLITE_PAGE, METOCEAN_PAGE, FORECAST_PAGE, metricOnPage, otherPageLinks } from '../../page.js';
 import { flowShown } from '../../map/windFlow.js';
 import { track } from '../analytics.js';
+
 // The panels on the map: the layers in the sidebar (LegendControl), the key of what
 // is drawn with Style by (StyleControl, top right), and the world map with the
 // connection lines and About (MapKey, bottom right)
@@ -311,9 +313,19 @@ function styleOptions(seen) {
         .sort(byFrequency);
     // The metocean page offers ships' and buoys' wave spectra too (elsewhere only by link, ?style=waves)
     return (SATELLITE_PAGE ? `<option value="${SATELLITE_STYLE}">Satellite</option>` : '<option value="kind">Observation type</option>')
+        + `<option value="${CENTRE_STYLE}">Centre</option>`
         + (METOCEAN_PAGE ? `<option value="${WAVE_STYLE}">Wave spectrum</option>` : '')
         + [...new Set(offered.map(([, m]) => m.group))].map((group) => `<optgroup label="${group}">${offered
-            .filter(([, m]) => m.group === group).map(([key, m]) => `<option value="${key}">${m.label}</option>`).join('')}</optgroup>`).join('');
+            .filter(([, m]) => m.group === group).map(([key, m]) => satelliteOption(key, m)).join('')}</optgroup>`).join('');
+}
+
+// A measure's option; a satellite's is greyed out while satellites aren't downloaded, as
+// it would colour nothing (syncSatelliteStyles offers it again once they are)
+function satelliteOption(key, m) {
+    if (m.targets === 'satellite' && !satellitesOn()) {
+        return `<option value="${key}" disabled title="Switch on Space-based (satellites) in the sidebar to style by this">${m.label} (turn on Satellites)</option>`;
+    }
+    return `<option value="${key}">${m.label}</option>`;
 }
 
 // On the satellite page, Style by offers only the measures some satellite on the map has
@@ -368,7 +380,32 @@ export function buildStylePanel() {
         writeFiltersToUrl();
     });
     setInterval(() => showColourStatus(stylePanel), 1000);
+    // Satellite measures only while satellites are downloaded (styleOptions): offered again,
+    // or taken away, as their switch changes
+    subscribe(['hiddenLayers'], syncSatelliteStyles);
+    setTimeout(syncSatelliteStyles);  // And for a link's ?style= once the page has started
     return stylePanel;
+}
+
+// Whether satellite files are downloaded: always on the satellite page, elsewhere while
+// Space-based (satellites) is on
+function satellitesOn() {
+    return SATELLITE_PAGE || !effectiveHidden().includes('satellite');
+}
+
+// Style by's options again when Satellites is switched, and styled by a satellite measure
+// with them switched off, back to the observation type (nothing would be coloured)
+let satellitesOffered = null;
+function syncSatelliteStyles() {
+    if (!stylePanel) return;
+    var on = satellitesOn();
+    var m = METRICS[state.colourBy];
+    if (!on && m && m.targets === 'satellite') setColourBy(DEFAULT_COLOUR, stylePanel);
+    if (on === satellitesOffered) return;
+    satellitesOffered = on;
+    var select = stylePanel.querySelector('select');
+    select.innerHTML = styleOptions(null);
+    select.value = state.colourBy;
 }
 
 // What each satellite on the map has: satellite key -> { sources: Set of 'WIS2', 'GTS'
@@ -464,6 +501,15 @@ export function updateMapKey() {
     } else if (state.colourBy === WAVE_STYLE) {
         rows.push('<div class="key-note"><span class="key-wavespec"></span>Wave spectrum: where waves come from (north up), longer waves inside, red = most energy</div>');
         if (!state.colouredOnly) rows.push(`<div class="key-note">${symbol('circle', NO_VALUE_COLOR)}Other</div>`);
+    } else if (state.colourBy === CENTRE_STYLE) {
+        // The centres on the map, most points first, each in its colour and the shapes its points
+        // are drawn as: cache circles, origin rings, GTS diamonds (a GTS bulletin under the
+        // centre that issued it, centreColours.js), squares for other sources
+        // Every one, in a list that scrolls once it's long (key-centres)
+        var order = ['circle', 'ring', 'diamond', 'square'];
+        rows.push(`<div class="key-centres">${centresOnMap().map(([centre, n, shapes]) =>
+            `<div class="key-note" title="${n.toLocaleString()} point${n === 1 ? '' : 's'}">`
+            + `${order.filter((s) => shapes.has(s)).map((s) => symbol(s, centreColour(centre))).join('')}${esc(centre)}</div>`).join('')}</div>`);
     } else {
         for (var [key, c] of Object.entries(OBS_CLASSES)) {
             var shapes = [drawn(`cache-${key}`) && 'circle', drawn(`origin-${key}`) && 'ring', drawn(`gts-${key}`) && 'diamond', drawn(`replay-${key}`) && 'square'].filter(Boolean);

@@ -147,6 +147,7 @@ export function addPoint(record) {
             format: record.format,
             channel: record.channel,
             centre: record.centre,
+            issuer: record.issuer || record.centre,  // Styled by centre: a GTS bulletin's real one (gtsOrigin.js)
             discipline: record.discipline,
             space: isSpaceRecord(record),
             via: record.decodedLayer || '',

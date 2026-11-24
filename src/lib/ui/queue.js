@@ -9,13 +9,15 @@ import { scheduleReplay } from '../../messages/replay.js';
 import { records, isGateway, byDataId } from '../../map/points.js';
 import { map } from '../../map/map.js';
 import { onMap } from '../../data/satellite/coverage.js';
-import { bufrSource } from '../../data/download.js';
+import { bufrSource, gtsBulletin } from '../../data/download.js';
+import { setCentreIds } from '../../messages/gtsOrigin.js';
 import { viaProxy, LOCAL } from '../../data/caches.js';
 import { COLORS, OBS_CLASSES } from '../../config.js';
 import { darken, TOUCH } from '../util.js';
 import { DECODE_LAYERS, decodeEnabled, satelliteSkipped } from '../../data/decodeQueue.js';
 import { wis2boxByCentre } from '../../messages/wis2box.js';
-import { showDecoded, decodeSource, showDecodeError, openPopup } from './popup.js';
+import { openPopup, openMessagePopup } from './popup.js';
+import { makeResizable } from './resize.js';
 import { FORECAST_PAGE } from '../../page.js';
 import { track, trackOnce } from '../analytics.js';
 
@@ -233,6 +235,7 @@ export async function loadCentres() {
     }
     if (!list) list = await fetchJson(CENTRE_SNAPSHOT).catch(() => []);
     list.forEach(([centre, name]) => addCentreOption(centre, name));
+    setCentreIds(list.map(([centre]) => centre));  // To name GTS bulletins' centres (gtsOrigin.js)
 }
 
 // Returns [[centre-id, description], ...] for the centres not retired
@@ -338,6 +341,7 @@ export class QueueControl {
             if (open) flushQueue();
         });
         sidebar.appendChild(handle);
+        makeResizable(sidebar, 'queue');  // Dragged wider or narrower by its edge (resize.js)
         document.body.appendChild(sidebar);
         sidebar.querySelectorAll('.queue-tabs button').forEach((button) => button.addEventListener('click', () => selectQueueTab(button.dataset.tab)));
         queueList = sidebar.querySelector('.queue-list');
@@ -622,49 +626,18 @@ export function rebuildQueue() {
     queuePaused = paused;
 }
 
-// Expanded view of a message that isn't on the map: decode its data or show the raw JSON
-export function renderQueueDetail(entry) {
+// A message that isn't on the map, opened in the info panel (popup.js openMessagePopup):
+// its file's data decoded, and the message itself
+function openQueueMessage(entry) {
     var text = entry.message.toString();
     try {
         var message = JSON.parse(text);
-        text = JSON.stringify(message, null, 2);
     } catch (err) {
         message = null;
     }
     var props = (message && message.properties) || {};
-    var source = message && bufrSource(message, props, entry.topic);
-
-    var detail = document.createElement('div');
-    detail.className = 'queue-detail';
-    detail.innerHTML = `
-        <div class="pp-actions"></div>
-        <div class="pp-decoded"></div>
-        <pre hidden></pre>`;
-    detail.addEventListener('click', (e) => e.stopPropagation());  // Keep it open
-    var actions = detail.querySelector('.pp-actions');
-    var out = detail.querySelector('.pp-decoded');
-    var pre = detail.querySelector('pre');
-    pre.textContent = text;
-
-    // Expanding a row means wanting the data, so decode straight away
-    var decode = async () => {
-        try {
-            showDecoded(out, null, await decodeSource(source, stationId(props), out));
-        } catch (err) {
-            showDecodeError(out, err, decode, source);
-        }
-    };
-    if (source) decode();
-    var json = document.createElement('button');
-    json.type = 'button';
-    json.className = 'btn btn-sm btn-outline-secondary';
-    json.textContent = 'Show message';
-    json.addEventListener('click', () => {
-        pre.hidden = !pre.hidden;
-        json.textContent = pre.hidden ? 'Show message' : 'Hide message';
-    });
-    actions.appendChild(json);
-    return detail;
+    openMessagePopup({ message, text, topic: entry.topic,
+        source: message && bufrSource(message, props, entry.topic), wsi: stationId(props) });
 }
 
 // The row's dot describes the message itself, matching the map: origin
@@ -721,8 +694,10 @@ export const decodedFirst = new Map();  // decodeKey -> first report plotted fro
 // (TTAAii CCCC YYGGgg, plus BBB for amendments) and decoded once
 export function decodeKey(topic, feature) {
     var props = feature.properties || {}, dataId = props.data_id;
-    var heading = GATEWAY_TOPIC.test(topic) && /([A-Z]{4}\d{2}[A-Z]{4}\d{6}(?:[A-Z]{3})?)(?=[_/]|$)/.exec(dataId || '');
-    var key = heading ? `gts:${heading[1]}` : dataId;
+    // The same identity download.js keeps their links under, a correction read the same from
+    // either gateway (JMA's …241800RRA/, DWD's …241800_RRA_C_EDZW…)
+    var bulletin = GATEWAY_TOPIC.test(topic) && gtsBulletin(dataId);
+    var key = bulletin ? `gts:${bulletin}` : dataId;
     // An update reuses its data_id, but is a new file to decode
     return key && isUpdate(feature) ? `${key}@${props.pubtime}` : key;
 }
@@ -789,12 +764,8 @@ export function renderQueueRow(entry) {
             map.flyTo({ center: target.coords, zoom: Math.max(map.getZoom(), 5) });
             return;
         }
-        var detail = row.querySelector('.queue-detail');
-        if (detail) return detail.remove();
-        row.appendChild(renderQueueDetail(entry));
-        // Pause so the row isn't pushed out of the list while it's being read
-        queuePaused = true;
-        flushQueue();
+        // Not on the map: opened in the info panel, as a point would be, rather than in the list
+        openQueueMessage(entry);
     });
     // A double click centres the map on the message: on its report, or where its
     // notification says, even if the report is filtered out or not drawn. Its two

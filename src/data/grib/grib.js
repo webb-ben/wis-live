@@ -9,6 +9,7 @@
 import maplibregl from 'maplibre-gl';
 import { fetchHead, fetchData } from '../download.js';
 import { viaWorker } from '../caches.js';
+import { originCentre } from '../../messages/gtsOrigin.js';
 import { esc } from '../../lib/util.js';
 import { disciplineOf, formatOf, FORMATS, isDataLink } from '../../messages/messages.js';
 import { parseGribHeader, gribSummary, latLonOutline, gridLocator } from './gribHeader.js';
@@ -33,9 +34,11 @@ export function productOf(topic, feature) {
     var link = (feature.links || []).find((l) => l.rel === 'canonical' || l.rel === 'update') || {};
     var file = (link.href || '').split(/[?#]/)[0].split('/').pop();
     var series = file.replace(/\d{8}(T\d{2,6}Z?)?/g, '#').replace(/PT\d+H(\d+M)?/gi, '#').replace(/\d{6,}/g, '#');
+    // A GTS bulletin's copy number (JMA's …_20261124213322_191.grib) isn't part of its series
+    if (GATEWAY_GRIB.test(topic)) series = series.replace(/_\d{1,5}(\.[a-z0-9]+)?$/i, '_#$1');
     return `${topic.replace(/^(cache|origin)\//, '')}/${series}`.toLowerCase();
 }
-import { FORECAST_PAGE } from '../../page.js';
+import { FORECAST_PAGE, GATEWAY_GRIB } from '../../page.js';
 import { track } from '../../lib/analytics.js';
 
 export const GRIB_LAYERS = ['grib-fill', 'grib-line'];
@@ -44,14 +47,29 @@ export const GRIB_LAYERS = ['grib-fill', 'grib-line'];
 const FILE_GAP_MS = (FORECAST_PAGE ? 2 : 10) * 60e3;  // A series of files (same name but its numbers) read at most this often
 const PRODUCTS_MAX = FORECAST_PAGE ? 400 : 60;  // The longest unchanged goes first
 const FILES_PER_PRODUCT_MAX = 600;  // Tiles count one each
-const FETCHES = FORECAST_PAGE ? 4 : 2;
+// Files read at once. Each is a run of small range requests one after another (a field's
+// header, then the next's), so more at once keeps the network busy; a browser opens at most
+// 6 connections to one HTTP/1.1 host (the S3 caches), so past that some wait their turn
+const FETCHES = FORECAST_PAGE ? 8 : 2;
 const WAITING_MAX = FORECAST_PAGE ? 1000 : 200;
-const LIST_MAX = 30;  // Products listed in a click's popup
+const LIST_MAX = 100;  // Products listed for a click (in the info panel)
 
 const products = new Map();  // product key -> { key, name, model, centre, grid, tiles: Map, files: Map, format, topic, updated }
-const waiting = new Map();  // file series -> newest job not yet read
 const taken = new Map();  // file series -> when last read
-let fetching = 0;
+
+// Two queues, each with readers of its own: WIS2's forecasts (multi-field files up to
+// gigabytes, read field by field), and the GTS's GRIB bulletins (GATEWAY_GRIB), which come by
+// the thousand each run (JMA's: every variable, level, octant and lead time a file of its own,
+// one field of a few KB, read in one request). Apart, a run of bulletins neither holds up
+// WIS2's readers nor pushes its files off the waiting list. The bulletins' list is long, as
+// each is quick to read; their readers few, as more would only queue at the S3 cache, whose
+// 6 connections a browser shares with WIS2's files there
+const lanes = {
+    wis2: { waiting: new Map(), max: WAITING_MAX, fetches: FETCHES, fetching: 0 },  // file series -> newest job not yet read
+    gts: { waiting: new Map(), max: FORECAST_PAGE ? 20000 : 0, fetches: 4, fetching: 0 },
+};
+const laneOf = (job) => (GATEWAY_GRIB.test(job.topic) ? lanes.gts : lanes.wis2);
+const waitingCount = () => lanes.wis2.waiting.size + lanes.gts.waiting.size;
 let map = null;
 let deps = null;
 let popup = null;
@@ -144,32 +162,38 @@ export function areaKey(geometry) {
 export function queueGrib(job) {
     var series = `${productOf(job.topic, job.feature)}@${areaKey(job.feature.geometry)}`;
     if (Date.now() - (taken.get(series) || 0) < FILE_GAP_MS) return false;
-    waiting.delete(series);
-    waiting.set(series, job);
-    if (waiting.size > WAITING_MAX) waiting.delete(waiting.keys().next().value);
+    var lane = laneOf(job);
+    if (!lane.max) return false;
+    lane.waiting.delete(series);
+    lane.waiting.set(series, job);
+    if (lane.waiting.size > lane.max) lane.waiting.delete(lane.waiting.keys().next().value);
     pump();
     showActivity();
     return true;
 }
 
 export function clearGrib() {
-    waiting.clear();
+    for (var lane of Object.values(lanes)) lane.waiting.clear();
     products.clear();
     redraw();
     if (popup) popup.remove();
 }
 
+// Each queue's readers take its newest file waiting
 function pump() {
-    while (fetching < FETCHES && waiting.size) {
-        var [series, job] = [...waiting].pop();
-        waiting.delete(series);
-        taken.set(series, Date.now());
-        if (taken.size > 5000) taken.delete(taken.keys().next().value);
-        fetching++;
-        readFile(job).finally(() => {
-            fetching--;
-            pump();
-        });
+    for (var lane of Object.values(lanes)) {
+        while (lane.fetching < lane.fetches && lane.waiting.size) {
+            var [series, job] = [...lane.waiting].pop();
+            lane.waiting.delete(series);
+            taken.set(series, Date.now());
+            if (taken.size > 30000) taken.delete(taken.keys().next().value);
+            lane.fetching++;
+            let done = lane;
+            readFile(job).finally(() => {
+                done.fetching--;
+                pump();
+            });
+        }
     }
 }
 
@@ -180,9 +204,20 @@ export async function readGribHead(feature, topic) {
     return { header: parseGribHeader(bytes), href: url };
 }
 
+// The WIS2 centre that made a forecast: its topic's, or for a GTS bulletin (…/H/V/M/Y/03/RJTD,
+// relayed by jp-jma-gts-to-wis2) the one its CCCC is (RJTD: JMA's Tokyo; gtsOrigin.js), so
+// it's listed with that centre's own forecasts. A CCCC not known stays as it is
+export function forecastCentre(topic) {
+    var centre = (topic.split('/a/wis2/')[1] || '').split('/', 1)[0];
+    if (!GATEWAY_GRIB.test(topic)) return centre;
+    return originCentre(topic.split('/').pop()) || centre;
+}
+
 // Which model a topic is: …/prediction/forecast/medium-range/deterministic/global reads
 // "Medium-range deterministic, global"
 export function modelOf(topic) {
+    // A GTS GRIB bulletin: listed under the centre that made it (forecastCentre), as its GTS model
+    if (GATEWAY_GRIB.test(topic)) return 'Forecasts from the GTS';
     var parts = (topic.split('/prediction/')[1] || '').split('/').filter((p) => p && p !== 'forecast');
     if (!parts.length) return 'Forecast';
     var scope = parts.length > 1 ? parts.pop() : null;
@@ -209,7 +244,7 @@ async function readFile(job) {
     // Shown in the sidebar while it's read (renderActivity)
     var file = decodeURIComponent((link.href || '').split(/[?#]/)[0].split('/').pop()) || 'GRIB file';
     // Its × in the sidebar stops it (abort): the fields read so far stay listed
-    var progress = { id: ++readingIds, file, centre: job.topic.split('/a/wis2/')[1].split('/', 1)[0], fields: 0, offset: 0, total,
+    var progress = { id: ++readingIds, file, centre: forecastCentre(job.topic), fields: 0, offset: 0, total,
         abort: new AbortController() };
     var signal = progress.abort.signal;
     reading.add(progress);
@@ -218,6 +253,9 @@ async function readFile(job) {
         // Read unasked, so it counts against the page's Worker allowance (drawing a field later,
         // from a click, doesn't)
         var { bytes, url } = await fetchHead({ ...source, background: true }, 16384, 0, false, signal);
+        // Less than was asked for is the whole file (a GTS bulletin's one field, a few KB): no
+        // asking past its end for a next field, when the notification gives no length
+        if (!total && bytes.length < 16384) total = bytes.length;
         // The later fields come from the copy that answered
         var pinned = { urls: [url], dataId: null, topic: null };
         var offset = 0;
@@ -287,7 +325,7 @@ function renderActivity() {
                 if (r) r.abort.abort();
             }
             if (e.target.closest('.forecast-skip')) {
-                waiting.clear();
+                for (var lane of Object.values(lanes)) lane.waiting.clear();
                 showActivity();
             }
         });
@@ -297,11 +335,14 @@ function renderActivity() {
     var lines = [...reading].map((r) => `<li><span class="forecast-activity-file" title="${esc(r.file)}"><strong>${esc(r.centre)}</strong> ${esc(r.file)}`
         + `<small>${r.fields} field${r.fields === 1 ? '' : 's'} read${r.total > FIELD_HEAD_BYTES * 2 ? ` · ${size(r.offset)} of ${size(r.total)}` : ''}</small></span>`
         + `<button type="button" class="forecast-cancel" data-reading="${r.id}" title="Stop reading this file (what it has read stays)" aria-label="Stop reading ${esc(r.file)}">×</button></li>`);
-    var skip = waiting.size ? ` <button type="button" class="btn btn-sm btn-link forecast-skip" title="Drop the files not started (later ones still come)">Skip waiting</button>` : '';
+    var waits = waitingCount(), gtsWaits = lanes.gts.waiting.size;
+    // How many of those waiting are GTS bulletins, which have readers of their own
+    var waitText = waits ? `${waits.toLocaleString()} waiting${gtsWaits ? ` (${gtsWaits === waits ? 'all' : gtsWaits.toLocaleString()} GTS)` : ''}` : '';
+    var skip = waits ? ` <button type="button" class="btn btn-sm btn-link forecast-skip" title="Drop the files not started (later ones still come)">Skip waiting</button>` : '';
     box.innerHTML = busy
         ? `<div class="forecast-activity-head"><span class="forecast-spinner" aria-hidden="true"></span>Reading ${reading.size} file${reading.size === 1 ? '' : 's'}`
-            + `${waiting.size ? ` · ${waiting.size} waiting` : ''}${skip}</div><ul>${lines.join('')}</ul>`
-        : `<div class="forecast-activity-head">${waiting.size ? `${waiting.size} file${waiting.size === 1 ? '' : 's'} waiting${skip}` : 'Waiting for forecast files'}</div>`;
+            + `${waits ? ` · ${waitText}` : ''}${skip}</div><ul>${lines.join('')}</ul>`
+        : `<div class="forecast-activity-head">${waits ? `${waitText[0].toUpperCase()}${waitText.slice(1)}${skip}` : 'Waiting for forecast files'}</div>`;
 }
 
 // One field of a GRIB file, as a file of its product (offset: where it starts in the file)
@@ -402,7 +443,7 @@ export function fileDetails(feature, topic) {
     return {
         variable,
         summary: [variable, hours !== null ? `+${hours} h` : null].filter(Boolean).join(' · '),
-        sub: [topic.split('/a/wis2/')[1].split('/', 1)[0], run && `run ${run}`].filter(Boolean).join(' · '),
+        sub: [forecastCentre(topic), run && `run ${run}`].filter(Boolean).join(' · '),
         href: link.href, file, run, hours, valid, length: link.length || null,
     };
 }
@@ -419,7 +460,7 @@ function modelColour(model) {
 // (file.tile, '' for a whole field) of one forecast (file.group: run, lead time, member);
 // the product's area is all its tiles' outlines
 function addFile(topic, outline, grid, name, format, file) {
-    var centre = topic.split('/a/wis2/')[1].split('/', 1)[0];
+    var centre = forecastCentre(topic);
     var model = `${centre} · ${modelOf(topic)}`;
     var key = `${model}|${grid}|${name}`;
     var product = products.get(key) || { key, name, model, centre, grid, tiles: new Map(), files: new Map(), format, topic };
@@ -578,23 +619,23 @@ function modelLabel(model, count) {
         + `<span class="grib-model-kind">${esc(kind.join(' · '))}</span></span>`;
 }
 
-// The products under a click, as a table: each with its model, what its files cover and
-// a Style button that draws it (or why it can't be drawn), and a link to its latest file
+// The products under a click, in the info panel: each with its model, what its files cover
+// and a link to its latest file; a click on one draws it (or says why it can't be)
 function showProducts(list, lngLat) {
     var row = (p) => {
         var latest = [...p.files.values()].pop();
         var files = [...p.files.values()];
         var span = validSpan(files).replace(/^valid /, '');
         var active = fieldShown && fieldShown.product === p.key;
-        // Nothing where it can't be drawn; its link says why
-        var style = drawable(p)
-            ? `<button type="button" class="btn btn-sm ${active ? 'btn-primary' : 'btn-outline-primary'} grib-style" data-product="${esc(p.key)}">${active ? 'Shown' : 'Style'}</button>`
-            : '';
-        var why = drawable(p) ? '' : ` ${whyNot(p)}.`;
         var n = forecastCount(p);
-        return `<tr><td>${style}</td>`
-            + `<td><a href="${esc(latest.href || '')}" target="_blank" rel="noopener" title="The latest file: ${esc(latest.summary)}.${esc(why)}">${esc(label(p))}</a></td>`
-            + `<td>${esc(span)}<small>${n} forecast${n === 1 ? '' : 's'}${p.tiles.size > 1 ? ` · ${p.tiles.size} tiles` : ''}</small></td></tr>`;
+        // The row draws it (the one drawn highlighted); one that can't be drawn is greyed,
+        // with why on hover. Its latest file opens from the small link under its forecasts
+        var cls = drawable(p) ? `grib-pick${active ? ' active' : ''}` : 'grib-static';
+        var title = drawable(p) ? (active ? 'Drawn on the map' : `Draw ${label(p)}`) : `${whyNot(p)}.`;
+        return `<tr class="${cls}"${drawable(p) ? ` data-product="${esc(p.key)}"` : ''} title="${esc(title)}">`
+            + `<td>${esc(label(p))}</td>`
+            + `<td>${esc(span)}<small>${n} forecast${n === 1 ? '' : 's'}${p.tiles.size > 1 ? ` · ${p.tiles.size} tiles` : ''}`
+            + ` <span class="grib-latest">· <a href="${esc(latest.href || '')}" target="_blank" rel="noopener" title="The latest file: ${esc(latest.summary)}">latest file</a></span></small></td></tr>`;
     };
     // A heading row for each model, its products under it
     var byModel = new Map();
@@ -602,22 +643,34 @@ function showProducts(list, lngLat) {
         if (!byModel.has(p.model)) byModel.set(p.model, []);
         byModel.get(p.model).push(p);
     });
-    var rows = [...byModel].map(([model, ps]) => `<tr class="grib-model-row"><th colspan="3">${modelLabel(model)}</th></tr>`
+    var rows = [...byModel].map(([model, ps]) => `<tr class="grib-model-row"><th colspan="2">${modelLabel(model)}</th></tr>`
         + ps.sort((a, b) => label(a).localeCompare(label(b))).map(row).join('')).join('');
     if (popup) popup.remove();
-    popup = new maplibregl.Popup({ maxWidth: '520px', className: 'grib-popup' })
-        .setLngLat(lngLat)
-        .setHTML(`<div class="grib-topic">${list.length} forecast product${list.length === 1 ? '' : 's'} here: Style draws one</div>`
-            + `<table class="grib-products"><thead><tr><th></th><th>Product</th><th>Valid</th></tr></thead><tbody>${rows}</tbody></table>`
-            + (list.length > LIST_MAX ? `<small>and ${list.length - LIST_MAX} more</small>` : ''))
-        .addTo(map);
-    popup.getElement().addEventListener('click', (e) => {
-        var button = e.target.closest('.grib-style');
-        var p = button && products.get(button.dataset.product);
+    // In the info panel on the right, where a point's details open, rather than over the map:
+    // it stays open as products are drawn, the one drawn marked
+    var lat = lngLat.lat.toFixed(2), lon = (((lngLat.lng + 540) % 360) - 180).toFixed(2);
+    var div = document.createElement('div');
+    div.className = 'pp grib-panel';
+    div.innerHTML = `
+        <header class="pp-head">
+            <span class="pp-dot grib-panel-dot" aria-hidden="true"></span>
+            <div>
+                <div class="pp-title">Forecasts here</div>
+                <div class="pp-sub">${lat}, ${lon} · ${list.length} product${list.length === 1 ? '' : 's'}: click one to draw it</div>
+            </div>
+        </header>
+        <table class="grib-products"><thead><tr><th>Product</th><th>Valid</th></tr></thead><tbody>${rows}</tbody></table>
+        ${list.length > LIST_MAX ? `<small class="legend-note">and ${list.length - LIST_MAX} more</small>` : ''}`;
+    div.addEventListener('click', (e) => {
+        if (e.target.closest('a')) return;  // The product's latest file
+        var row = e.target.closest('.grib-pick');
+        var p = row && products.get(row.dataset.product);
         if (!p) return;
+        div.querySelectorAll('.grib-pick.active').forEach((r) => r.classList.remove('active'));
+        row.classList.add('active');
         drawProduct(p);
-        popup.remove();
     });
+    deps.showInfo(div);
     if (list.length === 1) showGribArea(outlinesOf(list[0]), false);
 }
 

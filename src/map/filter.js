@@ -53,7 +53,8 @@ export function applyMapFilter() {
     var arrows = windArrows();
     map.setFilter('points-arrow', arrows ? [...shown, isArrow()] : ['boolean', false]);
     map.setFilter('points-spectrum', state.colourBy === WAVE_STYLE ? [...shown, ['has', 'spec']] : ['boolean', false]);
-    if (arrows) shown = [...shown, ['!', isArrow()]];
+    // A report with a wind arrow keeps its point too (the arrow is drawn over it), so it still
+    // reads as an observation of its kind, and shows where crowded arrows are left out
     // Circles for WIS2, diamonds for the GTS, squares for other sources: airports and the Global Replay
     var square = ['any', ['==', ['get', 'ext'], true], ['==', ['get', 'replay'], true]];
     map.setFilter('points', [...shown, ['!=', ['get', 'gateway'], true], ['!', square]]);

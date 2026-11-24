@@ -6,7 +6,7 @@
 // The image is the field reprojected onto the map's Mercator grid, nearest value per
 // pixel, through the grid's own geometry (gridLocator: lat/lon, rotated, Lambert, polar)
 import openjpegUrl from '@cornerstonejs/codec-openjpeg/decodewasm?url';
-import { gridLocator } from './gribHeader.js';
+import { gridLocator, reader1, thinnedRows } from './gribHeader.js';
 import { aecDecode } from './aec.js';
 import { METRICS } from '../../config.js';
 
@@ -63,6 +63,8 @@ const signed16 = (view, at) => { var v = view.getUint16(at); return v & 0x8000 ?
 // The field's values, one per grid point in the grid's order (NaN where the bitmap says
 // there's none): { values: Float32Array, min, max }
 export async function decodeField(bytes, points) {
+    var grib1 = grib1Start(bytes);
+    if (grib1 >= 0) return decodeGrib1(bytes, grib1, points);
     var { view, found } = sectionsOf(bytes);
     var s5 = found[5].at, template = view.getUint16(s5 + 9);
     var count = view.getUint32(s5 + 5);
@@ -114,6 +116,95 @@ export async function decodeField(bytes, points) {
         if (v > max) max = v;
     }
     return { values, min, max };
+}
+
+// Where a GRIB edition 1 message starts ("GRIB", edition octet 1), past any GTS heading; -1
+// for GRIB2 or anything else
+function grib1Start(bytes) {
+    for (var i = 0; i + 8 <= Math.min(bytes.length, 512); i++) {
+        if (bytes[i] === 71 && bytes[i + 1] === 82 && bytes[i + 2] === 73 && bytes[i + 3] === 66) return bytes[i + 7] === 1 ? i : -1;
+    }
+    return -1;
+}
+
+// IBM System/360 single precision (GRIB1's reference value): sign, a base-16 exponent
+// biased by 64, and a 24-bit fraction
+function ibmFloat(bytes, at) {
+    var sign = bytes[at] & 0x80 ? -1 : 1, exponent = (bytes[at] & 0x7f) - 64;
+    var fraction = (bytes[at + 1] * 65536 + bytes[at + 2] * 256 + bytes[at + 3]) / 16777216;
+    return sign * fraction * 16 ** exponent;
+}
+
+// A GRIB1 field's values (simple packing, grid point data): Y = (R + X × 2^E) / 10^D, with
+// the bitmap (section 3) saying which grid points have one
+function decodeGrib1(bytes, start, points) {
+    var u3 = (at) => bytes[at] * 65536 + bytes[at + 1] * 256 + bytes[at + 2];
+    var signed = (hi, lo) => { var v = hi * 256 + lo; return v & 0x8000 ? -(v & 0x7fff) : v; };
+    var s1 = start + 8, s1len = u3(s1), flags = bytes[s1 + 7];
+    var D = signed(bytes[s1 + 26], bytes[s1 + 27]);
+    var at = s1 + s1len;
+    var pl = null;  // A quasi-regular grid's points per row
+    if (flags & 0x80) {
+        var gds = reader1(bytes, at);
+        pl = thinnedRows(gds, gds.u2(9));
+        if (pl) points = pl.reduce((a, b) => a + b, 0);  // Its values, before they're spread out
+        at += u3(at);
+    }
+    var bitmapAt = null;
+    if (flags & 0x40) {
+        if (bytes[at + 4] || bytes[at + 5]) throw new Error('its bitmap is a predefined one, which isn\'t read here');
+        bitmapAt = at + 6;
+        at += u3(at);
+    }
+    var bdsLen = u3(at);
+    if (at + bdsLen > bytes.length) {
+        throw new Error(`its data wasn't in the ${bytes.length.toLocaleString()} bytes downloaded (it runs to byte ${(at + bdsLen).toLocaleString()})`);
+    }
+    var flag = bytes[at + 3];
+    if (flag & 0xc0) throw new Error(`its values are packed with ${flag & 0x80 ? 'spherical harmonics' : 'complex packing'}, which isn't drawn here`);
+    var E = signed(bytes[at + 4], bytes[at + 5]), R = ibmFloat(bytes, at + 6), bits = bytes[at + 10];
+    var unused = flag & 0x0f;
+    var scale = 2 ** E / 10 ** D, offset = R / 10 ** D;
+    var count = bitmapAt != null ? 0 : points;
+    if (bitmapAt != null) {
+        for (var p = 0; p < points; p++) if (bytes[bitmapAt + (p >> 3)] & (0x80 >> (p & 7))) count++;
+    } else if (bits) {
+        // Or from the section's length, where the grid doesn't say
+        count = Math.min(points || Infinity, Math.floor(((bdsLen - 11) * 8 - unused) / bits));
+    }
+    var packed = bits ? unpackBits(bytes, at + 11, count, bits, scale, offset) : new Float32Array(count).fill(offset);
+    var values = packed;
+    if (bitmapAt != null) {
+        values = new Float32Array(points).fill(NaN);
+        for (var q = 0, next = 0; q < points && next < packed.length; q++) {
+            if (bytes[bitmapAt + (q >> 3)] & (0x80 >> (q & 7))) values[q] = packed[next++];
+        }
+    }
+    if (pl) values = thinnedToRegular(values, pl);
+    var min = Infinity, max = -Infinity;
+    for (var v of values) {
+        if (v < min) min = v;
+        if (v > max) max = v;
+    }
+    return { values, min, max };
+}
+
+// A quasi-regular grid's values (row after row, pl[j] in row j) spread onto a regular grid as
+// wide as the widest row: each row's points evenly across the same longitudes, values in
+// between taken linearly from the two either side (the nearer one where either has none)
+function thinnedToRegular(values, pl) {
+    var ni = Math.max(...pl), out = new Float32Array(ni * pl.length);
+    var start = 0;
+    pl.forEach((n, j) => {
+        for (var i = 0; i < ni; i++) {
+            var x = n > 1 ? i * (n - 1) / (ni - 1) : 0;
+            var k = Math.floor(x), t = x - k;
+            var a = values[start + k], b = values[start + Math.min(n - 1, k + 1)];
+            out[j * ni + i] = a !== a || b !== b ? (t < 0.5 ? a : b) : a + (b - a) * t;
+        }
+        start += n;
+    });
+    return out;
 }
 
 // Simple packing: n-bit unsigned integers, big-endian, back to back

@@ -71,6 +71,10 @@ export function metricOnPage(metric) {
 // track forecasts (ECMWF's JSXX..ECEP ensemble), which the forecasts page draws (cyclone.js)
 export const GATEWAY_CYCLONE = /-gts-to-wis2\/data\/core\/J\/S\/X\/X\//;
 
+// GTS bulletins of gridded data in GRIB (T1 = D, G, H, O, Y in WMO-No. 386 table A: JMA's
+// HVMY03 RJTD and the like), which the forecasts page reads like WIS2's own forecasts (grib.js)
+export const GATEWAY_GRIB = /-gts-to-wis2\/data\/core\/[DGHOY]\//;
+
 export const GATEWAY_CENTRES = ['de-dwd-gts-to-wis2', 'jp-jma-gts-to-wis2', 'cn-cma-wis2-to-gts', 'uk-metoffice-wis2-to-gts'];
 
 // The Global Broker topics the page subscribes to (MQTT filters: + one level, # the
@@ -91,8 +95,9 @@ export const PAGE_TOPICS = SATELLITE_PAGE
         ? ['origin', 'cache'].flatMap((channel) => GATEWAY_CENTRES.map((centre) => `${channel}/a/wis2/${centre}/#`))
         : FORECAST_PAGE
             ? [...['origin', 'cache'].map((channel) => `${channel}/a/wis2/+/data/+/+/prediction/#`),
-                // And the GTS's tropical cyclone track forecasts (GATEWAY_CYCLONE)
-                'cache/a/wis2/+/data/core/J/S/X/X/#']
+                // And the GTS's tropical cyclone track forecasts (GATEWAY_CYCLONE) and GRIB (GATEWAY_GRIB)
+                'cache/a/wis2/+/data/core/J/S/X/X/#',
+                ...['D', 'G', 'H', 'O', 'Y'].map((t1) => `cache/a/wis2/+/data/core/${t1}/#`)]
             : ['origin/a/wis2/#', 'cache/a/wis2/#'];
 
 // The links to the other pages, as HTML

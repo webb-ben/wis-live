@@ -416,21 +416,32 @@ export function datasetRow(d) {
     row.className = 'gdc-row';
     row.gdc = d;
     row.order = gdcEls.list.children.length;  // Its place in the catalogue's answer (pages are appended)
+    // The row shows the dataset on the map (filtering the map and messages to it, with what it
+    // published recently); its record in the catalogue opens from View in GDC
     row.innerHTML = `
-        <a class="gdc-title" target="_blank" rel="noopener" title="Open the dataset's record in the catalogue"></a>
-        <div class="gdc-meta"><strong></strong>${policyBadge(d.policy)}<span class="gdc-seen"></span>${d.channel
-            ? '<button type="button" class="btn btn-sm btn-link gdc-show" title="Filter the map and messages to this dataset, with what it published recently">Show on map</button>' : ''}</div>
+        <div class="gdc-title"></div>
+        <div class="gdc-meta"><strong></strong>${policyBadge(d.policy)}<span class="gdc-seen"></span>
+            <a class="gdc-link" target="_blank" rel="noopener" title="Open the dataset's record in the Global Discovery Catalogue">View in GDC</a></div>
         <div class="legend-note gdc-note" hidden></div>`;
-    var title = row.querySelector('.gdc-title');
-    title.href = gdcPage(d.id);
-    title.textContent = d.title;
+    row.querySelector('.gdc-title').textContent = d.title;
+    row.querySelector('.gdc-link').href = gdcPage(d.id);
     row.querySelector('.gdc-meta strong').textContent = d.centre;
     showDatasetSeen(row);
-    var show = row.querySelector('.gdc-show'), note = row.querySelector('.gdc-note');
-    if (show) show.addEventListener('click', () => showDatasetOnMap(d, (text) => {
-        note.hidden = false;
-        note.textContent = text;
-    }));
+    var note = row.querySelector('.gdc-note');
+    if (d.channel) {
+        row.classList.add('gdc-pick');
+        row.tabIndex = 0;
+        row.title = 'Show this dataset on the map';
+        var show = (e) => {
+            if (e.target.closest('a')) return;  // View in GDC
+            showDatasetOnMap(d, (text) => {
+                note.hidden = false;
+                note.textContent = text;
+            });
+        };
+        row.addEventListener('click', show);
+        row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); show(e); } });
+    }
     return row;
 }
 

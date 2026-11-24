@@ -3,7 +3,7 @@ import { noteCacheLinks } from '../data/caches.js';
 import { noteDataset } from '../data/catalogue.js';
 import { revealGatewayRows, DECODE_LAYERS, decodeEnabled, queueDecode } from '../data/decodeQueue.js';
 import { pointFor, stationId, disciplineOf, formatOf, isUpdate, topicClass, isSpaceBased, GATEWAY_TOPIC } from './messages.js';
-import { SATELLITE_PAGE, SATELLITES_ON_PAGE, GTS_PAGE, RADAR_PAGE, PAGE_CLASSES, FORECAST_PAGE, FORECAST_TOPIC, GATEWAY_CYCLONE } from '../page.js';
+import { SATELLITE_PAGE, SATELLITES_ON_PAGE, GTS_PAGE, RADAR_PAGE, PAGE_CLASSES, FORECAST_PAGE, FORECAST_TOPIC, GATEWAY_CYCLONE, GATEWAY_GRIB } from '../page.js';
 
 // GTS upper-wind bulletins (IUP…): wind profilers', radars' and PILOT balloons'
 const RADAR_WIND_BULLETIN = /-gts-to-wis2\/data\/core\/I\/U\/P\//;
@@ -12,6 +12,7 @@ import { COLORS, OBS_CLASSES } from '../config.js';
 import { shipTrackKey } from '../data/reports.js';
 import { queueStationDecode } from '../data/stationDecode.js';
 import { addNotificationArea, addGeojsonFile } from '../data/grib/grib.js';
+import { originCentre, ccccOf } from './gtsOrigin.js';
 
 
 export const ignoredTopics = [
@@ -31,7 +32,7 @@ export const ignoredTopics = [
 export function topicOnPage(topic, feature) {
     // Forecast products only on the forecasts page, which has nothing else but the GTS's
     // cyclone track forecasts (also drawn on the other pages that take the GTS)
-    var forecast = FORECAST_TOPIC.test(topic) || (FORECAST_PAGE && GATEWAY_CYCLONE.test(topic));
+    var forecast = FORECAST_TOPIC.test(topic) || (FORECAST_PAGE && (GATEWAY_CYCLONE.test(topic) || GATEWAY_GRIB.test(topic)));
     if (forecast ? !FORECAST_PAGE : FORECAST_PAGE) return false;
     if (isSpaceBased(topic) ? !SATELLITES_ON_PAGE : SATELLITE_PAGE) return false;
     if (GTS_PAGE && !GATEWAY_TOPIC.test(topic)) return false;
@@ -102,6 +103,8 @@ export function onMessage(topic, feature, replay) {
         topic: topic,
         channel: channel,
         centre: t.split('/', 1)[0],
+        // A GTS bulletin's real centre, from its heading (gtsOrigin.js); the gateway is centre
+        issuer: GATEWAY_TOPIC.test(topic) ? originCentre(ccccOf(feature)) : null,
         path: t.slice(t.indexOf('/') + 1),
         discipline: disciplineOf(t),
         webcam: webcam,

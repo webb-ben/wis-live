@@ -1,6 +1,6 @@
 import { filters, filterModes, topicTerms, POLICY_LABELS } from './filters.js';
 import { FORMATS, DISCIPLINES } from '../messages/messages.js';
-import { SATELLITE_STYLE, WAVE_STYLE, METRICS } from '../config.js';
+import { SATELLITE_STYLE, WAVE_STYLE, METRICS, CENTRE_STYLE } from '../config.js';
 import { hiddenLayers } from '../map/layers.js';
 import { SATELLITE_PAGE, GBON_PAGE, GTS_PAGE, FORECAST_PAGE, REPLAY_START_MINUTES, metricOnPage } from '../page.js';
 import { setState, state } from '../state.js';
@@ -33,8 +33,8 @@ export function readFiltersFromUrl() {
     // spectra are ships' and buoys', which the GBON page doesn't show (the metocean and
     // GTS pages do)
     var style = params.get('style');
-    var onPage = SATELLITE_PAGE ? style === SATELLITE_STYLE || (METRICS[style] && metricOnPage(METRICS[style]))
-        : style === 'kind' || (style === WAVE_STYLE && !GBON_PAGE) || (METRICS[style] && metricOnPage(METRICS[style]));
+    var onPage = style === CENTRE_STYLE || (SATELLITE_PAGE ? style === SATELLITE_STYLE || (METRICS[style] && metricOnPage(METRICS[style]))
+        : style === 'kind' || (style === WAVE_STYLE && !GBON_PAGE) || (METRICS[style] && metricOnPage(METRICS[style])));
     if (onPage) startColour = style;
     // The satellite page has no Require value / Satellites only checkbox: it's always on there (see state.js)
     setState({ colouredOnly: SATELLITE_PAGE || params.get('require') === '1', modelFieldOn: params.get('base') === '1' });

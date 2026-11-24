@@ -65,7 +65,7 @@ import { wis2boxOf } from './messages/wis2box.js';
 import { onMessage, topicOnPage } from './messages/handle.js';
 import { updateModelField, modelFieldUrl } from './map/modelFields.js';
 import { attachSpectrum } from './data/stationDecode.js';
-import { hoverLabel, openPopup, closeInfo, infobar } from './lib/ui/popup.js';
+import { hoverLabel, openPopup, closeInfo, infobar, showInfo } from './lib/ui/popup.js';
 import { stylePanel, updateMapKey, keyChanged, refreshKey, LegendControl, StyleControl, MapKey, addAbout } from './lib/ui/legend.js';
 
 // Colours, kinds of observation and the measures to colour by are in config.js
@@ -113,6 +113,8 @@ initGrib({
     plotted: () => decodePlotted.grib++,
     changed: () => updateMapKey(),
     pointAt: (point) => nearestPoint(point),
+    // A click's forecast products open in the info panel on the right (popup.js)
+    showInfo: (content) => showInfo(content),
 });
 
 initCyclones({ map, pointAt: (point) => nearestPoint(point) });

@@ -165,4 +165,7 @@ export const SATELLITE_STYLE = 'satellite';
 // spectrum (see miniWaveSpectrum); everything else grey. Needs their files decoded
 export const WAVE_STYLE = 'waves';
 
+// Style by: each centre-id that published a point in its own colour (src/map/centreColours.js)
+export const CENTRE_STYLE = 'centre';
+
 export const WAVE_CLASSES = ['ship', 'buoy'];

@@ -8,7 +8,6 @@ import { cellRing } from '../geo.js';
 
 const OVERVIEW_REFRESH_MS = 2000;
 const COVERING = '.queue, .infobar';  // Panels over the map's edges: the sidebar and the info panel
-
 // map: the MapLibre map. drawContent(ctx, projection, d3, width): draws the points
 // and coverage. hoveredCell(): the coverage cell ('…|<h3>') under the pointer, if any.
 // Returns the section to put on the page, and:
@@ -49,11 +48,14 @@ export function createOverview({ map, drawContent, hoveredCell }) {
         timer = setInterval(draw, OVERVIEW_REFRESH_MS);
         // A pan or zoom shows at once (the view's frame moves), rather than at the next
         // refresh, which then starts over from here
-        map.on('moveend', () => {
+        // Not inside MapLibre's own frame: after an animated move (flyTo, easeTo) moveend fires
+        // from its render task, and asking the map for its view there (viewEdge's unproject)
+        // runs its task queue again ("Attempting to run(), but is already running")
+        map.on('moveend', () => setTimeout(() => {
             clearInterval(timer);
             draw();
             timer = setInterval(draw, OVERVIEW_REFRESH_MS);
-        });
+        }));
         // So does the sidebar or info panel sliding over the map or away (see viewEdge)
         document.addEventListener('transitionend', (e) => {
             if (e.target.matches && e.target.matches(COVERING)) draw();
@@ -116,9 +118,9 @@ export function createOverview({ map, drawContent, hoveredCell }) {
         // corners by great circles, so on the globe the bounds' box could frame the rest of the
         // world instead. Not when the view takes in most of the world
         ctx.beginPath();
-        var b = map.getBounds();
-        if (b.getEast() - b.getWest() < 300) {
-            path({ type: 'LineString', coordinates: viewEdge() });
+        var frame = viewBox(viewEdge());
+        if (frame) {
+            path({ type: 'LineString', coordinates: frame });
             ctx.strokeStyle = '#212529';
             ctx.lineWidth = 1.5;
             ctx.stroke();
@@ -157,6 +159,27 @@ export function createOverview({ map, drawContent, hoveredCell }) {
             prev = lon;
             return [lon, Math.max(-90, Math.min(90, p.lat))];
         });
+    }
+
+    // The box of longitudes and latitudes around the view's edge, its sides along meridians
+    // and parallels (every 2°, so they follow the overview's graticule rather than great
+    // circles): a plain frame, not the globe's curved view. A view round a pole is a band
+    // the whole way round; null for one that takes in most of the globe (zoomed out)
+    function viewBox(edge) {
+        var lons = edge.map((p) => p[0]), lats = edge.map((p) => p[1]);
+        var w = Math.min(...lons), e = Math.max(...lons), s = Math.min(...lats), n = Math.max(...lats);
+        if (e - w >= 300) { w = -180; e = 180; }
+        if (n - s >= 140 || (e - w >= 360 && n - s >= 100)) return null;
+        var side = (a, b) => {
+            var count = Math.max(2, Math.ceil(Math.abs(b - a) / 2) + 1);
+            return Array.from({ length: count }, (_, i) => a + (b - a) * i / (count - 1));
+        };
+        return [
+            ...side(w, e).map((lon) => [lon, n]),
+            ...side(n, s).map((lat) => [e, lat]),
+            ...side(e, w).map((lon) => [lon, s]),
+            ...side(s, n).map((lat) => [w, lat]),
+        ];
     }
 
     // Marks what the info panel shows (selected) and what the map's pointer is over

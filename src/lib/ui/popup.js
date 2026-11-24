@@ -20,7 +20,7 @@ import { renderCap } from '../../data/alerts/cap.js';
 import { renderCitypage } from '../../plots/citypage.js';
 import { METRICS, SATELLITE_STYLE } from '../../config.js';
 import { state } from '../../state.js';
-import { setColourBy } from '../../map/colour.js';
+import { setColourBy, recordColour } from '../../map/colour.js';
 import { windProfileLevels, soundingTiles, windProfileTiles, soundingTime, showSoundingCharts, openSounding, windProfileColumns, WIND_PROFILE_COLUMNS, renderWindProfile, reportSite,
     emptyWindTiles, shortSiteName, windProfileColumnsOrEmpty } from '../../plots/sounding.js';
 import { satelliteTiles } from '../../data/satellite/tiles.js';
@@ -31,6 +31,8 @@ import { showSpectrum } from '../../data/satellite/spectrum.js';
 import { distanceKm } from '../geo.js';
 import { track, centreOf } from '../analytics.js';
 import { isCycloneTrack, cycloneMemberHtml } from '../../data/cyclone.js';
+import { makeResizable } from './resize.js';
+import { renderNotification } from './notification.js';
 import { overview, stylePanel } from './legend.js';
 // The info panel on the right: what a point, a coverage cell or a dataset is, its
 // decoded report with tiles, charts and the raw fields, the notification behind it,
@@ -106,6 +108,7 @@ export function showInfo(content) {
             if (PHONE.matches && e.target === infobar && e.clientY - infobar.getBoundingClientRect().top < 20) infobar.classList.toggle('infobar-full');
         });
         document.body.appendChild(infobar);
+        makeResizable(infobar, 'info');  // Dragged wider or narrower by its edge (resize.js)
     }
     // On narrow screens the two panels can't both fit
     if (window.innerWidth < 760) document.body.classList.remove('queue-open');
@@ -136,11 +139,11 @@ export function buildPopup(record) {
     div.className = 'pp';
     div.innerHTML = `
         <header class="pp-head">
-            <span class="pp-dot${record.channel !== 'cache' && !record.external ? ' pp-ring' : ''}${isGateway(record) ? ' is-gts' : ''}${record.external || record.replay ? ' is-ext' : ''}" style="--color: ${record.color}; --outline: ${darken(record.color)}"></span>
+            <span class="pp-dot${record.channel !== 'cache' && !record.external ? ' pp-ring' : ''}${isGateway(record) ? ' is-gts' : ''}${record.external || record.replay ? ' is-ext' : ''}" data-record="${record.id}" style="--color: ${recordColour(record)}; --outline: ${darken(recordColour(record))}"></span>
             <div>
                 <div class="pp-title"></div>
                 <div class="pp-sub">
-                    ${esc(record.centre)}
+                    ${record.issuer && record.issuer !== record.centre ? `${esc(record.issuer)} <span class="pp-via" title="The centre that issued this GTS bulletin, from its heading; relayed into WIS2 by ${esc(record.centre)}">via ${esc(record.centre)}</span>` : esc(record.centre)}
                     <span class="pp-badge pp-${record.channel}">${record.external ? esc(record.badge) : esc(record.channel)}</span>
                     ${record.replay ? '<span class="pp-badge pp-replay" title="From the Global Replay service">replay</span>' : ''}
                     ${props.pubtime ? `<span title="${esc(props.pubtime)}">${timeAgo(props.pubtime)}</span>` : ''}
@@ -716,23 +719,76 @@ export function showMessage(out, record) {
         out.innerHTML = '<div class="pp-status">No notification kept for this point.</div>';
         return;
     }
-    var json = JSON.stringify(message, null, 2);
-    out.innerHTML = `
-        <div class="pp-message-head">
-            <span class="pp-status">WIS2 notification${isGateway(record) || record.decodedLayer ? ' for the file this report was decoded from' : ''}</span>
-            <button type="button" class="btn btn-sm btn-outline-secondary">Copy</button>
+    // Its details, or the literal JSON to copy (notification.js)
+    renderNotification(out, message, record.topic,
+        isGateway(record) || record.decodedLayer ? 'The WIS2 notification for the file this report was decoded from' : '');
+    keepPopupInView();
+}
+
+// A message from the sidebar's list that isn't on the map, in the info panel like a point:
+// its file's data (decoded straight away, where it can be) and the message itself.
+// message: the parsed notification, or null when it isn't JSON (text: as it came);
+// source: what bufrSource gives for its file, or null when there's nothing to decode
+export function openMessagePopup({ message, text, topic, source, wsi }) {
+    var props = (message && message.properties) || {};
+    var [channel, rest = ''] = (topic || '').split('/a/wis2/');
+    var centre = rest.split('/', 1)[0];
+    var canonical = message && (message.links || []).find((l) => isDataLink(l));
+    var div = document.createElement('div');
+    div.className = 'pp';
+    div.innerHTML = `
+        <header class="pp-head">
+            <span class="pp-dot${channel !== 'cache' ? ' pp-ring' : ''}" style="--color: #868e96; --outline: #495057"></span>
+            <div>
+                <div class="pp-title"></div>
+                <div class="pp-sub">
+                    ${esc(centre)}
+                    ${channel ? `<span class="pp-badge pp-${esc(channel)}">${esc(channel)}</span>` : ''}
+                    ${props.pubtime ? `<span title="${esc(props.pubtime)}">${timeAgo(props.pubtime)}</span>` : ''}
+                </div>
+            </div>
+        </header>
+        <div class="pp-actions"></div>
+        <div class="pp-tabs" role="tablist">
+            ${source ? '<button type="button" role="tab" data-tab="data" aria-selected="true">Data</button>' : ''}
+            <button type="button" role="tab" data-tab="message" aria-selected="${source ? 'false' : 'true'}">Message</button>
         </div>
-        <div class="pp-mono pp-message-topic"></div>
-        <pre class="pp-json"></pre>`;
-    out.querySelector('.pp-message-topic').textContent = record.topic;
-    out.querySelector('.pp-json').innerHTML = highlightJson(json);
-    var copy = out.querySelector('button');
-    copy.addEventListener('click', () => {
-        navigator.clipboard.writeText(json).then(() => {
-            copy.textContent = 'Copied';
-            setTimeout(() => { copy.textContent = 'Copy'; }, 1500);
-        }).catch(() => { copy.textContent = 'Copy failed'; });
-    });
+        <div class="pp-decoded" data-panel="data"${source ? '' : ' hidden'}></div>
+        <div class="pp-message" data-panel="message"${source ? ' hidden' : ''}></div>`;
+    // Named for its station, its dataset, or its file
+    div.querySelector('.pp-title').textContent = wsi || props.wigos_station_identifier || (props.data_id || '').split('/').pop() || props.metadata_id || centre || 'WIS2 message';
+    if (canonical) {
+        var download = document.createElement('a');
+        download.className = 'btn btn-sm btn-outline-secondary';
+        download.href = canonical.href;
+        download.target = '_blank';
+        download.rel = 'noopener';
+        download.textContent = `Download ${formatLabel(canonical.type)}${canonical.length ? ` (${formatBytes(canonical.length)})` : ''}`;
+        div.querySelector('.pp-actions').appendChild(download);
+    }
+    var out = div.querySelector('.pp-decoded');
+    var messageOut = div.querySelector('.pp-message');
+    var showIt = () => {
+        if (messageOut.hasChildNodes()) return;
+        if (message) renderNotification(messageOut, message, topic);
+        else messageOut.innerHTML = `<pre class="pp-json">${esc(text || '')}</pre>`;
+    };
+    div.querySelectorAll('.pp-tabs button').forEach((button) => button.addEventListener('click', () => {
+        div.querySelectorAll('.pp-tabs button').forEach((b) => b.setAttribute('aria-selected', b === button));
+        div.querySelectorAll('[data-panel]').forEach((panel) => { panel.hidden = panel.dataset.panel !== button.dataset.tab; });
+        if (button.dataset.tab === 'message') showIt();
+    }));
+    showInfo(div);
+    if (!source) return showIt();
+    var title = div.querySelector('.pp-title');
+    var decode = async () => {
+        try {
+            showDecoded(out, title, await decodeSource(source, wsi, out));
+        } catch (err) {
+            showDecodeError(out, err, decode, source);
+        }
+    };
+    decode();
 }
 
 // in time (the charts and the sounding viewer are in src/plots/sounding.js)

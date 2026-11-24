@@ -117,6 +117,7 @@ function sections(bytes) {
     }
     if (start < 0) throw new Error('not GRIB');
     var found = { 0: start, edition: bytes[start + 7] };
+    if (found.edition === 1) return found;  // Laid out differently (parseGrib1)
     // The message's whole length (octets 9 to 16), to download just the first message
     found.length = reader(bytes, start).u4(13) + reader(bytes, start).u4(9) * 2 ** 32;
     var at = start + 16;
@@ -141,7 +142,20 @@ const level = (type, scale, value) => {
 // The details of a GRIB file, from its first bytes (at least sections 0 to 4)
 export function parseGribHeader(bytes) {
     var at = sections(bytes);
+    if (at.edition === 1) return withLead(parseGrib1(bytes, at[0]), at[0]);
     if (at.edition !== 2) return { edition: at.edition };
+    return withLead(parseGrib2(bytes, at), at[0]);
+}
+
+// A file can start with a GTS bulletin heading before "GRIB" (JMA's "HVMY03 RJTD 241800"):
+// its length then counts from the start of the file, so a field's bytes, downloaded from
+// there, take in the whole message, and the next message starts where it says
+function withLead(out, start) {
+    if (out.length) out.length += start;
+    return out;
+}
+
+function parseGrib2(bytes, at) {
     var out = { edition: 2 };
     var discipline = bytes[at[0] + 6];
     out.discipline = DISCIPLINES[discipline] || `Discipline ${discipline}`;
@@ -161,6 +175,158 @@ export function parseGribHeader(bytes) {
         out.bits = reader(bytes, at[5]).u1(20);  // Bits per packed value
     }
     return out;
+}
+
+// ---------- GRIB edition 1 (WMO-No. 306, FM 92-VIII; still sent on the GTS, e.g. JMA's
+// H… and Y… bulletins): section 1 (product definition), 2 (grid, if there is one), 3
+// (bitmap) and 4 (binary data), each its length in 3 octets. Read into the same shape as
+// GRIB2's, so it's listed, outlined and drawn the same way (gribField.js decodeGrib1)
+
+// Parameters (code table 2, the WMO's own, versions 1 to 3), named as GRIB2's are
+const PARAMETERS_1 = { 1: 'Pressure', 2: 'Pressure reduced to MSL', 3: 'Pressure tendency', 6: 'Geopotential', 7: 'Geopotential height',
+    8: 'Geometric height', 11: 'Temperature', 12: 'Virtual temperature', 13: 'Potential temperature', 15: 'Maximum temperature',
+    16: 'Minimum temperature', 17: 'Dew point', 18: 'Dew point depression', 20: 'Visibility', 31: 'Wind direction', 32: 'Wind speed',
+    33: 'Wind (u, eastward)', 34: 'Wind (v, northward)', 35: 'Stream function', 36: 'Velocity potential', 39: 'Vertical velocity (pressure)',
+    40: 'Vertical velocity', 41: 'Absolute vorticity', 43: 'Relative vorticity', 44: 'Divergence', 51: 'Specific humidity',
+    52: 'Relative humidity', 54: 'Precipitable water', 61: 'Total precipitation', 62: 'Large-scale precipitation',
+    63: 'Convective precipitation', 65: 'Water equivalent of accumulated snow depth', 66: 'Snow depth', 71: 'Total cloud cover',
+    72: 'Convective cloud cover', 73: 'Low cloud cover', 74: 'Medium cloud cover', 75: 'High cloud cover', 80: 'Sea surface temperature',
+    81: 'Land cover', 82: 'Deviation of sea level from mean', 91: 'Ice cover', 100: 'Significant wave height (wind waves and swell)',
+    101: 'Wind wave direction', 102: 'Significant wind wave height', 103: 'Mean wind wave period', 104: 'Swell direction',
+    105: 'Significant swell height', 106: 'Mean swell period' };
+
+// Levels (code table 3): [name] or ['', its value as text] (o11, o12: octets 11 and 12)
+function level1(type, o11, o12) {
+    var both = o11 * 256 + o12;
+    var named = { 1: 'Surface', 2: 'Cloud base', 3: 'Cloud top', 4: '0 °C isotherm', 6: 'Maximum wind level', 7: 'Tropopause',
+        8: 'Top of atmosphere', 9: 'Sea bottom', 102: 'Mean sea level', 200: 'Entire atmosphere (one layer)', 201: 'Entire ocean' }[type];
+    if (named) return named;
+    if (type === 100) return `${both} hPa`;
+    if (type === 101) return `${o11 * 10} hPa to ${o12 * 10} hPa`;
+    if (type === 103) return `${both} m above sea level`;
+    if (type === 105) return `${both} m above ground`;
+    if (type === 107) return `Sigma ${both / 10000}`;
+    if (type === 109) return `Hybrid level ${both}`;
+    if (type === 111) return `${both} cm below land surface`;
+    if (type === 113) return `${both} K isentrope`;
+    return `Level type ${type}`;
+}
+
+// Time units (code table 4) in hours
+const UNIT_HOURS_1 = { 0: 1 / 60, 1: 1, 2: 24, 10: 3, 11: 6, 12: 12, 254: 1 / 3600 };
+
+// Octets numbered from 1 within a section, as the standard numbers them
+export function reader1(bytes, at) {
+    var u = (n, size) => { var v = 0; for (var k = 0; k < size; k++) v = v * 256 + bytes[at + n - 1 + k]; return v; };
+    // Sign and magnitude: the top bit is the sign
+    var s = (n, size) => { var v = u(n, size), top = 2 ** (8 * size - 1); return v >= top ? -(v - top) : v; };
+    return { u1: (n) => bytes[at + n - 1], u2: (n) => u(n, 2), u3: (n) => u(n, 3), s2: (n) => s(n, 2), s3: (n) => s(n, 3) };
+}
+
+function parseGrib1(bytes, start) {
+    var out = { edition: 1, discipline: 'Meteorological' };
+    out.length = reader1(bytes, start).u3(5);
+    var s1at = start + 8, s1 = reader1(bytes, s1at);
+    var s1len = s1.u3(1);
+    out.centre = CENTRES[s1.u1(5)] || `Centre ${s1.u1(5)}`;
+    var flags = s1.u1(8);
+    var param = s1.u1(9);
+    out.parameter = PARAMETERS_1[param] || `Parameter ${param} (table ${s1.u1(4)})`;
+    out.level = level1(s1.u1(10), s1.u1(11), s1.u1(12));
+    var century = s1.u1(25) || 21;
+    var year = (century - 1) * 100 + s1.u1(13);
+    out.run = new Date(Date.UTC(year, s1.u1(14) - 1, s1.u1(15), s1.u1(16), s1.u1(17))).toISOString();
+    // The lead time, from the time range (code table 5): a forecast at P1; a period from P1 to
+    // P2 (averages, accumulations), valid at its end, P2; P1 in two octets (10)
+    var unit = UNIT_HOURS_1[s1.u1(18)], p1 = s1.u1(19), p2 = s1.u1(20), range = s1.u1(21);
+    if (range === 10) p1 = s1.u2(19);
+    if (unit !== undefined) {
+        var hours = (v) => Math.round(v * unit * 100) / 100;
+        out.leadHours = range === 1 ? 0 : [2, 3, 4, 5].includes(range) ? hours(p2) : hours(p1);
+        out.valid = new Date(Date.parse(out.run) + out.leadHours * 3600e3).toISOString();
+        if ([3, 4, 5].includes(range)) {
+            var kind = { 3: 'Average', 4: 'Accumulation', 5: 'Difference' }[range];
+            out.statistic = `${kind} over ${hours(p2 - p1)} h`;
+            out.statisticName = p1 === 0 ? `${kind} from the start` : out.statistic;
+        }
+    }
+    out.process = range === 1 ? 'Analysis' : 'Forecast';
+    var D = s1.s2(27);
+    var at = s1at + s1len;
+    if (flags & 0x80) {
+        var gds = reader1(bytes, at);
+        out.grid = parseGrid1(gds);
+        at += gds.u3(1);
+    }
+    out.bitmap = !!(flags & 0x40);
+    if (flags & 0x40 && at + 3 <= bytes.length) at += reader1(bytes, at).u3(1);
+    // Binary data section: how the values are packed (flag octet 4: spherical harmonics 0x80,
+    // complex 0x40, else simple) and the bits per value
+    if (at + 11 <= bytes.length) {
+        var bds = reader1(bytes, at);
+        var flag = bds.u1(4);
+        out.packing = flag & 0x80 ? 50 : flag & 0x40 ? 2 : 0;
+        out.bits = bds.u1(11);
+    }
+    out.decimalScale = D;
+    return out;
+}
+
+// A quasi-regular grid's points in each row (Ni all ones, 65535): the list after any vertical
+// coordinates, where octet 5 says (NV, octet 4, of them, 4 octets each). Null for a regular grid
+export function thinnedRows(g, nj) {
+    if (g.u2(7) !== 0xffff) return null;
+    var nv = g.u1(4), at = g.u1(5);
+    if (!at || at === 255) return null;
+    var first = nv ? at + 4 * nv : at;
+    return Array.from({ length: nj }, (_, j) => g.u2(first + 2 * j));
+}
+
+// The grid (code table 6): latitude/longitude (0), Gaussian (4), rotated (10), polar
+// stereographic (5) and Lambert (3). Angles in thousandths of a degree
+function parseGrid1(g) {
+    var type = g.u1(6);
+    var names = { 0: 'Latitude/longitude', 3: 'Lambert conformal', 4: 'Gaussian', 5: 'Polar stereographic', 10: 'Rotated latitude/longitude' };
+    var grid = { template: type, name: names[type] || `Grid type ${type} (GRIB1)` };
+    var deg = (v) => v / 1000;
+    if (type === 0 || type === 4 || type === 10) {
+        grid.ni = g.u2(7);
+        grid.nj = g.u2(9);
+        // A quasi-regular (thinned) grid: each row its own number of points, listed in the
+        // section (JMA's octants: 2 at the pole to 73 at the equator). Drawn spread onto a
+        // regular grid as wide as its widest row (gribField.js thinnedToRegular)
+        var pl = thinnedRows(g, grid.nj);
+        if (pl) {
+            grid.ni = Math.max(...pl);
+            grid.thinned = pl.reduce((a, b) => a + b, 0);
+            grid.name += ', quasi-regular';
+        }
+        grid.points = grid.ni * grid.nj;
+        var la1 = deg(g.s3(11)), lo1 = deg(g.s3(14)), la2 = deg(g.s3(18)), lo2 = deg(g.s3(21));
+        var given = g.u1(17) & 0x80;
+        var span = ((lo2 - lo1) % 360 + 360) % 360 || 360;
+        var di = given && g.u2(24) !== 0xffff ? deg(g.u2(24)) : span / Math.max(1, grid.ni - (span >= 359.9 ? 0 : 1));
+        var dj = given && type === 0 && g.u2(26) !== 0xffff ? deg(g.u2(26)) : Math.abs(la2 - la1) / Math.max(1, grid.nj - 1);
+        var pole = type === 10 ? [deg(g.s3(33)), deg(g.s3(36))] : null;
+        grid.resolution = `${round(di)}° × ${round(dj)}°`;
+        grid.outline = pole ? rotatedOutline(la1, lo1, la2, lo2, pole) : latLonOutline(la1, lo1, la2, lo2, grid.ni, di);
+        grid.geo = { kind: pole ? 'rotated' : 'latlon', la1, lo1, di, dj, scan: g.u1(28), pole, ni: grid.ni, nj: grid.nj };
+    } else if (type === 3 || type === 5) {
+        grid.ni = g.u2(7);
+        grid.nj = g.u2(9);
+        grid.points = grid.ni * grid.nj;
+        var south = (g.u1(27) & 0x80) !== 0;
+        var p = { la1: deg(g.s3(11)), lo1: deg(g.s3(14)), lov: deg(g.s3(18)), dx: g.u3(21), dy: g.u3(24), south, scan: g.u1(28),
+            nx: grid.ni, ny: grid.nj };
+        // Polar stereographic is true at 60° (GRIB1 fixes it); Lambert at its first secant latitude
+        if (type === 5) p.lad = south ? -60 : 60;
+        else Object.assign(p, { latin1: deg(g.s3(29)), latin2: deg(g.s3(32)), lad: deg(g.s3(29)) });
+        grid.resolution = `${round(p.dx / 1000)} km`;
+        var template = type === 3 ? 30 : 20;
+        grid.outline = projectedOutline(template === 30 ? lambert(p) : polarStereo(p), p);
+        grid.geo = { kind: 'projected', template, ...p, ni: grid.ni, nj: grid.nj };
+    }
+    return grid;
 }
 
 function parseProduct(s4, discipline, run) {
@@ -418,16 +584,17 @@ export function gridLocator(geo) {
 
 // One line saying what a GRIB file holds, for lists and hover labels
 export function gribSummary(h) {
-    if (h.edition !== 2) return `GRIB edition ${h.edition}`;
+    if (h.edition !== 2 && h.edition !== 1) return `GRIB edition ${h.edition}`;
     return [h.parameter, h.level, h.leadHours !== undefined ? `+${h.leadHours} h` : null, h.ensemble, h.probability, h.statistic]
         .filter(Boolean).join(' · ');
 }
 
 // The details as label and value pairs, for the popup's table
 export function gribRows(h) {
-    if (h.edition !== 2) return [['Format', `GRIB edition ${h.edition} (not read here)`]];
+    if (h.edition !== 2 && h.edition !== 1) return [['Format', `GRIB edition ${h.edition} (not read here)`]];
     var g = h.grid || {};
     return [
+        ['Format', h.edition === 1 ? 'GRIB edition 1' : null],
         ['Variable', h.parameter], ['Level', h.level], ['Discipline', h.discipline], ['Centre', h.centre],
         ['Run', h.run && h.run.replace(/:00\.000Z$/, 'Z').replace('T', ' ')],
         ['Lead time', h.leadHours !== undefined ? `${h.leadHours} h` : null],

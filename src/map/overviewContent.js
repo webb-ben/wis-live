@@ -1,5 +1,6 @@
 import { effectiveHidden } from './layers.js';
-import { METRICS, SATELLITE_STYLE, SATELLITE_LAYERS, NO_VALUE_COLOR } from '../config.js';
+import { METRICS, SATELLITE_STYLE, SATELLITE_LAYERS, NO_VALUE_COLOR, CENTRE_STYLE } from '../config.js';
+import { centreColour, centreOf } from './centreColours.js';
 import { state } from '../state.js';
 import { globalGrid, swathCells, swathFeature, swathOpacity, swathOpacityKey } from '../data/satellite/coverage.js';
 import { passesFilters } from '../lib/filters.js';
@@ -55,7 +56,8 @@ export function drawOverviewContent(ctx, projection, d3, width) {
         if (state.colouredOnly && m && !(target && v != null)) continue;
         if (state.colouredOnly && state.colourBy === SATELLITE_STYLE && !SATELLITE_LAYERS.includes(q.layer)) continue;
         // As setColourBy: grey without a value, aircraft keep theirs under surface measures
-        var colour = state.colourBy === SATELLITE_STYLE ? (SATELLITE_LAYERS.includes(q.layer) && satelliteColours.get(q.sat)) || NO_VALUE_COLOR
+        var colour = state.colourBy === CENTRE_STYLE ? centreColour(centreOf(record))
+            : state.colourBy === SATELLITE_STYLE ? (SATELLITE_LAYERS.includes(q.layer) && satelliteColours.get(q.sat)) || NO_VALUE_COLOR
             : !m ? q.color : target && v != null ? scale(v) : m.targets !== 'satellite' && /-aircraft$/.test(q.layer) ? q.color : NO_VALUE_COLOR;
         var xy = projection(record.coords);
         if (!xy) continue;

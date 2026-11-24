@@ -15,7 +15,7 @@
   top: 0;
   bottom: 0;
   left: 0;
-  width: 340px;
+  width: var(--queue-width, 340px);
   max-width: calc(100vw - 52px);
   z-index: 1001;
   display: flex;
@@ -38,7 +38,7 @@
   transition: left 0.2s;
 }
 .queue-open .maplibregl-ctrl-top-left {
-  left: min(340px, calc(100vw - 52px));
+  left: min(var(--queue-width, 340px), calc(100vw - 52px));
 }
 /* The tab on the sidebar's edge, halfway down: › to open it, ‹ to close it */
 .queue-handle {
@@ -301,6 +301,11 @@
 }
 .queue-controls .queue-mapped {
   width: auto;
+}
+/* "Resume (200 new)" on one line, the button as wide as it needs */
+.queue-controls .queue-pause {
+  flex: none;
+  white-space: nowrap;
 }
 .queue-topic {
   color: #666666;
@@ -1711,7 +1716,7 @@
   top: 0;
   right: 0;
   bottom: 0;
-  width: 380px;
+  width: var(--info-width, 380px);
   max-width: calc(100vw - 52px);
   z-index: 1001;
   display: flex;
@@ -1749,7 +1754,7 @@
 }
 .info-open .maplibregl-ctrl-top-right,
 .info-open .maplibregl-ctrl-bottom-right {
-  right: min(380px, calc(100vw - 52px));
+  right: min(var(--info-width, 380px), calc(100vw - 52px));
 }.selected-marker {
   width: 26px;
   height: 26px;
@@ -3038,8 +3043,14 @@
   font-weight: 600;
   text-decoration: none;
 }
-.gdc-title:hover {
-  text-decoration: underline;
+/* A dataset that can be shown on the map: the whole row is the button (catalogue.js) */
+.gdc-pick {
+  cursor: pointer;
+}
+.gdc-pick:hover,
+.gdc-pick:focus-visible {
+  background-color: #f1f6ff;
+  outline: none;
 }
 .gdc-meta {
   display: flex;
@@ -3054,13 +3065,44 @@
   color: #495057;
   font-weight: 600;
 }
-.gdc-meta .gdc-show {
+.gdc-meta .gdc-link {
   margin-left: auto;
-  padding: 0;
-  border: 0;
   font-size: 11px;
-  line-height: inherit;
   white-space: nowrap;
+}
+/* A forecast product's row in a click's popup that draws it (grib.js showProducts) */
+.grib-products tr.grib-pick {
+  cursor: pointer;
+}
+.grib-products tr.grib-pick:hover td {
+  background-color: #f1f6ff;
+}
+.grib-products tr.grib-pick td:first-child {
+  padding-left: 6px;
+  color: #0b5ed7;
+  text-align: left;
+}
+/* "· latest file" stays on one line, moving down whole if it doesn't fit */
+.grib-latest {
+  white-space: nowrap;
+}
+.grib-products thead th:first-child {
+  padding-left: 6px;
+}
+/* The product drawn now */
+.grib-products tr.grib-pick.active td {
+  background-color: #e7f1ff;
+}
+.grib-products tr.grib-pick.active td:first-child {
+  box-shadow: inset 3px 0 0 #0d6efd;
+  font-weight: 600;
+}
+/* One that can't be drawn: listed, greyed, why on hover */
+.grib-products tr.grib-static td:first-child {
+  padding-left: 6px;
+  color: #868e96;
+  text-align: left;
+  cursor: help;
 }
 .gdc-more {
   display: block;
@@ -3206,4 +3248,212 @@
 .cyclone-note {
   margin: 6px 0 0;
   color: #6c757d;
+}
+
+/* A WIS2 notification: its details or its JSON (src/lib/ui/notification.js) */
+.wn-switch {
+  display: inline-flex;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.wn-switch button {
+  padding: 2px 10px;
+  border: 0;
+  background: #ffffff;
+  color: #495057;
+  font-size: 12px;
+}
+.wn-switch button + button {
+  border-left: 1px solid #ced4da;
+}
+.wn-switch button[aria-selected="true"] {
+  background: #e7f1ff;
+  color: #0b5ed7;
+  font-weight: 600;
+}
+.wn-details {
+  padding: 10px 12px;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  background: #ffffff;
+  font-size: 12px;
+}
+.wn-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+}
+.wn-centre {
+  font-weight: 700;
+  font-size: 13px;
+}
+.wn-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.wn-badge {
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: #f1f3f5;
+  color: #495057;
+  font-size: 11px;
+}
+.wn-cache { background: #e7f5ff; color: #1864ab; }
+.wn-origin { background: #fff4e6; color: #d9480f; }
+.wn-core { background: #ebfbee; color: #2b8a3e; }
+.wn-recommended { background: #f3f0ff; color: #6741d9; }
+.wn-nocache { background: #fff5f5; color: #c92a2a; }
+.wn-title {
+  margin-top: 6px;
+  font-weight: 600;
+}
+.wn-file {
+  margin: 4px 0 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  word-break: break-all;
+  color: #343a40;
+}
+.wn-desc {
+  margin: 0 0 8px;
+  color: #495057;
+}
+.wn-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.wn-table th {
+  width: 1%;
+  padding: 3px 10px 3px 0;
+  color: #868e96;
+  font-weight: 500;
+  white-space: nowrap;
+  vertical-align: top;
+}
+.wn-table td {
+  padding: 3px 0;
+  word-break: break-word;
+}
+.wn-table tr + tr th,
+.wn-table tr + tr td {
+  border-top: 1px solid #f1f3f5;
+}
+.wn-table small,
+.wn-links small,
+.wn-muted {
+  color: #868e96;
+}
+.wn-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+.wn-sub {
+  margin: 10px 0 4px;
+  color: #495057;
+  font-weight: 600;
+}
+.wn-links {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.wn-links li {
+  margin-bottom: 5px;
+  word-break: break-all;
+}
+.wn-links small {
+  display: block;
+}
+.wn-rel {
+  display: inline-block;
+  min-width: 64px;
+  margin-right: 4px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: #f1f3f5;
+  color: #495057;
+  font-size: 11px;
+  text-align: center;
+}
+.wn-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 10px;
+  padding-top: 6px;
+  border-top: 1px solid #f1f3f5;
+  color: #adb5bd;
+  font-size: 10px;
+}
+
+/* The grab strip on the sidebar's and info panel's inner edge, to drag them wider or
+   narrower (src/lib/ui/resize.js); not on phones, where they fill the screen */
+.panel-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.queue > .panel-resize {
+  right: -5px;
+}
+.infobar > .panel-resize {
+  left: -5px;
+}
+.panel-resize:hover,
+.panel-resizing .panel-resize.active {
+  background: rgba(13, 110, 253, 0.25);
+}
+/* While dragging: no sliding, and no text selected along the way */
+.panel-resizing .queue,
+.panel-resizing .infobar,
+.panel-resizing .maplibregl-ctrl-top-left,
+.panel-resizing .maplibregl-ctrl-top-right,
+.panel-resizing .maplibregl-ctrl-bottom-right {
+  transition: none;
+}
+.panel-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+@media (max-width: 600px) {
+  .panel-resize {
+    display: none;
+  }
+}
+
+/* The forecast products under a click, in the info panel (grib.js showProducts) */
+.grib-panel-dot {
+  border-style: dashed;
+  border-color: #7048e8;
+  background: #f3f0ff;
+}
+.grib-panel .grib-products {
+  width: 100%;
+  margin-top: 8px;
+}
+
+/* A GTS report's byline: the centre that issued it, then the gateway that relayed it */
+.pp-via {
+  color: #868e96;
+  font-size: 11px;
+}
+
+/* Styled by centre, every centre on the map: a list that scrolls once it's long (legend.js) */
+.key-centres {
+  max-height: 40vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* A scrolling box clips at its edges, and the symbols' outlines reach just past them:
+     room inside, taken back outside, so the rows stay where they were */
+  padding: 2px 0 2px 3px;
+  margin: -2px 0 -2px -3px;
 }

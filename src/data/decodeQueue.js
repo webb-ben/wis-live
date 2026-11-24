@@ -21,7 +21,8 @@ import { aircraftAltitude } from './aviation/aircraft.js';
 import { applyMapFilter } from '../map/filter.js';
 import { attachSpectrum } from './stationDecode.js';
 import { showLegendRow } from '../lib/ui/legend.js';
-import { SATELLITE_PAGE, FORECAST_PAGE, GATEWAY_CYCLONE } from '../page.js';
+import { SATELLITE_PAGE, FORECAST_PAGE, GATEWAY_CYCLONE, GATEWAY_GRIB } from '../page.js';
+import { originCentre, ccccOf } from '../messages/gtsOrigin.js';
 
 
 export const SATELLITE_ROWS_MAX = 200;  // Decoded values kept per satellite report (IASI has thousands of channels)
@@ -55,7 +56,10 @@ export const DECODE_LAYERS = {
     // (cyclone.js); first, as GTS-to-WIS2 below would take them too. Elsewhere they come
     // with the rest of the GTS
     cyclone: (topic, feature) => FORECAST_PAGE && topic.startsWith('cache/') && GATEWAY_CYCLONE.test(topic),
-    gts: (topic, feature) => topic.startsWith('cache/') && GTS_TOPIC.test(topic) && !GATEWAY_SATELLITE.test(topic),
+    // Not GRIB (T1 = D, G, H, O, Y): it isn't BUFR, so it would only be downloaded and dropped;
+    // the forecasts page reads it (grib, below)
+    gts: (topic, feature) => topic.startsWith('cache/') && GTS_TOPIC.test(topic) && !GATEWAY_SATELLITE.test(topic)
+        && formatOf(feature, topic) !== 'grib',
     // Text SYNOPs, decoded here rather than by pybufrkit (see parseSynopBulletin)
     'gts-text': (topic, feature) => topic.startsWith('cache/') && SYNOP_TOPIC.test(topic)
         && !(feature.links || []).some((l) => isDataLink(l) && l.length > DECODE_FILE_MAX_BYTES),
@@ -87,9 +91,10 @@ export const DECODE_LAYERS = {
         && decodableFile(topic, feature),
     // GRIB files, outlined by the grid their headers give (see grib.js): the cache's copy, or
     // the origin's where the notification says the caches won't copy it ("cache": false:
-    // ECMWF's open data, up to 16 GB a file, read from data.ecmwf.int by range)
+    // ECMWF's open data, up to 16 GB a file, read from data.ecmwf.int by range). On the
+    // forecasts page, the GTS's GRIB bulletins too (GATEWAY_GRIB: JMA's HVMY03 RJTD and so on)
     grib: (topic, feature) => (topic.startsWith('cache/') || (topic.startsWith('origin/') && (feature.properties || {}).cache === false))
-        && !GATEWAY_TOPIC.test(topic) && formatOf(feature, topic) === 'grib',
+        && (!GATEWAY_TOPIC.test(topic) || (FORECAST_PAGE && GATEWAY_GRIB.test(topic))) && formatOf(feature, topic) === 'grib',
 };
 
 export function decodableFile(topic, feature) {
@@ -402,6 +407,8 @@ export function plotDecodedReport(job, rows, profile, index, fileIndex, swath) {
         topic: job.topic,
         channel: channel,
         centre: t.split('/', 1)[0],
+        // A GTS bulletin's real centre, from its heading (gtsOrigin.js); the gateway is centre
+        issuer: GATEWAY_TOPIC.test(job.topic) ? originCentre(ccccOf(job.feature)) : null,
         path: t.slice(t.indexOf('/') + 1),
         discipline: disciplineOf(t),
         webcam: false,

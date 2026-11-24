@@ -6,11 +6,29 @@ import { isDataLink, FORMATS, noteSniffedFormat, formatOf } from '../messages/me
 import { canDownload, noteTrying, noteLatency, noteFailed, downloadOrder, viaProxy, viaWorker, backgroundAllowed } from './caches.js';
 
 export const DATA_LINKS_MAX = 20000;
-const dataLinks = new Map();  // data_id -> hrefs seen from every cache
+const dataLinks = new Map();  // data_id (or a GTS bulletin, copyKey) -> hrefs seen from every cache
+
+// A GTS bulletin's identity, TTAAii CCCC YYGGgg and any correction (RRx, CCx, AAx, PAx), from
+// a gateway's data_id: DWD and JMA both relay the GTS, each under a data_id of its own
+// (…/HVMY03RJTD241800/20261124213322_191, …/A_HVMY03RJTD241800_C_EDZW_…), but it's one
+// bulletin, downloaded once. Null for anything that isn't a gateway's
+const BULLETIN = /([A-Z]{4}\d{2}[A-Z]{4}\d{6})(?:_?((?:RR|CC|AA|PA)[A-Z]))?(?=[_/.]|$)/;
+export function gtsBulletin(dataId) {
+    if (!/-(gts-to-wis2|wis2-to-gts)\//.test(dataId || '')) return null;
+    var m = BULLETIN.exec(dataId);
+    return m ? m[1] + (m[2] || '') : null;
+}
+
+// What a file's links are kept under: its data_id, or for a GTS bulletin the bulletin, so
+// every gateway's copies are tried together (the S3 cache's before DWD's through the Worker)
+function copyKey(dataId) {
+    var bulletin = gtsBulletin(dataId);
+    return bulletin ? `gts:${bulletin}` : dataId;
+}
 
 // The links seen for a file in every notification for it, so far
 export function linksSeen(dataId) {
-    return [...(dataLinks.get(dataId) || [])];
+    return [...(dataLinks.get(copyKey(dataId)) || [])];
 }
 
 // Each cache republishes the file; take the copy from the fastest cache a browser
@@ -19,7 +37,7 @@ export function linksSeen(dataId) {
 // to allow browsers, are left out, so a background download doesn't waste its one try
 // noWorker: never a copy only the Worker can fetch (an origin copy, which the cache's soon replaces)
 export function decodeHref(feature, noWorker = false) {
-    var seen = [...(feature.links || []).filter(isDataLink).map((l) => l.href), ...(dataLinks.get((feature.properties || {}).data_id) || [])];
+    var seen = [...(feature.links || []).filter(isDataLink).map((l) => l.href), ...linksSeen((feature.properties || {}).data_id)];
     return downloadOrder(seen).find((url) => canDownload(url) && !(noWorker && viaWorker(url)));
 }
 
@@ -42,12 +60,13 @@ export async function fetchTracked(url, options) {
 // Keeps a notification's links to its file, so a later download can try every copy
 export function rememberLinks(dataId, links) {
     if (!dataId) return;
-    var hrefs = dataLinks.get(dataId) || new Set();
+    var key = copyKey(dataId);
+    var hrefs = dataLinks.get(key) || new Set();
     for (var link of links) {
         if (isDataLink(link)) hrefs.add(link.href);
     }
-    dataLinks.delete(dataId);  // Re-insert to keep recently used ids
-    dataLinks.set(dataId, hrefs);
+    dataLinks.delete(key);  // Re-insert to keep recently used ids
+    dataLinks.set(key, hrefs);
     if (dataLinks.size > DATA_LINKS_MAX) {
         dataLinks.delete(dataLinks.keys().next().value);
     }
@@ -116,7 +135,7 @@ export async function fetchData(source, signal = null) {
     }
     // Every cache's copy, fastest cache first; hosts that blocked a browser download are
     // skipped (see caches.js, which learns from how each attempt goes)
-    var known = [...source.urls, ...(dataLinks.get(source.dataId) || [])];
+    var known = [...source.urls, ...linksSeen(source.dataId)];
     var urls = downloadOrder(known);
     // Then the caches that haven't announced it (see guessedCopies): the main cache once
     // for each file, the rest on Retry
@@ -173,7 +192,7 @@ export async function fetchData(source, signal = null) {
 // that caps a range, a download cut off) doesn't count, and the next is tried
 // signal: an AbortSignal that cancels it (the forecasts page's Cancel), rejecting with an AbortError
 export async function fetchHead(source, length = 16384, start = 0, whole = false, signal = null) {
-    var known = [...source.urls, ...(dataLinks.get(source.dataId) || [])];
+    var known = [...source.urls, ...linksSeen(source.dataId)];
     var guessed = guessedCopies(source, known).filter((url) => url.startsWith(`https://${MAIN_CACHE_HOST}/`));
     var urls = downloadOrder(known);
     urls = [...urls, ...downloadOrder(guessed).filter((url) => !urls.includes(url))];
