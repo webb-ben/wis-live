@@ -677,6 +677,11 @@
 .forecast-model li button:hover {
   text-decoration: underline;
 }
+/* A product that can't be drawn: listed, but not a link */
+.forecast-model li .forecast-static {
+  color: #868e96;
+  cursor: help;
+}
 .forecast-model li small {
   display: block;
   color: #868e96;

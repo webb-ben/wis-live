@@ -103,6 +103,21 @@ export function addGribLayers(before) {
     map.on('mousemove', 'grib-fill', () => { map.getCanvas().style.cursor = 'pointer'; });
     map.on('mouseleave', 'grib-fill', () => { map.getCanvas().style.cursor = ''; });
     showActivity();  // "Waiting for forecast files" until the first arrives
+    // The drawn field's value under the pointer, in the legend's units
+    var valueLabel = new maplibregl.Popup({ closeButton: false, closeOnClick: false, className: 'hover-label', offset: 12 });
+    var pending = null, frame = 0;
+    map.on('mousemove', (e) => {
+        pending = e.lngLat;
+        if (frame) return;  // Once a frame, at the latest place
+        frame = requestAnimationFrame(() => {
+            frame = 0;
+            var at = pending;
+            var text = valueAt(at.lat, at.lng);
+            if (text) valueLabel.setLngLat(at).setText(text).addTo(map);
+            else valueLabel.remove();
+        });
+    });
+    map.getCanvas().addEventListener('mouseleave', () => valueLabel.remove());
 }
 
 // The map's filters (applyMapFilter's expression)
@@ -215,6 +230,21 @@ async function readFile(job) {
     }
 }
 
+// The drawn field's value at a point, as the legend shows it ("12.4 °C"), or null where it has none
+function valueAt(lat, lon) {
+    if (!fieldShown || !fieldShown.tiles) return null;
+    var lng = ((lon + 180) % 360 + 360) % 360 - 180;
+    for (var tile of fieldShown.tiles) {
+        var k = tile.locate(lat, lng);
+        var v = k >= 0 ? tile.values[k] : NaN;
+        if (v === v) {
+            var s = fieldShown.scale;
+            return `${fmt(s.convert(v))}${s.unit ? ` ${s.unit}` : ''}`;
+        }
+    }
+    return null;
+}
+
 // ---------- What's being read now, at the top of the sidebar's product list: a spinner and
 // each file in progress (its fields read, and how far into it), and how many are waiting
 
@@ -256,13 +286,19 @@ function addField(job, header, href, source, offset) {
     var tile = g.geo ? `${Math.round(g.geo.la1 * 100) / 100},${Math.round(g.geo.lo1 * 100) / 100},${g.ni}x${g.nj}` : areaKey(job.feature.geometry);
     // The members of an ensemble are one product: "Member 12 of 21" is a file of "Ensemble members (21)"
     var ensemble = header.ensemble && header.ensemble.replace(/^Member \d+ of (\d+)$/, 'Ensemble members ($1)');
-    // And so are a variable's pressure levels ("850 hPa"): picked in the legend, like the lead time
-    var pressure = /^([\d.]+) hPa$/.exec(header.level || '');
-    var level = pressure ? 'pressure levels' : header.level;
+    // And so are a variable's pressure levels ("850 hPa") and layers between them ("400 hPa to
+    // 800 hPa", "800 hPa to Surface"): picked in the legend, like the lead time. hPa orders them
+    // (a layer by its lower edge, the surface as 1013 hPa) and picks where a product opens
+    var lvl = header.level || '';
+    var single = /^[\d.]+ hPa$/.test(lvl);
+    var layer = / to /.test(lvl) && /hPa/.test(lvl);
+    var grouped = single || layer;
+    var hPa = grouped ? Math.max(...(lvl.match(/[\d.]+(?= hPa)/g) || []).map(Number), /Surface/i.test(lvl) ? 1013 : -Infinity) : null;
+    var level = single ? 'pressure levels' : layer ? 'pressure layers' : header.level;
     var name = [header.parameter, level, ensemble, header.probability, header.statisticName || header.statistic].filter(Boolean).join(', ');
     addFile(job.topic, g.outline, grid, name, 'grib', {
-        group: `${header.run}|${header.leadHours}|${header.ensemble || ''}|${pressure ? header.level : ''}`, tile, summary: gribSummary(header),
-        level: pressure ? header.level : null, hPa: pressure ? Number(pressure[1]) : null,
+        group: `${header.run}|${header.leadHours}|${header.ensemble || ''}|${grouped ? lvl : ''}`, tile, summary: gribSummary(header),
+        level: grouped ? lvl : null, hPa,
         run: header.run && `${header.run.slice(0, 13).replace('T', ' ')}Z`, leadHours: header.leadHours, href,
         valid: header.valid, ensemble: header.ensemble, length: header.length, offset,
         // Kept to draw its values (gribField.js), where its packing allows
@@ -281,7 +317,8 @@ export function addNotificationArea(topic, feature) {
         group: `${info.run}|${info.hours}`, tile: areaKey(g), summary: info.summary, run: info.run, leadHours: info.hours, href: info.href,
         valid: info.valid, length: info.length,
         // NetCDF (the Met Office's) is drawn by the decoder's netcdf_field, if it isn't too big
-        netcdf: format === 'hdf' && /\.nc$/i.test(info.file), source: forecastSource(feature, topic) });
+        // Whatever its name ends in: a link announced as NetCDF or HDF is read as one
+        netcdf: format === 'hdf', source: forecastSource(feature, topic) });
     return true;
 }
 
@@ -327,8 +364,11 @@ export function fileDetails(feature, topic) {
     var link = (feature.links || []).find((l) => l.rel === 'canonical' || l.rel === 'update') || {};
     var file = decodeURIComponent((link.href || props.data_id || '').split(/[?#]/)[0].split('/').pop());
     var lead = /PT(\d+)H/i.exec(file) || /T\+(\d+)/.exec(props.timestep || '');
+    // The variable: the name without its times (20261124T120000Z, 24T12, 00Z, PT0096H00M), plain
+    // numbers, or words the model's name already says (the Met Office's "global analysis")
     var name = file.replace(/\.[a-z0-9]+$/i, '').split(/[-_.]/)
-        .filter((part) => part && !/^\d{8}T\d{4}Z?$|^PT\d+H\d*M?$|^\d+$/i.test(part)).join(' ').replace(/\s+/g, ' ').trim();
+        .filter((part) => part && !/^\d{8}T\d{4,6}Z?$|^\d{1,2}T\d{2}Z?$|^\d{2}Z$|^PT\d+H\d*M?$|^T\+\d+$|^\d+$/i.test(part)
+            && !/^(global|regional|uk|analysis|forecast|deterministic|ensemble)$/i.test(part)).join(' ').replace(/\s+/g, ' ').trim();
     var run = props.datetime && !isNaN(Date.parse(props.datetime)) ? new Date(props.datetime).toISOString().slice(0, 13).replace('T', ' ') + 'Z' : null;
     var hours = lead ? Number(lead[1]) : null;
     var variable = name ? name[0].toUpperCase() + name.slice(1) : file;
@@ -466,11 +506,11 @@ function forecastCount(p) {
     return new Set([...p.files.values()].map((f) => f.group.split('|').slice(0, 3).join('|'))).size;
 }
 
-// The level a product opens on: 500 hPa where it has it, else the nearest to it
+// The level a product opens on (its name): 500 hPa where it has it, else the nearest to it
 function defaultLevel(groups) {
-    var levels = groups.map(([, g]) => g.hPa).filter((h) => h != null);
+    var levels = groups.map(([, g]) => g).filter((g) => g.level != null);
     if (!levels.length) return null;
-    return levels.reduce((best, h) => (Math.abs(h - 500) < Math.abs(best - 500) ? h : best));
+    return levels.reduce((best, g) => (Math.abs(g.hPa - 500) < Math.abs(best.hPa - 500) ? g : best)).level;
 }
 
 // The lead times a product's files cover, its tiles, and its latest run
@@ -495,7 +535,12 @@ function validSpan(files) {
 // legend) or a code number for a variable with no name ("Sub-surface (parameter 7)"). The
 // full name stays its key, so two such variables are still two products
 function label(p) {
-    return p.name.replace(/, Ensemble members \(\d+\)/, '').replace(/ \((local )?parameter \d+\)/, '');
+    var short = (name) => name.replace(/, Ensemble members \(\d+\)/, '').replace(/ \((local )?parameter \d+\)/, '');
+    var name = short(p.name);
+    // Two of a model that would read the same (two moisture variables WMO's table doesn't
+    // name) keep their number, shortly: "Moisture (#47), Surface"
+    var twin = [...products.values()].some((o) => o !== p && o.model === p.model && short(o.name) === name);
+    return twin ? p.name.replace(/, Ensemble members \(\d+\)/, '').replace(/ \((local )?parameter (\d+)\)/, ' (#$2)') : name;
 }
 
 // A model on two lines: its centre in bold (with the model's colour), the kind of forecast
@@ -591,8 +636,8 @@ function renderProductList() {
                 var current = shown && shown[1];
                 // Another pressure level: at the same run and lead time where it has one, else the nearest now
                 if (e.target.matches('.forecast-level')) {
-                    var hPa = Number(e.target.value);
-                    var atLevel = drawableFiles(p).filter(([, f]) => f.hPa === hPa);
+                    var levelName = e.target.value;
+                    var atLevel = drawableFiles(p).filter(([, f]) => f.level === levelName);
                     var sameTime = current && (atLevel.find(([, f]) => f.run === current.run && f.leadHours === current.leadHours && f.member === current.member)
                         || atLevel.find(([, f]) => f.run === current.run && f.leadHours === current.leadHours));
                     var now = Date.now(), away = (f) => Math.abs((Date.parse(f.valid) || now) - now);
@@ -602,7 +647,7 @@ function renderProductList() {
                 // Another variable of the model: at the same run, lead time and level where it has them
                 var other = e.target.matches('.forecast-variable') && products.get(e.target.value);
                 if (!other) return;
-                var sameAt = (f) => f.run === current.run && f.leadHours === current.leadHours && (f.hPa ?? null) === (current.hPa ?? null);
+                var sameAt = (f) => f.run === current.run && f.leadHours === current.leadHours && (f.level ?? null) === (current.level ?? null);
                 var same = current && (drawableFiles(other).find(([, f]) => sameAt(f) && f.member === current.member)
                     || drawableFiles(other).find(([, f]) => sameAt(f)));
                 showGribArea(outlinesOf(other), false);
@@ -630,9 +675,12 @@ function renderProductList() {
     var html = [...byCentre].map(([centre, models]) => `<div class="forecast-centre"><strong>${esc(centre)}</strong>${models.map(([model, kind, list]) =>
         `<details class="forecast-model" data-model="${esc(model)}" open><summary><span class="grib-swatch" style="--color: ${modelColour(model)}"></span>`
         + `${esc(kind)}<small class="grib-model-count">${list.length}</small></summary><ul>${list.map((p) =>
-            `<li><button type="button" data-product="${esc(p.key)}"${fieldShown && fieldShown.product === p.key ? ' class="active"' : ''}`
-            + ` title="${esc(p.grid)}${drawable(p) ? ': click to draw its values' : ''}">${esc(label(p))}${drawable(p) ? ' <span class="forecast-drawable">▦</span>' : ''}`
-            + `<small>${esc(coverage(p))}</small></button></li>`).join('')}</ul></details>`).join('')}</div>`).join('');
+            // One that can't be drawn is plain text, greyed, with why on hover
+            (drawable(p)
+                ? `<li><button type="button" data-product="${esc(p.key)}"${fieldShown && fieldShown.product === p.key ? ' class="active"' : ''}`
+                    + ` title="${esc(p.grid)}: click to draw its values">${esc(label(p))} <span class="forecast-drawable">▦</span>`
+                    + `<small>${esc(coverage(p))}</small></button></li>`
+                : `<li><span class="forecast-static" title="${esc(whyNot(p))}">${esc(label(p))}<small>${esc(coverage(p))}</small></span></li>`)).join('')}</ul></details>`).join('')}</div>`).join('');
     // Rebuilt only when it changed, keeping which kinds of forecast were folded
     if (html === box.dataset.html) return;
     var folded = new Set([...box.querySelectorAll('details.forecast-model:not([open])')].map((d) => d.dataset.model));
@@ -703,7 +751,7 @@ async function drawProduct(p, fileKey) {
     var away = (f) => Math.abs((Date.parse(f.valid) || now) - now);
     // Unless one is picked, the lead time nearest now, at the product's opening level (500 hPa)
     var level = defaultLevel(files);
-    var atLevel = level == null ? files : files.filter(([, g]) => g.hPa === level);
+    var atLevel = level == null ? files : files.filter(([, g]) => g.level === level);
     var [key, forecast] = files.find(([k]) => k === fileKey) || atLevel.reduce((best, f) => (away(f[1]) < away(best[1]) ? f : best));
     var mine = ++fieldRequest;
     fieldProduct = p.key;
@@ -723,7 +771,9 @@ async function drawProduct(p, fileKey) {
         if (mine !== fieldRequest) return URL.revokeObjectURL(image.url);
         showFieldImage(image);
         if (fieldShown && fieldShown.url) URL.revokeObjectURL(fieldShown.url);
-        fieldShown = { product: p.key, file: key, url: image.url, scale: image.scale, parts, id: ++fieldIds };  // parts: for the world overview
+        fieldShown = { product: p.key, file: key, url: image.url, scale: image.scale, parts, id: ++fieldIds,  // parts: for the world overview
+            // Each tile's grid, to look up the value under the pointer (showValue)
+            tiles: parts.map((part) => ({ locate: gridLocator(part.header.grid.geo), values: part.field.values })) };
         renderFieldPanel(p, files, key, null);
         redraw();  // Only this product's outline now, and the list marks it
     } catch (err) {
@@ -851,12 +901,15 @@ function renderFieldPanel(p, files, key, status, failed) {
     panelFile = key;
     // Pressure levels, nearest the ground first; the lead times are those of the level picked
     var picked = (files.find(([k]) => k === key) || [])[1] || {};
-    var levelList = [...new Set(files.map(([, f]) => f.hPa).filter((h) => h != null))].sort((a, b) => b - a);
-    var levels = levelList.length ? `<select class="form-select form-select-sm forecast-level" aria-label="Level">${levelList.map((h) =>
-        `<option value="${h}"${h === picked.hPa ? ' selected' : ''}>${esc(fmt(h))} hPa</option>`).join('')}</select>` : '';
+    // Each level or layer once, by name ("850 hPa", "800 hPa to Surface"), nearest the ground first
+    var byLevel = new Map();
+    files.forEach(([, f]) => { if (f.level != null) byLevel.set(f.level, f.hPa); });
+    var levelList = [...byLevel].sort(([, a], [, b]) => b - a).map(([name]) => name);
+    var levels = levelList.length ? `<select class="form-select form-select-sm forecast-level" aria-label="Level">${levelList.map((name) =>
+        `<option value="${esc(name)}"${name === picked.level ? ' selected' : ''}>${esc(name)}</option>`).join('')}</select>` : '';
     // Times, each once and in order: picking one keeps the member drawn where that time has it,
     // else its lowest-numbered member (each option is that forecast's key)
-    var atLevel = files.filter(([, f]) => f.hPa === (picked.hPa ?? null));
+    var atLevel = files.filter(([, f]) => (f.level ?? null) === (picked.level ?? null));
     var byTime = new Map();
     for (var [k, f] of atLevel) {
         var t = f.valid || '';
