@@ -1,8 +1,9 @@
 // Download hosts in WIS2 notifications that send no CORS headers, so a browser can't
 // read their files: global caches and centres' own servers (checked 2026-11-23, from
 // 90 seconds of notifications on both channels). The local dev and preview servers
-// pass them through at /wis-live/proxy/<host>/… (vite.config.js), and the app uses that
-// address on localhost (viaProxy, caches.js). GitHub Pages can't; see proxy/ for that
+// pass them through at /wis-live/proxy/<host>/… (vite.config.js), and the deployed site
+// through the Cloudflare Worker (proxy/cors-worker.js, which takes this list as its
+// allow-list), once CORS_PROXY is set; the app picks which in viaProxy (caches.js)
 export const LOCAL_PROXY_HOSTS = [
     // Global caches
     'wis2.dwd.de',

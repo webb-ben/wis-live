@@ -17,30 +17,23 @@ const cacheHosts = new Map();  // host -> { host, id, name, ms, ok, blocked, hre
 // NCM send no CORS headers. Measured caches go by what they've done instead
 const CORS_HOSTS = ['www.wis-jma.go.jp'];
 
-// The CORS proxy (proxy/cors-worker.js, a Cloudflare Worker): it fetches a file from a
-// global cache and returns it with the header browsers need. Deployed at
-// https://wis-live-cors.webb-ben.workers.dev but not used for now: '' downloads only
-// directly, skipping the caches that block browsers as before. Set it to that address
-// to route them through the proxy
-export const CORS_PROXY = '';
-// The caches it will fetch from (the same list as the Worker's ALLOWED_HOSTS). Those
-// that send no CORS headers (checked 2026-11-18) always go through it; the others only
-// once they've refused the browser
-export const PROXY_HOSTS = ['wis2.dwd.de', 'gisc.dwd.de', 'wis2data.kma.go.kr', 'gc.wis.cma.cn', 'wis2.ncm.gov.sa',
-    'wis2node.globaldata.nws.noaa.gov'];
-const NO_CORS_HOSTS = ['wis2.dwd.de', 'wis2data.kma.go.kr', 'gc.wis.cma.cn', 'wis2.ncm.gov.sa'];
+// The CORS proxy for the deployed site (proxy/cors-worker.js, a Cloudflare Worker): it
+// fetches a file from a server that sends no CORS headers and returns it with the headers
+// browsers need, ranges included. '' would skip those servers' copies instead. The address
+// `npx wrangler deploy` printed (redeploy after changing the Worker or its host list)
+export const CORS_PROXY = 'https://wis-live-cors.webb-ben.workers.dev/';
 
-function proxied(host) {
-    return !!CORS_PROXY && PROXY_HOSTS.includes(host) && (NO_CORS_HOSTS.includes(host) || blockedHosts.has(host));
-}
-
-// Servers without CORS headers that the local dev and preview servers pass through
-// (localProxyHosts.js). Only on localhost: the site itself can't
-// On the local dev or preview server (which proxies hosts that send no CORS headers)
+// On the local dev or preview server, which proxies those servers itself (vite.config.js)
 export const LOCAL = typeof location !== 'undefined' && ['localhost', '127.0.0.1'].includes(location.hostname);
 
-// The address to download url from: through the proxy for a cache that needs it, or
-// through the local server for one it passes through
+// Whether a host's files go through the Worker: one of the servers without CORS headers
+// (localProxyHosts.js, the Worker's list too), on the deployed site, once CORS_PROXY is set
+function proxied(host) {
+    return !!CORS_PROXY && !LOCAL && LOCAL_PROXY_HOSTS.includes(host);
+}
+
+// The address to download url from: through the local server's proxy on localhost, through
+// the Worker on the site, or as it is
 export function viaProxy(url) {
     var host = hostOf(url);
     if (LOCAL && LOCAL_PROXY_HOSTS.includes(host)) {
