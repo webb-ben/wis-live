@@ -6,6 +6,7 @@ import { decodeKey } from '../lib/ui/queue.js';
 import { decodeHref, DATA_LINKS_MAX, fetchTracked, bufrPart, sniffFormat } from './download.js';
 import { plotCitypage } from './alerts/citypage.js';
 import { queueSwob, clearSwob, parseSwob } from './swob/swob.js';
+import { LOCAL } from './caches.js';
 import { queueGrib, clearGrib } from './grib/grib.js';
 import { plotLightningText, seenFlash, flashTime } from './lightning/lightning.js';
 import { callDecoder } from './decoder.js';
@@ -69,8 +70,10 @@ export const DECODE_LAYERS = {
     'cache-satellite': (topic, feature) => topic.startsWith('cache/') && !GATEWAY_TOPIC.test(topic) && isSpaceBased(topic)
         && (SATELLITE_PAGE || !(feature.geometry && feature.geometry.type && pointFor(feature.geometry))) && !NOT_BUFR.includes(formatOf(feature, topic))
         && !(feature.links || []).some((l) => isDataLink(l) && l.length > SATELLITE_FILE_MAX_BYTES),
-    // ECCC SWOB-ML station reports, which are only on the origin channel (see swob.js)
-    swob: (topic, feature) => topic.startsWith('origin/') && /surface-based-observations/.test(topic)
+    // ECCC SWOB-ML station reports, which are only on the origin channel (see swob.js). Only
+    // on the local dev and preview servers for now: ECCC's servers send no CORS headers, and
+    // through a deployed proxy (proxy/) they'd be most of its requests
+    swob: (topic, feature) => LOCAL && topic.startsWith('origin/') && /surface-based-observations/.test(topic)
         && (feature.links || []).some((l) => isDataLink(l) && /-swob\.xml$/i.test((l.href || '').split(/[?#]/)[0])),
     // Origin copies of files without a location, decoded like the cache's ('files') and
     // drawn as origin points until the cache's copy, decoded, replaces each report (they

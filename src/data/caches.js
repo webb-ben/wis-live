@@ -36,7 +36,8 @@ function proxied(host) {
 
 // Servers without CORS headers that the local dev and preview servers pass through
 // (localProxyHosts.js). Only on localhost: the site itself can't
-const LOCAL = typeof location !== 'undefined' && ['localhost', '127.0.0.1'].includes(location.hostname);
+// On the local dev or preview server (which proxies hosts that send no CORS headers)
+export const LOCAL = typeof location !== 'undefined' && ['localhost', '127.0.0.1'].includes(location.hostname);
 
 // The address to download url from: through the proxy for a cache that needs it, or
 // through the local server for one it passes through

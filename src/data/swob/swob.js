@@ -4,9 +4,18 @@
 // download through a proxy, see localProxyHosts.js). Each file is turned into the rows
 // a BUFR report decodes to ([descriptor, name, value], in BUFR's units), so it's drawn,
 // coloured and shown like any decoded station. Stations report every minute, hundreds
-// a minute in all: each is downloaded at most once every SWOB_STATION_GAP_MS, newest first
+// a minute in all: only the reports on the hour are read (…-1700-…), each station at most
+// once every SWOB_STATION_GAP_MS, newest first. About 1,000 stations an hour, which keeps
+// a proxy's requests (the live site's, see proxy/) within reach of a free plan
 
-export const SWOB_STATION_GAP_MS = 10 * 60e3;
+export const SWOB_STATION_GAP_MS = 50 * 60e3;  // Under an hour, so a late on-the-hour report still goes
+
+// The report's time from its name (2026-11-23-1700-CWUK-AUTO-minute-swob.xml): on the hour?
+export function onTheHour(href) {
+    var file = (href || '').split(/[?#]/)[0].split('/').pop();
+    var m = /^\d{4}-\d{2}-\d{2}-\d{2}(\d{2})-/.exec(file);
+    return !!m && m[1] === '00';
+}
 
 const FETCHES = 4;  // Downloads at once
 
@@ -26,7 +35,9 @@ export function swobStation(href) {
 // A file announced: it replaces any of the same station waiting, unless that station
 // was downloaded too recently. fetchFile(job) downloads and plots it, returning a promise
 export function queueSwob(job, fetchFile) {
-    var station = swobStation(job.href);
+    var link = (job.feature.links || []).find((l) => l.rel === 'canonical' || l.rel === 'update') || {};
+    if (!onTheHour(link.href || job.href)) return false;  // Only the report on the hour
+    var station = swobStation(link.href || job.href);
     if (Date.now() - (taken.get(station) || 0) < SWOB_STATION_GAP_MS) return false;
     waiting.delete(station);
     waiting.set(station, job);
