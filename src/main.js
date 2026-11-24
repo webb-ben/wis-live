@@ -30,6 +30,7 @@ import { SYNOP_TOPIC, plotSynopBulletin, rememberStation } from './data/gts/syno
 import { seenFlash, flashTime, plotLightningText } from './data/lightning/lightning.js';
 import { plotCitypage } from './data/alerts/citypage.js';
 import { initGrib, addGribLayers, GRIB_LAYERS } from './data/grib/grib.js';
+import { initCyclones, addCycloneLayers } from './data/cyclone.js';
 import { initRadar, RADAR_COLORS, RADAR_FILE_MAX_BYTES, radars, plotRadar, radarHeading, radarNoReflectivity, radarThrottled } from './data/radar/radar.js';
 import { DIAMOND_HALF, arrowSdf, squareSdf, diamondSdf } from './map/symbols.js';
 import { map, centreOnVisitor } from './map/map.js';
@@ -113,6 +114,8 @@ initGrib({
     changed: () => updateMapKey(),
     pointAt: (point) => nearestPoint(point),
 });
+
+initCyclones({ map, pointAt: (point) => nearestPoint(point) });
 
 // Layers that draw observation points: WIS2 circles and GTS diamonds
 const POINT_LAYERS = ['points', 'points-gts', 'points-ext', 'points-arrow', 'points-spectrum'];
@@ -311,6 +314,8 @@ map.on('load', () => {
     }, 'points');
     // Forecast products' outlines and drawn fields, under the tracks and points (src/data/grib/grib.js)
     addGribLayers('tracks');
+    // Tropical cyclone track forecasts, decoded from BUFR (src/data/cyclone.js)
+    addCycloneLayers('tracks');
     paintAge();
     setInterval(paintAge, 30 * 1000);
     // Styled by wind, streaks flow the way it blows (src/map/windFlow.js)

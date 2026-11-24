@@ -7,6 +7,7 @@
 import { cellRing } from '../geo.js';
 
 const OVERVIEW_REFRESH_MS = 2000;
+const COVERING = '.queue, .infobar';  // Panels over the map's edges: the sidebar and the info panel
 
 // map: the MapLibre map. drawContent(ctx, projection, d3, width): draws the points
 // and coverage. hoveredCell(): the coverage cell ('…|<h3>') under the pointer, if any.
@@ -52,6 +53,10 @@ export function createOverview({ map, drawContent, hoveredCell }) {
             clearInterval(timer);
             draw();
             timer = setInterval(draw, OVERVIEW_REFRESH_MS);
+        });
+        // So does the sidebar or info panel sliding over the map or away (see viewEdge)
+        document.addEventListener('transitionend', (e) => {
+            if (e.target.matches && e.target.matches(COVERING)) draw();
         });
     }));
 
@@ -106,16 +111,52 @@ export function createOverview({ map, drawContent, hoveredCell }) {
         ctx.globalAlpha = 1;
 
         // The map's own view, as a frame, so it's clear where a click goes back from
+        // Traced along the map's edges (points unprojected from the screen), as a line rather
+        // than a polygon of its bounds: D3 takes a polygon's inside from its winding and joins
+        // corners by great circles, so on the globe the bounds' box could frame the rest of the
+        // world instead. Not when the view takes in most of the world
         ctx.beginPath();
         var b = map.getBounds();
         if (b.getEast() - b.getWest() < 300) {
-            path({ type: 'Polygon', coordinates: [[[b.getWest(), b.getSouth()], [b.getWest(), b.getNorth()], [b.getEast(), b.getNorth()],
-                [b.getEast(), b.getSouth()], [b.getWest(), b.getSouth()]]] });
+            path({ type: 'LineString', coordinates: viewEdge() });
             ctx.strokeStyle = '#212529';
             ctx.lineWidth = 1.5;
             ctx.stroke();
         }
         drawMarks();
+    }
+
+    // The edge of the map's view, round the part of its canvas that can be seen clockwise
+    // from the top left, as [lon, lat] every few pixels, each longitude kept within 180° of
+    // the one before. The canvas runs under the sidebar (left) and the info panel (right):
+    // on a globe what's under them can reach far round it (Russia's coast, behind a sidebar
+    // over Canada), so the frame stops at their edges
+    function viewEdge() {
+        var c = map.getCanvas();
+        var w = c.clientWidth, h = c.clientHeight, n = 24;
+        var box = c.getBoundingClientRect();
+        var x0 = 0, x1 = w;
+        document.querySelectorAll(COVERING).forEach((el) => {
+            var r = el.getBoundingClientRect();
+            // Off the screen (closed: slid out) or not over the map
+            if (!r.width || r.right <= box.left || r.left >= box.right || r.left >= window.innerWidth || r.right <= 0) return;
+            if (r.left <= box.left + 1) x0 = Math.max(x0, r.right - box.left);
+            else if (r.right >= box.right - 1) x1 = Math.min(x1, r.left - box.left);
+        });
+        if (x1 - x0 < 40) { x0 = 0; x1 = w; }  // A phone, the panel over nearly all of it: the whole map
+        var screen = [];
+        for (var i = 0; i < n; i++) screen.push([x0 + (x1 - x0) * i / n, 0]);
+        for (var i = 0; i < n; i++) screen.push([x1, h * i / n]);
+        for (var i = 0; i < n; i++) screen.push([x1 - (x1 - x0) * i / n, h]);
+        for (var i = 0; i <= n; i++) screen.push([x0, h * (1 - i / n)]);
+        var prev = null;
+        return screen.map((xy) => {
+            var p = map.unproject(xy);
+            var lon = p.lng;
+            if (prev != null) lon += Math.round((prev - lon) / 360) * 360;
+            prev = lon;
+            return [lon, Math.max(-90, Math.min(90, p.lat))];
+        });
     }
 
     // Marks what the info panel shows (selected) and what the map's pointer is over

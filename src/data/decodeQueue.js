@@ -8,6 +8,7 @@ import { plotCitypage } from './alerts/citypage.js';
 import { queueSwob, clearSwob, parseSwob } from './swob/swob.js';
 import { LOCAL } from './caches.js';
 import { queueGrib, clearGrib } from './grib/grib.js';
+import { isCycloneTrack, addCycloneFile } from './cyclone.js';
 import { plotLightningText, seenFlash, flashTime } from './lightning/lightning.js';
 import { callDecoder } from './decoder.js';
 import { SWATH_MIN_REPORTS, addSwathFile } from './satellite/coverage.js';
@@ -20,7 +21,7 @@ import { aircraftAltitude } from './aviation/aircraft.js';
 import { applyMapFilter } from '../map/filter.js';
 import { attachSpectrum } from './stationDecode.js';
 import { showLegendRow } from '../lib/ui/legend.js';
-import { SATELLITE_PAGE } from '../page.js';
+import { SATELLITE_PAGE, FORECAST_PAGE, GATEWAY_CYCLONE } from '../page.js';
 
 
 export const SATELLITE_ROWS_MAX = 200;  // Decoded values kept per satellite report (IASI has thousands of channels)
@@ -50,6 +51,10 @@ export const NOT_BUFR = ['grib', 'xml', 'csv', 'json', 'image', 'hdf', 'text'];
 export const SATELLITE_FILE_MAX_BYTES = 16 * 1024 * 1024;  // Big passes (IASI runs to 15 MB) are sampled, see _messages
 
 export const DECODE_LAYERS = {
+    // On the forecasts page, the GTS's tropical cyclone track forecasts, drawn as tracks
+    // (cyclone.js); first, as GTS-to-WIS2 below would take them too. Elsewhere they come
+    // with the rest of the GTS
+    cyclone: (topic, feature) => FORECAST_PAGE && topic.startsWith('cache/') && GATEWAY_CYCLONE.test(topic),
     gts: (topic, feature) => topic.startsWith('cache/') && GTS_TOPIC.test(topic) && !GATEWAY_SATELLITE.test(topic),
     // Text SYNOPs, decoded here rather than by pybufrkit (see parseSynopBulletin)
     'gts-text': (topic, feature) => topic.startsWith('cache/') && SYNOP_TOPIC.test(topic)
@@ -98,7 +103,7 @@ export const DECODE_FETCH_TIMEOUT_MS = 20000;
 
 export const decodeEnabled = new Set();
 
-export const decodePlotted = { gts: 0, 'gts-satellite': 0, 'gts-text': 0, wis2gts: 0, files: 0, 'cache-satellite': 0, radar: 0, swob: 0, grib: 0, 'origin-files': 0 };
+export const decodePlotted = { cyclone: 0, gts: 0, 'gts-satellite': 0, 'gts-text': 0, wis2gts: 0, files: 0, 'cache-satellite': 0, radar: 0, swob: 0, grib: 0, 'origin-files': 0 };
 
 // Two queues, so satellite files (large, and many at once after each pass) don't hold
 // up stations, ships and aircraft, nor the other way round. Each has its own downloads
@@ -336,6 +341,13 @@ export async function decodeNext() {
             plotRadar(job, JSON.parse(await callDecoder('radar_scan', bytes)));
         } else {
             var subsets = JSON.parse(await callDecoder('decode_subsets', bytes, DECODE_FILE_MAX_REPORTS));
+            // Tropical cyclone track forecasts are drawn as tracks, not as points (cyclone.js)
+            if (subsets.length && isCycloneTrack(subsets[0][0])) {
+                decodePlotted[job.kind] += addCycloneFile(job, subsets.map(([rows]) => rows), job.kind) ? 1 : 0;
+                subsets = [];
+            }
+            // The forecasts page takes these bulletins only for their cyclone tracks
+            if (job.kind === 'cyclone') subsets = [];
             // Satellite files big enough for coverage are kept as one swath, not as points
             var swath = subsets.length >= SWATH_MIN_REPORTS ? [] : null;
             subsets.forEach(([rows, profile, index], i) => plotDecodedReport(job, rows, profile, i, index, swath));

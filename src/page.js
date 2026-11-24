@@ -67,6 +67,10 @@ export function metricOnPage(metric) {
 // The GTS gateway centres, as WMO lists them (WIS 2.0 Global Services, community.wmo.int):
 // DWD and JMA republish the GTS into WIS2, CMA and the Met Office pass a subset of
 // WIS2 on to the GTS. The GTS page hears no other centre, so add new ones here
+// GTS bulletins of forecasts in BUFR for the surface (T1T2 = JS, JSXX): tropical cyclone
+// track forecasts (ECMWF's JSXX..ECEP ensemble), which the forecasts page draws (cyclone.js)
+export const GATEWAY_CYCLONE = /-gts-to-wis2\/data\/core\/J\/S\/X\/X\//;
+
 export const GATEWAY_CENTRES = ['de-dwd-gts-to-wis2', 'jp-jma-gts-to-wis2', 'cn-cma-wis2-to-gts', 'uk-metoffice-wis2-to-gts'];
 
 // The Global Broker topics the page subscribes to (MQTT filters: + one level, # the
@@ -86,7 +90,9 @@ export const PAGE_TOPICS = SATELLITE_PAGE
     : GTS_PAGE
         ? ['origin', 'cache'].flatMap((channel) => GATEWAY_CENTRES.map((centre) => `${channel}/a/wis2/${centre}/#`))
         : FORECAST_PAGE
-            ? ['origin', 'cache'].map((channel) => `${channel}/a/wis2/+/data/+/+/prediction/#`)
+            ? [...['origin', 'cache'].map((channel) => `${channel}/a/wis2/+/data/+/+/prediction/#`),
+                // And the GTS's tropical cyclone track forecasts (GATEWAY_CYCLONE)
+                'cache/a/wis2/+/data/core/J/S/X/X/#']
             : ['origin/a/wis2/#', 'cache/a/wis2/#'];
 
 // The links to the other pages, as HTML

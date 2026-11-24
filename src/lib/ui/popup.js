@@ -30,6 +30,7 @@ import { renderWaveSpectrum, waveSpectrum, marineCompass } from '../../data/ocea
 import { showSpectrum } from '../../data/satellite/spectrum.js';
 import { distanceKm } from '../geo.js';
 import { track, centreOf } from '../analytics.js';
+import { isCycloneTrack, cycloneMemberHtml } from '../../data/cyclone.js';
 import { overview, stylePanel } from './legend.js';
 // The info panel on the right: what a point, a coverage cell or a dataset is, its
 // decoded report with tiles, charts and the raw fields, the notification behind it,
@@ -520,6 +521,12 @@ export function bindMetricTiles(out) {
 }
 
 export function renderDecoded(out, title, result) {
+    // A tropical cyclone track forecast: the member's track, not a list of rows (cyclone.js)
+    if (isCycloneTrack(result.rows)) {
+        if (title) title.textContent = 'Cyclone track forecast';
+        out.innerHTML = cycloneMemberHtml(result.rows);
+        return;
+    }
     var values = new Map();
     for (var [id, name, value, unit] of result.rows) {
         if (!values.has(id)) values.set(id, [value, unit]);

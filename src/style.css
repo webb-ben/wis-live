@@ -719,6 +719,41 @@
   display: block;
   color: #868e96;
 }
+/* The storms with cyclone track forecasts, above the products (cyclone.js) */
+.forecast-cyclones ul {
+  margin: 2px 0 0;
+  padding-left: 6px;
+  list-style: none;
+}
+.forecast-cyclones li {
+  margin-bottom: 3px;
+}
+.forecast-cyclones button {
+  padding: 0 0 0 14px;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  position: relative;
+}
+.forecast-cyclones button::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 5px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid #a51111;
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+.forecast-cyclones button:hover {
+  text-decoration: underline;
+}
+.forecast-cyclones small {
+  display: block;
+  color: #868e96;
+}
 
 /* The GRIB files on a grid (see grib.js), and a GRIB message's details (popup.js) */
 .grib-list {
@@ -3142,4 +3177,33 @@
   font: inherit;
   text-decoration: underline;
   cursor: pointer;
+}
+
+/* Tropical cyclone track forecasts (src/data/cyclone.js): the map popup and the message's */
+.cyclone-popup {
+  font-size: 12px;
+}
+
+.cyclone-head strong {
+  display: block;
+  font-size: 13px;
+}
+
+.cyclone-head small {
+  display: block;
+  color: #6c757d;
+}
+
+.cyclone-sub {
+  margin: 8px 0 2px;
+  font-weight: 600;
+}
+
+.cyclone-table {
+  max-height: 220px;
+}
+
+.cyclone-note {
+  margin: 6px 0 0;
+  color: #6c757d;
 }
