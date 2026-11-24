@@ -3,7 +3,7 @@
 // caches that didn't announce it are likely to have (guessedCopies); and what came
 // back: BUFR (bufrPart) or text (isText)
 import { isDataLink, FORMATS, noteSniffedFormat, formatOf } from '../messages/messages.js';
-import { canDownload, noteTrying, noteLatency, noteFailed, downloadOrder, viaProxy } from './caches.js';
+import { canDownload, noteTrying, noteLatency, noteFailed, downloadOrder, viaProxy, viaWorker, workerBudgetLeft, noteWorkerBackground } from './caches.js';
 
 export const DATA_LINKS_MAX = 20000;
 const dataLinks = new Map();  // data_id -> hrefs seen from every cache
@@ -175,9 +175,13 @@ export async function fetchHead(source, length = 16384, start = 0, whole = false
     var guessed = guessedCopies(source, known).filter((url) => url.startsWith(`https://${MAIN_CACHE_HOST}/`));
     var urls = downloadOrder(known);
     urls = [...urls, ...downloadOrder(guessed).filter((url) => !urls.includes(url))];
+    // A file read as it's announced (source.background) goes through the Worker only while
+    // the page's allowance for that lasts (caches.js)
+    if (source.background && workerBudgetLeft() <= 0) urls = urls.filter((url) => !viaWorker(url));
     var short = null;  // The most a copy sent, when none sent it all
     for (var url of urls) {
         if (signal && signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+        if (source.background && viaWorker(url)) noteWorkerBackground();
         try {
             // Not through the browser's cache: Chrome pieces later ranges of a URL together from
             // ranges it has kept, and for ECMWF's 16 GB files behind a CDN that failed outright

@@ -32,6 +32,23 @@ function proxied(host) {
     return !!CORS_PROXY && !LOCAL && LOCAL_PROXY_HOSTS.includes(host);
 }
 
+// Whether downloading url costs a Worker request (its free plan allows 100,000 a day, for
+// every visitor together)
+export function viaWorker(url) {
+    return proxied(hostOf(url));
+}
+
+// Requests through the Worker that nobody asked for (forecast files read as they're
+// announced) stop at this many a page load; ones from a click aren't counted against it
+const WORKER_BACKGROUND_MAX = 300;
+let workerBackground = 0;
+export function workerBudgetLeft() {
+    return WORKER_BACKGROUND_MAX - workerBackground;
+}
+export function noteWorkerBackground() {
+    workerBackground++;
+}
+
 // The address to download url from: through the local server's proxy on localhost, through
 // the Worker on the site, or as it is
 export function viaProxy(url) {
@@ -179,8 +196,11 @@ export function downloadOrder(urls) {
     var score = (url) => {
         if (picked && hostOf(url) === picked) return -1;  // Picked under the world map (see services.js)
         var cache = cacheHosts.get(hostOf(url));
-        if (cache && isFinite(cache.ms)) return cache.ms;
-        return corsFriendly(url) || okHosts.has(hostOf(url)) ? 1e9 : 2e9;
+        var ms = cache && isFinite(cache.ms) ? cache.ms
+            : corsFriendly(url) || okHosts.has(hostOf(url)) ? 1e9 : 2e9;
+        // A copy the Worker would have to fetch comes after every copy the browser can get
+        // itself, however fast its host
+        return proxied(hostOf(url)) ? 1.5e9 + Math.min(ms, 1e8) : ms;
     };
     return [...new Set(urls)].filter((url) => !isBlocked(hostOf(url))).sort((a, b) => score(a) - score(b));
 }

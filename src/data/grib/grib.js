@@ -8,6 +8,7 @@
 // A forecast message clicked in the message list outlines its area too (showGribArea)
 import maplibregl from 'maplibre-gl';
 import { fetchHead, fetchData } from '../download.js';
+import { viaWorker } from '../caches.js';
 import { esc } from '../../lib/util.js';
 import { disciplineOf, formatOf, FORMATS, isDataLink } from '../../messages/messages.js';
 import { parseGribHeader, gribSummary, latLonOutline, gridLocator } from './gribHeader.js';
@@ -195,6 +196,9 @@ export function modelOf(topic) {
 // just its bytes. At most this many fields of a file, each header from this many bytes
 const FIELDS_PER_FILE_MAX = 600;
 const FIELD_HEAD_BYTES = 8192;
+// Each field is a request of its own, so a file only the Worker can fetch (DWD's, KMA's,
+// CMA's, a centre's own server) has at most this many of its fields read
+const FIELDS_VIA_WORKER_MAX = 12;
 
 async function readFile(job) {
     var props = job.feature.properties || {};
@@ -210,11 +214,14 @@ async function readFile(job) {
     reading.add(progress);
     showActivity();
     try {
-        var { bytes, url } = await fetchHead(source, 16384, 0, false, signal);
+        // Read unasked, so it counts against the page's Worker allowance (drawing a field later,
+        // from a click, doesn't)
+        var { bytes, url } = await fetchHead({ ...source, background: true }, 16384, 0, false, signal);
         // The later fields come from the copy that answered
         var pinned = { urls: [url], dataId: null, topic: null };
         var offset = 0;
-        for (var n = 0; n < FIELDS_PER_FILE_MAX; n++) {
+        var most = viaWorker(url) ? FIELDS_VIA_WORKER_MAX : FIELDS_PER_FILE_MAX;
+        for (var n = 0; n < most; n++) {
             var header = parseGribHeader(bytes);
             if (!deps.enabled() || signal.aborted) return;
             if (header.grid && header.grid.outline) addField(job, header, url, n ? pinned : source, offset);
@@ -223,7 +230,7 @@ async function readFile(job) {
             if (!header.length || (total && offset + header.length >= total)) break;
             offset += header.length;
             progress.offset = offset;
-            ({ bytes } = await fetchHead(pinned, FIELD_HEAD_BYTES, offset, false, signal));
+            ({ bytes } = await fetchHead({ ...pinned, background: true }, FIELD_HEAD_BYTES, offset, false, signal));
         }
     } catch (err) {
         if (err.name !== 'AbortError' && !offset) console.debug(`Could not read the GRIB header of ${job.href}: ${err.message}`);
