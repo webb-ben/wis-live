@@ -6,6 +6,7 @@ import { setState } from '../state.js';
 import { isDataLink } from '../messages/messages.js';
 import { registerService, servicePick } from '../lib/services.js';
 import { LOCAL_PROXY_HOSTS } from './localProxyHosts.js';
+import { trackOnce } from '../lib/analytics.js';
 
 const CACHES_MAX = 50;  // Hosts kept (there are a handful of global caches)
 const PROBE_MS = 8000;
@@ -49,6 +50,8 @@ export function workerBudgetLeft() {
     var now = Date.now();
     workerLeft = Math.min(WORKER_PER_HOUR, workerLeft + (now - workerFilled) / 3600e3 * WORKER_PER_HOUR);
     workerFilled = now;
+    // Run out: how often that happens says whether the allowance is right (once an hour at most)
+    if (workerLeft < 1) trackOnce('worker_out', 3600e3, 'worker_allowance_out', {});
     return Math.floor(workerLeft);
 }
 

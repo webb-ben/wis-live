@@ -28,6 +28,7 @@ import { brokerState } from '../../messages/mqtt.js';
 import { SHED_LAYERS } from '../../messages/network.js';
 import { SATELLITE_PAGE, METOCEAN_PAGE, FORECAST_PAGE, metricOnPage, otherPageLinks } from '../../page.js';
 import { flowShown } from '../../map/windFlow.js';
+import { track } from '../analytics.js';
 // The panels on the map: the layers in the sidebar (LegendControl), the key of what
 // is drawn with Style by (StyleControl, top right), and the world map with the
 // connection lines and About (MapKey, bottom right)
@@ -105,6 +106,7 @@ export class LegendControl {
         container.querySelectorAll('.legend-toggle[data-layer]').forEach((row) => {
             var key = row.dataset.layer;
             row.querySelector('input').addEventListener('change', (e) => {
+                track('layer_toggle', { layer: key, on: e.target.checked });
                 e.target.checked ? hiddenLayers.delete(key) : hiddenLayers.add(key);
                 notify('hiddenLayers');
                 syncDecoding();
@@ -170,6 +172,7 @@ export class MapKey {
             var select = e.target.closest('select[data-service]');
             if (!select) return;
             pickService(select.dataset.service, select.value);
+            track('service_pick', { kind: select.dataset.service, value: select.value || 'fastest' });
             select.blur();
             updateMapKey();
         });
@@ -178,6 +181,7 @@ export class MapKey {
             if (!e.target.closest('[data-feed-pause]')) return;
             e.stopPropagation();  // Not the panel's own tap
             setFeedPaused(!feedState().paused);
+            track('feed_pause', { paused: feedState().paused, queued: feedState().queued });
         });
         overview = createOverview({ map, drawContent: drawOverviewContent, hoveredCell: () => hoveredCell });
         // On the satellite page the world map heads the legend's panel, bottom left (added

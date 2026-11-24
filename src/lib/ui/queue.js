@@ -17,6 +17,7 @@ import { DECODE_LAYERS, decodeEnabled, satelliteSkipped } from '../../data/decod
 import { wis2boxByCentre } from '../../messages/wis2box.js';
 import { showDecoded, decodeSource, showDecodeError, openPopup } from './popup.js';
 import { FORECAST_PAGE } from '../../page.js';
+import { track, trackOnce } from '../analytics.js';
 
 // The file types forecast products come in: the forecasts page's only type filters
 const FORECAST_FORMATS = ['grib', 'hdf', 'json'];
@@ -134,6 +135,8 @@ export function applyFilters() {
     notify('filters', 'filterModes');
     applyMapFilter();
     rebuildQueue();
+    // What's filtered, as the URL now says it (writeFiltersToUrl, below), once things settle
+    setTimeout(() => trackOnce('filters', 3000, 'filters_change', { filters: location.search.slice(1) || 'none' }), 1000);
     var active = filtersActive();
     if (queueToggle) {
         queueToggle.classList.toggle('filtered', active);
@@ -801,6 +804,7 @@ export function renderQueueRow(entry) {
     row.addEventListener('dblclick', function(){
         var coords = messageCoords(entry);
         if (coords) map.easeTo({ center: coords, zoom: Math.max(map.getZoom(), 5) });
+        track('message_centre', { located: !!coords });
     });
     return row;
 }

@@ -3047,6 +3047,7 @@
 
 /* The welcome on a first visit (welcome.js), reopened from About */
 .welcome {
+  box-sizing: border-box;  /* Its padding inside the width, so it fits a phone */
   width: min(560px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
   padding: 24px 24px 20px;

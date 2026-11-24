@@ -3,6 +3,7 @@
 // the broker's state.
 import mqtt from 'mqtt';
 import { registerService, servicePick } from '../lib/services.js';
+import { track } from '../lib/analytics.js';
 
 // Public WIS2 Global Brokers reachable from a browser (WSS only)
 const hosts = [
@@ -105,12 +106,14 @@ export function connectFastest({ onMessage, onState, subscribe } = handlers) {
                 client.on('connect', () => setBrokerState('connected'));  // After a reconnect
                 console.log(`Connected to ${host}!`);
                 setBrokerState('connected', new URL(host).host, performance.now() - start);
+                track('broker_connected', { broker: new URL(host).host, ms: Math.round(performance.now() - start) });
                 pingBroker();  // A round trip, like the later ones, rather than the time to connect
             });
         });
 
         candidate.on('error', (err) => {
             console.log(`Connection error (${host}): `, err.message);
+            track('broker_error', { broker: new URL(host).host, message: err.message });
             if (candidate === client) {
                 candidate.end(true);
                 client = null;

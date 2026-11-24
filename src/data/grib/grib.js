@@ -36,6 +36,7 @@ export function productOf(topic, feature) {
     return `${topic.replace(/^(cache|origin)\//, '')}/${series}`.toLowerCase();
 }
 import { FORECAST_PAGE } from '../../page.js';
+import { track } from '../../lib/analytics.js';
 
 export const GRIB_LAYERS = ['grib-fill', 'grib-line'];
 
@@ -787,6 +788,9 @@ async function drawProduct(p, fileKey) {
     var mb = forecast.length ? ` (${(forecast.length / 1e6).toFixed(1)} MB)` : '';
     var tiles = forecast.files.length > 1 ? ` ${forecast.files.length} tiles` : '';
     renderFieldPanel(p, files, key, `Downloading${tiles}${mb}…`, false, true);
+    var about = { centre: p.centre, model: modelOf(p.topic || ''), variable: p.name, format: p.format };
+    var started = performance.now();
+    track('forecast_draw', { ...about, mb: forecast.length ? Math.round(forecast.length / 1e5) / 10 : null });
     if (forecast.files[0].geojson) return drawGeojson(p, files, key, forecast.files[0], mine, abort.signal);
     try {
         // The tiles one after another, so they don't all hold memory at once while downloading
@@ -805,8 +809,10 @@ async function drawProduct(p, fileKey) {
             tiles: parts.map((part) => ({ locate: gridLocator(part.header.grid.geo), values: part.field.values })) };
         renderFieldPanel(p, files, key, null);
         redraw();  // Only this product's outline now, and the list marks it
+        track('forecast_drawn', { ...about, seconds: Math.round((performance.now() - started) / 100) / 10 });
     } catch (err) {
         if (err.name === 'AbortError') return;  // Cancelled (cancelDraw puts the legend back)
+        track('forecast_error', { ...about, message: err.message });
         if (mine === fieldRequest) renderFieldPanel(p, files, key, `Could not draw it: ${err.message}`, true);
     }
 }
@@ -816,6 +822,7 @@ let fieldAbort = null;  // Cancels the download of the field being drawn
 // The legend's Cancel while a field downloads: the download stops, and the legend goes back
 // to the field already drawn (or to its note when none is)
 function cancelDraw() {
+    track('forecast_cancel', {});
     fieldRequest++;
     if (fieldAbort) fieldAbort.abort();
     fieldAbort = null;

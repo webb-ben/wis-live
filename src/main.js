@@ -51,6 +51,7 @@ import { swathsBuilt, SWATH_FLUSH_MS, flushSwaths } from './data/satellite/cover
 import { addCoverageLayers } from './data/satellite/coverageLayers.js';
 import { SATELLITE_PAGE, PAGE_TOPICS } from './page.js';
 import { initFeedPause, receive } from './messages/feedPause.js';
+import { initAnalytics, countMessage, trackOnce } from './lib/analytics.js';
 import { isColourable, isColourTarget, satelliteStyled, IS_AIRCRAFT, setColourBy, paintAge, showColourStatus, windArrows, POINT_RADIUS } from './map/colour.js';
 import { showDatasetFromUrl, gdcSearched, searchCatalogue, sortDatasetRows, datasetId, showDatasetInPopup, filterDatasetRows, initCatalogue, noteDataset, rankGdcs, startDataset, shownDataset, setShownDataset, setStartDataset } from './data/catalogue.js';
 import { scheduleReplay, replayPosition, replayWindowMs, REPLAY_TICKS, replayMinutesAt, replayWindowLabel, setReplayWindow, setReplayWindowMs, REPLAY_RANGE_MINUTES } from './messages/replay.js';
@@ -476,6 +477,7 @@ initFeedPause((topic, message) => {
     // Each page (page.js) lists only its own messages
     var feature = parseMessage(topic, message);
     if (!topicOnPage(topic, feature)) return;
+    countMessage();
     var record = feature && onMessage(topic, feature);
     // Listed in the sidebar's messages, which the satellite page doesn't show
     if (!SATELLITE_PAGE) queueMessage(topic, message, record, feature);
@@ -490,6 +492,15 @@ connectFastest({
 });
 // And which catalogue and global cache (see rankGdcs and caches.js)
 subscribe(['catalogue', 'cache', 'replay', 'slowNetwork'], updateMapKey);
+
+// Analytics (Google Analytics, cookieless; see analytics.js): where people look,
+// at most once every 20 s, the map's centre to 10° and its zoom
+initAnalytics();
+map.on('moveend', () => {
+    var c = map.getCenter();
+    trackOnce('map_view', 20e3, 'map_view', { zoom: Math.round(map.getZoom()),
+        lat: Math.round(c.lat / 10) * 10, lon: Math.round(c.lng / 10) * 10 });
+});
 
 // ---------- Colouring stations, ships and buoys by a measured value. Values come from
 

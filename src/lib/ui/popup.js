@@ -29,6 +29,7 @@ import { aircraftTiles } from '../../data/aviation/aircraft.js';
 import { renderWaveSpectrum, waveSpectrum, marineCompass } from '../../data/ocean/wavespec.js';
 import { showSpectrum } from '../../data/satellite/spectrum.js';
 import { distanceKm } from '../geo.js';
+import { track, centreOf } from '../analytics.js';
 import { overview, stylePanel } from './legend.js';
 // The info panel on the right: what a point, a coverage cell or a dataset is, its
 // decoded report with tiles, charts and the raw fields, the notification behind it,
@@ -63,6 +64,7 @@ export const hoverLabel = new maplibregl.Popup({
 export function openPopup(record) {
     if (!record) return;
     clearSelectedCell();
+    track('popup_open', { layer: layerOf(record), centre: centreOf(record.topic) });
     showInfo(buildPopup(record));
     var inAir = record.track && record.track.startsWith('aircraft:') && !effectiveHidden().includes('gts-tracks');
     // A report drawn as part of satellite coverage is shown by outlining its cell
@@ -234,6 +236,7 @@ export async function decodeRecord(record, out, title) {
 // haven't announced it (see guessedCopies)
 export function showDecodeError(out, err, retry, source) {
     out.innerHTML = `<div class="pp-status pp-error">Could not decode: ${esc(err.message)}</div>`;
+    track('decode_error', { message: err.message, format: source && source.format, centre: centreOf(source && source.topic) });
     var button = document.createElement('button');
     button.type = 'button';
     button.className = 'btn btn-sm btn-outline-primary pp-retry';

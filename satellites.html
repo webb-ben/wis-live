@@ -9,9 +9,13 @@
     <script>
     window.dataLayer = window.dataLayer || [];
     function gtag(){dataLayer.push(arguments);}
+    // No following a visitor from visit to visit: GA's cookie lasts only until the browser
+    // closes (cookie_expires 0), and Google signals and ads are off (src/lib/analytics.js)
+    gtag('consent', 'default', { analytics_storage: 'granted',
+        ad_storage: 'denied', ad_user_data: 'denied', ad_personalization: 'denied' });
     gtag('js', new Date());
 
-    gtag('config', 'G-E3PSJTKDWV');
+    gtag('config', 'G-E3PSJTKDWV', { cookie_expires: 0, allow_google_signals: false, allow_ad_personalization_signals: false });
     </script>
     <meta charset="UTF-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
@@ -46,9 +50,6 @@
 <body class="body">
     <div id="map" class="center"></div>
 
-    <!-- 100% privacy-first analytics -->
-    <script async src="https://scripts.simpleanalyticscdn.com/latest.js"></script>
-    <noscript><img src="https://queue.simpleanalyticscdn.com/noscript.gif" alt="" referrerpolicy="no-referrer-when-downgrade"/></noscript>
 </body>
 
 </html>
