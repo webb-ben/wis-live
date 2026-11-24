@@ -482,12 +482,6 @@ function coverage(product) {
         validSpan(files)].filter(Boolean).join(' · ');
 }
 
-// How far from now a forecast is for, in hours: "in 6 h", "3 h ago", "now"
-function fromNow(valid) {
-    var h = Math.round((Date.parse(valid) - Date.now()) / 3600e3);
-    return h > 0 ? `in ${h} h` : h < 0 ? `${-h} h ago` : 'now';
-}
-
 // When its forecasts are valid, in UTC, rather than their lead from a run: "valid 11/24 03Z–12/05 06Z"
 function validSpan(files) {
     var times = files.map((f) => Date.parse(f.valid)).filter((t) => !isNaN(t));
@@ -497,6 +491,13 @@ function validSpan(files) {
 }
 
 // The products under a click, each with what its files cover and its latest file
+// A product's name as shown: without "Ensemble members (51)" (its members are picked in the
+// legend) or a code number for a variable with no name ("Sub-surface (parameter 7)"). The
+// full name stays its key, so two such variables are still two products
+function label(p) {
+    return p.name.replace(/, Ensemble members \(\d+\)/, '').replace(/ \((local )?parameter \d+\)/, '');
+}
+
 // A model on two lines: its centre in bold (with the model's colour), the kind of forecast
 // under it ("Medium-range deterministic, global"), and a count after the centre if given
 function modelLabel(model, count) {
@@ -521,7 +522,7 @@ function showProducts(list, lngLat) {
         var why = drawable(p) ? '' : ` ${whyNot(p)}.`;
         var n = forecastCount(p);
         return `<tr><td>${style}</td>`
-            + `<td><a href="${esc(latest.href || '')}" target="_blank" rel="noopener" title="The latest file: ${esc(latest.summary)}.${esc(why)}">${esc(p.name)}</a></td>`
+            + `<td><a href="${esc(latest.href || '')}" target="_blank" rel="noopener" title="The latest file: ${esc(latest.summary)}.${esc(why)}">${esc(label(p))}</a></td>`
             + `<td>${esc(span)}<small>${n} forecast${n === 1 ? '' : 's'}${p.tiles.size > 1 ? ` · ${p.tiles.size} tiles` : ''}</small></td></tr>`;
     };
     // A heading row for each model, its products under it
@@ -531,7 +532,7 @@ function showProducts(list, lngLat) {
         byModel.get(p.model).push(p);
     });
     var rows = [...byModel].map(([model, ps]) => `<tr class="grib-model-row"><th colspan="3">${modelLabel(model)}</th></tr>`
-        + ps.sort((a, b) => a.name.localeCompare(b.name)).map(row).join('')).join('');
+        + ps.sort((a, b) => label(a).localeCompare(label(b))).map(row).join('')).join('');
     if (popup) popup.remove();
     popup = new maplibregl.Popup({ maxWidth: '520px', className: 'grib-popup' })
         .setLngLat(lngLat)
@@ -584,14 +585,16 @@ function renderProductList() {
             panel.addEventListener('change', (e) => {
                 var p = products.get(fieldProduct);
                 if (!p) return;
-                if (e.target.matches('.forecast-lead')) return drawProduct(p, e.target.value);
+                // A time or a member: each option is the key of the forecast to draw
+                if (e.target.matches('.forecast-lead, .forecast-member')) return drawProduct(p, e.target.value);
                 var shown = drawableFiles(p).find(([k]) => k === (fieldShown && fieldShown.product === p.key ? fieldShown.file : panelFile));
                 var current = shown && shown[1];
                 // Another pressure level: at the same run and lead time where it has one, else the nearest now
                 if (e.target.matches('.forecast-level')) {
                     var hPa = Number(e.target.value);
                     var atLevel = drawableFiles(p).filter(([, f]) => f.hPa === hPa);
-                    var sameTime = current && atLevel.find(([, f]) => f.run === current.run && f.leadHours === current.leadHours);
+                    var sameTime = current && (atLevel.find(([, f]) => f.run === current.run && f.leadHours === current.leadHours && f.member === current.member)
+                        || atLevel.find(([, f]) => f.run === current.run && f.leadHours === current.leadHours));
                     var now = Date.now(), away = (f) => Math.abs((Date.parse(f.valid) || now) - now);
                     var pick = sameTime || atLevel.reduce((best, f) => (!best || away(f[1]) < away(best[1]) ? f : best), null);
                     return pick && drawProduct(p, pick[0]);
@@ -599,8 +602,9 @@ function renderProductList() {
                 // Another variable of the model: at the same run, lead time and level where it has them
                 var other = e.target.matches('.forecast-variable') && products.get(e.target.value);
                 if (!other) return;
-                var same = current && drawableFiles(other).find(([, f]) => f.run === current.run && f.leadHours === current.leadHours
-                    && (f.hPa ?? null) === (current.hPa ?? null));
+                var sameAt = (f) => f.run === current.run && f.leadHours === current.leadHours && (f.hPa ?? null) === (current.hPa ?? null);
+                var same = current && (drawableFiles(other).find(([, f]) => sameAt(f) && f.member === current.member)
+                    || drawableFiles(other).find(([, f]) => sameAt(f)));
                 showGribArea(outlinesOf(other), false);
                 drawProduct(other, same ? same[0] : undefined);
             });
@@ -611,7 +615,7 @@ function renderProductList() {
         }
     }
     var byModel = new Map();
-    [...products.values()].sort((a, b) => a.name.localeCompare(b.name)).forEach((p) => {
+    [...products.values()].sort((a, b) => label(a).localeCompare(label(b))).forEach((p) => {
         if (!byModel.has(p.model)) byModel.set(p.model, []);
         byModel.get(p.model).push(p);
     });
@@ -627,7 +631,7 @@ function renderProductList() {
         `<details class="forecast-model" data-model="${esc(model)}" open><summary><span class="grib-swatch" style="--color: ${modelColour(model)}"></span>`
         + `${esc(kind)}<small class="grib-model-count">${list.length}</small></summary><ul>${list.map((p) =>
             `<li><button type="button" data-product="${esc(p.key)}"${fieldShown && fieldShown.product === p.key ? ' class="active"' : ''}`
-            + ` title="${esc(p.grid)}${drawable(p) ? ': click to draw its values' : ''}">${esc(p.name)}${drawable(p) ? ' <span class="forecast-drawable">▦</span>' : ''}`
+            + ` title="${esc(p.grid)}${drawable(p) ? ': click to draw its values' : ''}">${esc(label(p))}${drawable(p) ? ' <span class="forecast-drawable">▦</span>' : ''}`
             + `<small>${esc(coverage(p))}</small></button></li>`).join('')}</ul></details>`).join('')}</div>`).join('');
     // Rebuilt only when it changed, keeping which kinds of forecast were folded
     if (html === box.dataset.html) return;
@@ -668,7 +672,9 @@ function drawableFiles(p) {
         if (!canDraw(f)) continue;
         var g = groups.get(f.group);
         if (!g) groups.set(f.group, g = { files: [], valid: f.valid, leadHours: f.leadHours, run: f.run, ensemble: f.ensemble,
-            level: f.level || null, hPa: f.hPa ?? null, length: 0 });
+            level: f.level || null, hPa: f.hPa ?? null,
+            // An ensemble member's number ("Member 11 of 51"), picked in the legend apart from the time
+            member: /^Member (\d+)/.test(f.ensemble || '') ? Number(/^Member (\d+)/.exec(f.ensemble)[1]) : null, length: 0 });
         g.files.push(f);
         g.length += f.length || 0;
     }
@@ -833,7 +839,8 @@ function clearField() {
     redraw();
 }
 
-const hour = (iso) => iso ? `${iso.slice(5, 10).replace('-', '/')} ${iso.slice(11, 13)}Z` : '';
+// A valid time as day/month/year and the hour, UTC: 24/11/2026 03Z
+const hour = (iso) => iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)} ${iso.slice(11, 13)}Z` : '';
 
 // The forecast legend (in the map's legend): the model, its variables to pick from
 // (alphabetical), the lead times of the one drawn, and its colour scale
@@ -847,17 +854,33 @@ function renderFieldPanel(p, files, key, status, failed) {
     var levelList = [...new Set(files.map(([, f]) => f.hPa).filter((h) => h != null))].sort((a, b) => b - a);
     var levels = levelList.length ? `<select class="form-select form-select-sm forecast-level" aria-label="Level">${levelList.map((h) =>
         `<option value="${h}"${h === picked.hPa ? ' selected' : ''}>${esc(fmt(h))} hPa</option>`).join('')}</select>` : '';
-    var options = files.filter(([, f]) => f.hPa === (picked.hPa ?? null)).map(([k, f]) => `<option value="${esc(k)}"${k === key ? ' selected' : ''}>`
-        + `${esc(f.valid ? `${fromNow(f.valid)} · ${hour(f.valid)}` : '')}${f.ensemble ? ` · ${esc(f.ensemble)}` : ''}</option>`).join('');
-    var siblings = [...products.values()].filter((o) => o.model === p.model && drawable(o)).sort((a, b) => a.name.localeCompare(b.name));
-    var variables = siblings.map((o) => `<option value="${esc(o.key)}"${o.key === p.key ? ' selected' : ''}>${esc(o.name)}</option>`).join('');
+    // Times, each once and in order: picking one keeps the member drawn where that time has it,
+    // else its lowest-numbered member (each option is that forecast's key)
+    var atLevel = files.filter(([, f]) => f.hPa === (picked.hPa ?? null));
+    var byTime = new Map();
+    for (var [k, f] of atLevel) {
+        var t = f.valid || '';
+        var best = byTime.get(t);
+        var better = !best || (f.member === picked.member && best[1].member !== picked.member)
+            || (best[1].member !== picked.member && (f.member ?? 0) < (best[1].member ?? 0));
+        if (better) byTime.set(t, [k, f]);
+    }
+    var times = [...byTime].sort(([a], [b]) => a.localeCompare(b));
+    var options = times.map(([t, [k]]) => `<option value="${esc(k)}"${t === (picked.valid || '') ? ' selected' : ''}>`
+        + `${esc(t ? t.replace(/\.000Z$/, 'Z') : '')}</option>`).join('');  // The valid time in full, ISO 8601: 2026-11-24T09:00:00Z
+    // Members: those there are at the time and level picked
+    var memberList = atLevel.filter(([, f]) => f.member != null && f.valid === picked.valid).sort(([, a], [, b]) => a.member - b.member);
+    var members = memberList.length ? `<select class="form-select form-select-sm forecast-member" aria-label="Ensemble member">${memberList.map(([k, f]) =>
+        `<option value="${esc(k)}"${k === key ? ' selected' : ''}>${esc(f.ensemble)}</option>`).join('')}</select>` : '';
+    var siblings = [...products.values()].filter((o) => o.model === p.model && drawable(o)).sort((a, b) => label(a).localeCompare(label(b)));
+    var variables = siblings.map((o) => `<option value="${esc(o.key)}"${o.key === p.key ? ' selected' : ''}>${esc(label(o))}</option>`).join('');
     var bar = scale ? `<div class="forecast-scale"><span>${esc(fmt(scale.low))}</span><i style="background: linear-gradient(90deg, ${
         scale.step ? scale.colours.flatMap((c, i, all) => [`${c} ${i / all.length * 100}%`, `${c} ${(i + 1) / all.length * 100}%`]).join(', ')
             : scale.colours.join(', ')})"></i><span>${esc(fmt(scale.high))}${scale.unit ? ` ${esc(scale.unit)}` : ''}</span></div>` : '';
     panel.innerHTML = `<div class="forecast-field-head">${modelLabel(p.model)}`
         + `<button type="button" class="btn btn-sm btn-link forecast-field-clear">Clear</button></div>`
         + `<select class="form-select form-select-sm forecast-variable" aria-label="Variable">${variables}</select>${levels}`
-        + `<select class="form-select form-select-sm forecast-lead" aria-label="Lead time">${options}</select>${bar}`
+        + `<select class="form-select form-select-sm forecast-lead" aria-label="Lead time">${options}</select>${members}${bar}`
         + (status ? `<div class="legend-note${failed ? ' pp-error' : ''}">${esc(status)}</div>` : '');
 }
 

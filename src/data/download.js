@@ -175,7 +175,10 @@ export async function fetchHead(source, length = 16384, start = 0, whole = false
     var short = null;  // The most a copy sent, when none sent it all
     for (var url of urls) {
         try {
-            var response = await fetchTracked(url, { headers: { Range: `bytes=${start}-${start + length - 1}` } });
+            // Not through the browser's cache: Chrome pieces later ranges of a URL together from
+            // ranges it has kept, and for ECMWF's 16 GB files behind a CDN that failed outright
+            // ("Failed to fetch") or handed back another field's bytes. From the server every time
+            var response = await fetchTracked(url, { cache: 'no-store', headers: { Range: `bytes=${start}-${start + length - 1}` } });
             if (!response.ok || (start > 0 && response.status !== 206)) continue;
             var reader = response.body.getReader();
             var parts = [], got = 0;
