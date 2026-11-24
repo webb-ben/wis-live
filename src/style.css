@@ -501,10 +501,43 @@
   list-style: none;
 }
 .forecast-activity li {
-  overflow: hidden;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
   color: #495057;
+}
+.forecast-activity-file {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* Stop reading a file; skip the files waiting; cancel a field's download (legend) */
+.forecast-cancel {
+  flex: none;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: #868e96;
+  font-size: 14px;
+  line-height: 1.2;
+}
+.forecast-cancel:hover {
+  background: #e9ecef;
+  color: #c92a2a;
+}
+.forecast-skip,
+.forecast-field-cancel {
+  margin-left: auto;
+  padding: 0 0 0 6px;
+  font-size: 12px;
+  font-weight: 400;
+}
+.forecast-status {
+  display: flex;
+  align-items: baseline;
 }
 .forecast-activity li small {
   display: block;

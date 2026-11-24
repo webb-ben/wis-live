@@ -203,27 +203,30 @@ async function readFile(job) {
     var source = forecastSource(job.feature, job.topic);
     // Shown in the sidebar while it's read (renderActivity)
     var file = decodeURIComponent((link.href || '').split(/[?#]/)[0].split('/').pop()) || 'GRIB file';
-    var progress = { file, centre: job.topic.split('/a/wis2/')[1].split('/', 1)[0], fields: 0, offset: 0, total };
+    // Its × in the sidebar stops it (abort): the fields read so far stay listed
+    var progress = { id: ++readingIds, file, centre: job.topic.split('/a/wis2/')[1].split('/', 1)[0], fields: 0, offset: 0, total,
+        abort: new AbortController() };
+    var signal = progress.abort.signal;
     reading.add(progress);
     showActivity();
     try {
-        var { bytes, url } = await fetchHead(source);
+        var { bytes, url } = await fetchHead(source, 16384, 0, false, signal);
         // The later fields come from the copy that answered
         var pinned = { urls: [url], dataId: null, topic: null };
         var offset = 0;
         for (var n = 0; n < FIELDS_PER_FILE_MAX; n++) {
             var header = parseGribHeader(bytes);
-            if (!deps.enabled()) return;
+            if (!deps.enabled() || signal.aborted) return;
             if (header.grid && header.grid.outline) addField(job, header, url, n ? pinned : source, offset);
             progress.fields = n + 1;
             showActivity();
             if (!header.length || (total && offset + header.length >= total)) break;
             offset += header.length;
             progress.offset = offset;
-            ({ bytes } = await fetchHead(pinned, FIELD_HEAD_BYTES, offset));
+            ({ bytes } = await fetchHead(pinned, FIELD_HEAD_BYTES, offset, false, signal));
         }
     } catch (err) {
-        if (!offset) console.debug(`Could not read the GRIB header of ${job.href}: ${err.message}`);
+        if (err.name !== 'AbortError' && !offset) console.debug(`Could not read the GRIB header of ${job.href}: ${err.message}`);
     } finally {
         reading.delete(progress);
         showActivity();
@@ -248,7 +251,8 @@ function valueAt(lat, lon) {
 // ---------- What's being read now, at the top of the sidebar's product list: a spinner and
 // each file in progress (its fields read, and how far into it), and how many are waiting
 
-const reading = new Set();  // { file, centre, fields, offset, total } of each file being read
+const reading = new Set();  // { id, file, centre, fields, offset, total, abort } of each file being read
+let readingIds = 0;
 let activityTimer = null;
 
 function showActivity() {
@@ -267,15 +271,29 @@ function renderActivity() {
         box.className = 'forecast-activity';
         box.setAttribute('role', 'status');
         section.insertBefore(box, section.querySelector('.forecast-products'));
+        // × stops reading a file (what it has read stays); Skip waiting drops the files not started
+        box.addEventListener('click', (e) => {
+            var stop = e.target.closest('[data-reading]');
+            if (stop) {
+                var r = [...reading].find((x) => x.id === Number(stop.dataset.reading));
+                if (r) r.abort.abort();
+            }
+            if (e.target.closest('.forecast-skip')) {
+                waiting.clear();
+                showActivity();
+            }
+        });
     }
     var busy = reading.size > 0;
     box.classList.toggle('busy', busy);
-    var lines = [...reading].map((r) => `<li title="${esc(r.file)}"><strong>${esc(r.centre)}</strong> ${esc(r.file)}`
-        + `<small>${r.fields} field${r.fields === 1 ? '' : 's'} read${r.total > FIELD_HEAD_BYTES * 2 ? ` · ${size(r.offset)} of ${size(r.total)}` : ''}</small></li>`);
+    var lines = [...reading].map((r) => `<li><span class="forecast-activity-file" title="${esc(r.file)}"><strong>${esc(r.centre)}</strong> ${esc(r.file)}`
+        + `<small>${r.fields} field${r.fields === 1 ? '' : 's'} read${r.total > FIELD_HEAD_BYTES * 2 ? ` · ${size(r.offset)} of ${size(r.total)}` : ''}</small></span>`
+        + `<button type="button" class="forecast-cancel" data-reading="${r.id}" title="Stop reading this file (what it has read stays)" aria-label="Stop reading ${esc(r.file)}">×</button></li>`);
+    var skip = waiting.size ? ` <button type="button" class="btn btn-sm btn-link forecast-skip" title="Drop the files not started (later ones still come)">Skip waiting</button>` : '';
     box.innerHTML = busy
         ? `<div class="forecast-activity-head"><span class="forecast-spinner" aria-hidden="true"></span>Reading ${reading.size} file${reading.size === 1 ? '' : 's'}`
-            + `${waiting.size ? ` · ${waiting.size} waiting` : ''}</div><ul>${lines.join('')}</ul>`
-        : `<div class="forecast-activity-head">${waiting.size ? `${waiting.size} file${waiting.size === 1 ? '' : 's'} waiting` : 'Waiting for forecast files'}</div>`;
+            + `${waiting.size ? ` · ${waiting.size} waiting` : ''}${skip}</div><ul>${lines.join('')}</ul>`
+        : `<div class="forecast-activity-head">${waiting.size ? `${waiting.size} file${waiting.size === 1 ? '' : 's'} waiting${skip}` : 'Waiting for forecast files'}</div>`;
 }
 
 // One field of a GRIB file, as a file of its product (offset: where it starts in the file)
@@ -656,6 +674,7 @@ function renderProductList() {
             panel.addEventListener('click', (e) => {
                 e.stopPropagation();  // Not the legend's own tap (which opens it on phones)
                 if (e.target.closest('.forecast-field-clear')) clearField();
+                if (e.target.closest('.forecast-field-cancel')) cancelDraw();
             });
         }
     }
@@ -730,12 +749,12 @@ function drawableFiles(p) {
 }
 
 // One tile's values: { header, field }
-async function readTile(file) {
+async function readTile(file, signal) {
     // A GRIB field from the copy its header was read from, where its offset is known to be
     // right: another copy under the same data_id can hold its fields in another order (or be
     // another version), and the bytes there are another field
     var source = file.header && file.href ? { urls: [file.href], dataId: null, topic: null } : file.source;
-    var { bytes } = await fetchHead(source, file.length || 50e6, file.offset || 0, !!file.length);
+    var { bytes } = await fetchHead(source, file.length || 50e6, file.offset || 0, !!file.length, signal);
     if (file.netcdf) {
         var read = JSON.parse(await callDecoder('netcdf_field', bytes, 1280));
         if (read.error) throw new Error(read.error);
@@ -755,15 +774,18 @@ async function drawProduct(p, fileKey) {
     var [key, forecast] = files.find(([k]) => k === fileKey) || atLevel.reduce((best, f) => (away(f[1]) < away(best[1]) ? f : best));
     var mine = ++fieldRequest;
     fieldProduct = p.key;
+    // A download still going for an earlier pick stops: only the latest is wanted
+    if (fieldAbort) fieldAbort.abort();
+    var abort = fieldAbort = new AbortController();
     var mb = forecast.length ? ` (${(forecast.length / 1e6).toFixed(1)} MB)` : '';
     var tiles = forecast.files.length > 1 ? ` ${forecast.files.length} tiles` : '';
-    renderFieldPanel(p, files, key, `Downloading${tiles}${mb}…`);
-    if (forecast.files[0].geojson) return drawGeojson(p, files, key, forecast.files[0], mine);
+    renderFieldPanel(p, files, key, `Downloading${tiles}${mb}…`, false, true);
+    if (forecast.files[0].geojson) return drawGeojson(p, files, key, forecast.files[0], mine, abort.signal);
     try {
         // The tiles one after another, so they don't all hold memory at once while downloading
         var parts = [];
         for (var file of forecast.files) {
-            parts.push(await readTile(file));
+            parts.push(await readTile(file, abort.signal));
             if (mine !== fieldRequest) return;
         }
         renderFieldPanel(p, files, key, 'Drawing…');
@@ -777,7 +799,26 @@ async function drawProduct(p, fileKey) {
         renderFieldPanel(p, files, key, null);
         redraw();  // Only this product's outline now, and the list marks it
     } catch (err) {
+        if (err.name === 'AbortError') return;  // Cancelled (cancelDraw puts the legend back)
         if (mine === fieldRequest) renderFieldPanel(p, files, key, `Could not draw it: ${err.message}`, true);
+    }
+}
+
+let fieldAbort = null;  // Cancels the download of the field being drawn
+
+// The legend's Cancel while a field downloads: the download stops, and the legend goes back
+// to the field already drawn (or to its note when none is)
+function cancelDraw() {
+    fieldRequest++;
+    if (fieldAbort) fieldAbort.abort();
+    fieldAbort = null;
+    var shown = fieldShown && products.get(fieldShown.product);
+    if (shown) {
+        fieldProduct = shown.key;
+        renderFieldPanel(shown, drawableFiles(shown), fieldShown.file, null);
+    } else {
+        var panel = document.querySelector('.forecast-field');
+        if (panel) panel.innerHTML = '<div class="legend-note">Pick a forecast product from the list in the sidebar, or click the map and Style one.</div>';
     }
 }
 
@@ -843,9 +884,9 @@ function valueOf(properties) {
 
 // A GeoJSON forecast drawn: its points coloured by value on the variable's scale (°C for
 // air temperature, given in K or °C), the product's area set from where they are
-async function drawGeojson(p, files, key, file, mine) {
+async function drawGeojson(p, files, key, file, mine, signal) {
     try {
-        var data = await fetchData(file.source);
+        var data = await fetchData(file.source, signal);
         if (mine !== fieldRequest) return;
         renderFieldPanel(p, files, key, 'Drawing…');
         var json = JSON.parse(new TextDecoder().decode(data.bytes));
@@ -874,12 +915,15 @@ async function drawGeojson(p, files, key, file, mine) {
         renderFieldPanel(p, files, key, null);
         redraw();
     } catch (err) {
+        if (err.name === 'AbortError') return;  // Cancelled (cancelDraw puts the legend back)
         if (mine === fieldRequest) renderFieldPanel(p, files, key, `Could not draw it: ${err.message}`, true);
     }
 }
 
 function clearField() {
     fieldRequest++;
+    if (fieldAbort) fieldAbort.abort();  // A download still going stops too
+    fieldAbort = null;
     if (map.getLayer('grib-field')) map.setLayoutProperty('grib-field', 'visibility', 'none');
     if (map.getSource('grib-points')) map.getSource('grib-points').setData({ type: 'FeatureCollection', features: [] });
     if (fieldShown && fieldShown.url) URL.revokeObjectURL(fieldShown.url);
@@ -894,7 +938,8 @@ const hour = (iso) => iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(
 
 // The forecast legend (in the map's legend): the model, its variables to pick from
 // (alphabetical), the lead times of the one drawn, and its colour scale
-function renderFieldPanel(p, files, key, status, failed) {
+// cancellable: a download is going, and the status gets a Cancel button (cancelDraw)
+function renderFieldPanel(p, files, key, status, failed, cancellable) {
     var panel = document.querySelector('.forecast-field');
     if (!panel) return;
     var scale = fieldShown && fieldShown.product === p.key && !status ? fieldShown.scale : null;
@@ -934,7 +979,8 @@ function renderFieldPanel(p, files, key, status, failed) {
         + `<button type="button" class="btn btn-sm btn-link forecast-field-clear">Clear</button></div>`
         + `<select class="form-select form-select-sm forecast-variable" aria-label="Variable">${variables}</select>${levels}`
         + `<select class="form-select form-select-sm forecast-lead" aria-label="Lead time">${options}</select>${members}${bar}`
-        + (status ? `<div class="legend-note${failed ? ' pp-error' : ''}">${esc(status)}</div>` : '');
+        + (status ? `<div class="legend-note forecast-status${failed ? ' pp-error' : ''}">${esc(status)}`
+            + `${cancellable ? '<button type="button" class="btn btn-sm btn-link forecast-field-cancel">Cancel</button>' : ''}</div>` : '');
 }
 
 // A scale's end: whole above 100, a decimal above 1, and two significant figures below

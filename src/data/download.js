@@ -105,8 +105,8 @@ function guessedCopies(source, known) {
 }
 
 // Returns { bytes, bufr, url }: the first BUFR copy found, otherwise the first
-// copy that is plain text
-export async function fetchData(source) {
+// copy that is plain text. signal, if given, cancels it (an AbortError)
+export async function fetchData(source, signal = null) {
     var text = null;
     if (source.content) {
         var bytes = Uint8Array.from(atob(source.content), (c) => c.charCodeAt(0));
@@ -130,8 +130,9 @@ export async function fetchData(source) {
             mainCacheTried.add(url);
             if (mainCacheTried.size > DATA_LINKS_MAX) mainCacheTried.delete(mainCacheTried.values().next().value);
         }
+        if (signal && signal.aborted) throw new DOMException('Cancelled', 'AbortError');
         try {
-            var response = await fetchTracked(url);
+            var response = await fetchTracked(url, signal ? { signal } : undefined);
             if (!response.ok) continue;
             answered++;
             var bytes = new Uint8Array(await response.arrayBuffer());
@@ -142,6 +143,7 @@ export async function fetchData(source) {
                 noteSniffedFormat({ properties: { data_id: source.dataId } }, found);
             }
         } catch (err) {
+            if (signal && signal.aborted) throw new DOMException('Cancelled', 'AbortError');
             // Thrown before any answer could be read: blocked by CORS, or unreachable
             console.debug(`Could not fetch ${url}`);
         }
@@ -167,18 +169,21 @@ export async function fetchData(source) {
 // just the range asked for (206) will do
 // whole: all `length` bytes are needed (a field to draw): a copy that sends fewer (a server
 // that caps a range, a download cut off) doesn't count, and the next is tried
-export async function fetchHead(source, length = 16384, start = 0, whole = false) {
+// signal: an AbortSignal that cancels it (the forecasts page's Cancel), rejecting with an AbortError
+export async function fetchHead(source, length = 16384, start = 0, whole = false, signal = null) {
     var known = [...source.urls, ...(dataLinks.get(source.dataId) || [])];
     var guessed = guessedCopies(source, known).filter((url) => url.startsWith(`https://${MAIN_CACHE_HOST}/`));
     var urls = downloadOrder(known);
     urls = [...urls, ...downloadOrder(guessed).filter((url) => !urls.includes(url))];
     var short = null;  // The most a copy sent, when none sent it all
     for (var url of urls) {
+        if (signal && signal.aborted) throw new DOMException('Cancelled', 'AbortError');
         try {
             // Not through the browser's cache: Chrome pieces later ranges of a URL together from
             // ranges it has kept, and for ECMWF's 16 GB files behind a CDN that failed outright
             // ("Failed to fetch") or handed back another field's bytes. From the server every time
-            var response = await fetchTracked(url, { cache: 'no-store', headers: { Range: `bytes=${start}-${start + length - 1}` } });
+            var response = await fetchTracked(url, { cache: 'no-store', signal: signal || undefined,
+                headers: { Range: `bytes=${start}-${start + length - 1}` } });
             if (!response.ok || (start > 0 && response.status !== 206)) continue;
             var reader = response.body.getReader();
             var parts = [], got = 0;
@@ -203,6 +208,7 @@ export async function fetchHead(source, length = 16384, start = 0, whole = false
             }
             return { bytes, url };
         } catch (err) {
+            if (signal && signal.aborted) throw new DOMException('Cancelled', 'AbortError');  // Not another copy: cancelled
             console.debug(`Could not fetch the start of ${url}`);
         }
     }
