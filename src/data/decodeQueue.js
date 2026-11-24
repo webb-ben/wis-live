@@ -197,7 +197,7 @@ export function queueDecode(kind, topic, feature) {
     // An origin copy is a file of its own to decode: the cache's copy is decoded again
     // when it comes, to replace its reports
     if (kind === 'origin-files' && key) key = `origin:${key}`;
-    var href = decodeHref(feature);
+    var href = decodeHref(feature, kind === 'origin-files');
     // GRIB headers also try the main cache's likely copy (fetchHead),
     // so they go ahead when every copy announced is on a server that blocks browsers
     if ((!href && kind !== 'grib') || !key || decodeSeen.has(key)) return;
@@ -271,7 +271,7 @@ export async function fetchForDecode(q, job) {
         // Radar volumes can run to tens of MB, so they get longer
         // Picked again now, as it may have waited in the queue while a host was found to block
         // browsers, or while another download was the first try of the host it picked
-        job.href = decodeHref(job.feature);
+        job.href = decodeHref(job.feature, job.kind === 'origin-files');
         if (!job.href) throw new Error('no copy on a host that allows browser downloads');
         var response = await fetchTracked(job.href, { signal: AbortSignal.timeout(DECODE_FETCH_TIMEOUT_MS * (job.kind === 'radar' ? 4 : 1)) });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);

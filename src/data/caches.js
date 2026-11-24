@@ -38,15 +38,24 @@ export function viaWorker(url) {
     return proxied(hostOf(url));
 }
 
-// Requests through the Worker that nobody asked for (forecast files read as they're
-// announced) stop at this many a page load; ones from a click aren't counted against it
-const WORKER_BACKGROUND_MAX = 300;
-let workerBackground = 0;
+// The page's allowance of Worker requests: every request through it spends one, and it
+// refills at WORKER_PER_HOUR (up to that many held). Downloads nobody asked for (files
+// decoded or read as they're announced) use the Worker only while some is left; a click
+// always may. At 200 an hour, about 20 pages open all day stay under the free plan
+const WORKER_PER_HOUR = 200;
+let workerLeft = WORKER_PER_HOUR;
+let workerFilled = Date.now();
 export function workerBudgetLeft() {
-    return WORKER_BACKGROUND_MAX - workerBackground;
+    var now = Date.now();
+    workerLeft = Math.min(WORKER_PER_HOUR, workerLeft + (now - workerFilled) / 3600e3 * WORKER_PER_HOUR);
+    workerFilled = now;
+    return Math.floor(workerLeft);
 }
-export function noteWorkerBackground() {
-    workerBackground++;
+
+// Whether a download nobody asked for may use url: any copy the browser can fetch itself,
+// and one through the Worker while the allowance lasts
+export function backgroundAllowed(url) {
+    return !viaWorker(url) || workerBudgetLeft() > 0;
 }
 
 // The address to download url from: through the local server's proxy on localhost, through
@@ -57,7 +66,10 @@ export function viaProxy(url) {
         var u = new URL(url);
         return `${import.meta.env.BASE_URL}proxy/${host}${u.pathname}${u.search}`;
     }
-    return proxied(host) ? `${CORS_PROXY}?url=${encodeURIComponent(url)}` : url;
+    if (!proxied(host)) return url;
+    workerBudgetLeft();
+    workerLeft--;  // May go below nothing after clicks; background downloads then wait for the refill
+    return `${CORS_PROXY}?url=${encodeURIComponent(url)}`;
 }
 
 function hostOf(url) {
@@ -183,7 +195,7 @@ export function noteFailed(url, err) {
 // centre's own server, aren't tried in the background at all
 export function canDownload(url) {
     var host = hostOf(url);
-    if (!host || isBlocked(host)) return false;
+    if (!host || isBlocked(host) || !backgroundAllowed(url)) return false;
     if (okHosts.has(host) || corsFriendly(url)) return true;
     return cacheHosts.has(host) && !tryingHosts.has(host);
 }

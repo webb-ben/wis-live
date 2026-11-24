@@ -10,7 +10,7 @@ import { records, isGateway, byDataId } from '../../map/points.js';
 import { map } from '../../map/map.js';
 import { onMap } from '../../data/satellite/coverage.js';
 import { bufrSource } from '../../data/download.js';
-import { viaProxy } from '../../data/caches.js';
+import { viaProxy, LOCAL } from '../../data/caches.js';
 import { COLORS, OBS_CLASSES } from '../../config.js';
 import { darken, TOUCH } from '../util.js';
 import { DECODE_LAYERS, decodeEnabled, satelliteSkipped } from '../../data/decodeQueue.js';
@@ -221,7 +221,7 @@ export const CENTRE_SNAPSHOT = 'assets/data/centre-id.json';
 export async function loadCentres() {
     var list = null;
     var proxied = viaProxy(CENTRE_REGISTER);
-    if (proxied !== CENTRE_REGISTER) {
+    if (LOCAL && proxied !== CENTRE_REGISTER) {  // Not through the site's Worker: the snapshot does
         try {
             list = parseCentreRegister(await fetchJson(proxied));
         } catch (err) {

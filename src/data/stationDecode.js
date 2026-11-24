@@ -88,7 +88,7 @@ export async function decodeStationIn(lane) {
     record.metricTried = true;
     try {
         if (records.has(record.id) && !record.decoded) {
-            var data = await fetchData(record.source);
+            var data = await fetchData({ ...record.source, background: true });  // Unasked: see backgroundAllowed
             if (data.bufr) {
                 var key = record.source.dataId || data.url;
                 var result = JSON.parse(await callDecoder('decode_bufr', data.bytes, record.wsi || '', key));
