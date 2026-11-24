@@ -50,6 +50,7 @@ import { metricValues } from './data/metrics.js';
 import { swathsBuilt, SWATH_FLUSH_MS, flushSwaths } from './data/satellite/coverage.js';
 import { addCoverageLayers } from './data/satellite/coverageLayers.js';
 import { SATELLITE_PAGE, PAGE_TOPICS } from './page.js';
+import { initFeedPause, receive } from './messages/feedPause.js';
 import { isColourable, isColourTarget, satelliteStyled, IS_AIRCRAFT, setColourBy, paintAge, showColourStatus, windArrows, POINT_RADIUS } from './map/colour.js';
 import { showDatasetFromUrl, gdcSearched, searchCatalogue, sortDatasetRows, datasetId, showDatasetInPopup, filterDatasetRows, initCatalogue, noteDataset, rankGdcs, startDataset, shownDataset, setShownDataset, setStartDataset } from './data/catalogue.js';
 import { scheduleReplay, replayPosition, replayWindowMs, REPLAY_TICKS, replayMinutesAt, replayWindowLabel, setReplayWindow, setReplayWindowMs, REPLAY_RANGE_MINUTES } from './messages/replay.js';
@@ -470,17 +471,20 @@ if (!PHONE.matches && !SATELLITE_PAGE) {
     selectQueueTab('layers');
 }
 
+// Each message: parsed, drawn and listed (held in a queue instead while the feed is paused, feedPause.js)
+initFeedPause((topic, message) => {
+    // Each page (page.js) lists only its own messages
+    var feature = parseMessage(topic, message);
+    if (!topicOnPage(topic, feature)) return;
+    var record = feature && onMessage(topic, feature);
+    // Listed in the sidebar's messages, which the satellite page doesn't show
+    if (!SATELLITE_PAGE) queueMessage(topic, message, record, feature);
+}, () => updateMapKey());
+
 connectFastest({
     // Only the topics the page shows (the satellite page only satellites', see page.js)
     subscribe: PAGE_TOPICS,
-    onMessage: (topic, message) => {
-        // Each page (page.js) lists only its own messages
-        var feature = parseMessage(topic, message);
-        if (!topicOnPage(topic, feature)) return;
-        var record = feature && onMessage(topic, feature);
-        // Listed in the sidebar's messages, which the satellite page doesn't show
-        if (!SATELLITE_PAGE) queueMessage(topic, message, record, feature);
-    },
+    onMessage: receive,
     // The map key shows which broker the page is on
     onState: updateMapKey,
 });

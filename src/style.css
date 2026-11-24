@@ -2348,6 +2348,18 @@
   padding-left: 4px;
   white-space: nowrap;
 }
+/* The feed's line: Live, or Paused with what's queued, and its Pause / Resume (feedPause.js) */
+.key-feed-button {
+  flex: none;
+  margin-left: auto;
+  padding: 0 0 0 6px;
+  font-size: inherit;
+  line-height: inherit;
+}
+.key-feed.paused .key-broker-text {
+  color: #e8590c;
+  font-weight: 600;
+}
 .map-key-main {
   min-width: 0;
 }
@@ -2813,9 +2825,13 @@
     display: flex;
     justify-content: center;
   }
+  /* Full width, less a margin each side, so the world map is big enough to read and tap */
   .maplibregl-ctrl-bottom-right .map-world {
     float: none;
-    margin: 0 0 10px;
+    box-sizing: border-box;  /* The width takes in its padding, so it doesn't run off the edge */
+    width: calc(100vw - 20px);
+    max-width: none;
+    margin: 0 10px 10px;
   }
   /* The sidebar covers the whole screen, so the zoom buttons needn't move aside */
   .queue-open .maplibregl-ctrl-top-left {

@@ -1,5 +1,6 @@
 import { showWelcome } from './welcome.js';
 import { serviceOptions, servicePick, pickService } from '../services.js';
+import { feedState, setFeedPaused } from '../../messages/feedPause.js';
 import maplibregl from 'maplibre-gl';
 import { LAYER_GROUPS, hiddenLayers, ancestors, effectiveHidden, seenLayers } from '../../map/layers.js';
 import { darken, PHONE, esc } from '../util.js';
@@ -171,6 +172,12 @@ export class MapKey {
             pickService(select.dataset.service, select.value);
             select.blur();
             updateMapKey();
+        });
+        // Pause and resume the live feed (feedPause.js)
+        mapKeyStatus.addEventListener('click', (e) => {
+            if (!e.target.closest('[data-feed-pause]')) return;
+            e.stopPropagation();  // Not the panel's own tap
+            setFeedPaused(!feedState().paused);
         });
         overview = createOverview({ map, drawContent: drawOverviewContent, hoveredCell: () => hoveredCell });
         // On the satellite page the world map heads the legend's panel, bottom left (added
@@ -537,6 +544,15 @@ export function updateMapKey() {
     }[brokerState.state];
     var brokerHtml = service('broker', `broker-${brokerState.state}`, 'Broker', broker, after,
         'WIS2 Global Broker the live messages come from, and its round trip time (measured every minute). Pick one to use it rather than the fastest');
+    // The feed: live, or paused with how many messages are waiting (and catching up after)
+    var feed = feedState();
+    var fmtCount = (n) => n.toLocaleString();
+    var feedText = feed.paused ? `Paused · ${fmtCount(feed.queued)} queued${feed.dropped ? ` (${fmtCount(feed.dropped)} oldest dropped)` : ''}`
+        : feed.draining ? `Catching up · ${fmtCount(feed.queued)} to go` : 'Live';
+    brokerHtml += `<div class="key-note key-broker key-feed${feed.paused ? ' paused' : ''}"><span class="broker-dot ${feed.paused ? 'broker-reconnecting' : 'broker-connected'}"></span>`
+        + `<span class="key-broker-name">Feed:</span><span class="key-broker-text">${esc(feedText)}</span>`
+        + `<button type="button" class="btn btn-sm btn-link key-feed-button" data-feed-pause title="${feed.paused
+            ? 'Resume: work through the messages queued, then carry on live' : 'Pause: queue new messages without parsing or drawing them'}">${feed.paused ? 'Resume' : 'Pause'}</button></div>`;
     // Grey while being found, green once one has answered, like the broker's dot
     var catalogue = state.catalogue;
     brokerHtml += service('catalogue', !catalogue ? 'broker-connecting' : catalogue.failed ? 'broker-retrying' : 'broker-connected', 'Catalogue',
