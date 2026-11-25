@@ -28,7 +28,7 @@ function build() {
         </ul>
         <p class="welcome-note">Not affiliated with WMO.</p>
         <form method="dialog" class="welcome-actions">
-            <button class="btn btn-primary" value="close" autofocus>Explore</button>
+            <button class="btn btn-primary" value="close">Explore</button>
         </form>`;
     // A click on the backdrop (outside the dialog's box) closes it too
     dialog.addEventListener('click', (e) => {
@@ -44,7 +44,13 @@ function build() {
 
 export function showWelcome() {
     if (!dialog) build();
-    if (!dialog.open) dialog.showModal();
+    if (!dialog.open) {
+        dialog.showModal();
+        // Explore takes the focus without scrolling to it (autofocus would scroll the
+        // welcome to its foot on a short screen): it opens at its top
+        dialog.querySelector('.welcome-actions button').focus({ preventScroll: true });
+        dialog.scrollTop = 0;
+    }
     try {
         localStorage.setItem(SEEN_KEY, '1');
     } catch (err) {
